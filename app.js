@@ -62,7 +62,7 @@ async function q(query) { const { data, error } = await query; if (error) throw 
 function latestBy(rows, keyFn) { const m = new Map(); for (const r of rows) { const k = keyFn(r); const p = m.get(k); if (!p || r.as_of > p.as_of) m.set(k, r); } return m; }
 
 async function load() {
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
@@ -70,9 +70,12 @@ async function load() {
     q(sb.from('factors').select('id,slug,name,sort_order').order('sort_order')),
     q(sb.from('asset_class_factor_loadings').select('asset_class_id,factor_id,loading,as_of')),
     q(sb.from('security_factor_loadings').select('security_id,factor_id,loading,as_of')),
-    q(sb.from('data_runs').select('status,latest_price_date,started_at').order('started_at', { ascending: false }).limit(1)),
+    q(sb.from('data_runs').select('job,status,latest_price_date,started_at').order('started_at', { ascending: false }).limit(10)),
     q(sb.from('agent_outputs').select('agent,kind,title,body_md,as_of').order('as_of', { ascending: false }).limit(50)),
     q(sb.from('current_prices').select('security_id,as_of,close,prev_close,day_change_pct,source')),
+    q(sb.from('current_technicals').select('security_id,as_of,sma50,sma200,rsi14,vol20_ann,trend')),
+    q(sb.from('current_macro_readings').select('fred_code,name,factor_id,unit,obs_date,value')),
+    q(sb.from('asset_class_views').select('asset_class_id,as_of,stance,confidence,thesis,role_in_profile,change_my_mind,status,author').order('as_of', { ascending: false })),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -98,9 +101,20 @@ async function load() {
   const classNames = Object.fromEntries(classes.map(c => [c.slug, c.name])); classNames.unclassified = 'Unclassified';
   const matrix = classes.map(c => ({ slug: c.slug, name: c.name, v: factors.map(f => (cl.get(c.id + '|' + f.id) || {}).loading ?? null) }));
   const priceBySec = Object.fromEntries(prices.map(p => [p.security_id, p]));
-  const markets = secs.map(s => ({ ticker: s.ticker, name: s.name, role: s.role, cls: cls[s.asset_class_id]?.slug || 'unclassified', price: priceBySec[s.id] || null }))
+  const techBySec = Object.fromEntries(technicals.map(t => [t.security_id, t]));
+  const markets = secs.map(s => ({ ticker: s.ticker, name: s.name, role: s.role, cls: cls[s.asset_class_id]?.slug || 'unclassified', price: priceBySec[s.id] || null, tech: techBySec[s.id] || null }))
     .sort((a, b) => a.ticker.localeCompare(b.ticker));
-  return { models, factors, matrix, classNames, run: runs[0] || null, outputs, markets };
+
+  const factorSlug = Object.fromEntries(factors.map(f => [f.id, f.slug]));
+  const macroByFactor = {};
+  for (const m of macro) (macroByFactor[factorSlug[m.factor_id] || 'unassigned'] ||= []).push(m);
+
+  const latestViews = latestBy(views, v => v.asset_class_id);
+  const viewsByClass = classes.map(c => ({ slug: c.slug, name: c.name, view: latestViews.get(c.id) || null }));
+
+  const run = runs.find(r => r.job === 'daily_prices') || null;
+  const macroRun = runs.find(r => r.job === 'daily_macro') || null;
+  return { models, factors, matrix, classNames, run, macroRun, outputs, markets, macroByFactor, viewsByClass };
 }
 
 // ---------- Views ----------
@@ -154,18 +168,25 @@ function markets() {
   const rows = D.markets;
   const withPrice = rows.filter(r => r.price).length;
   const chg = v => v === null || v === undefined ? '<span style="color:var(--muted)">–</span>' : `<span style="color:${v > 0 ? 'var(--pos)' : v < 0 ? 'var(--neg)' : 'var(--muted)'}">${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%</span>`;
+  const trendChip = t => t ? `<span class="chip ${t === 'bullish' ? 'long' : t === 'bearish' ? 'short' : 'flat'}">${esc(t)}</span>` : '<span style="color:var(--muted)">–</span>';
+  const rsiColor = v => v === null || v === undefined ? 'var(--muted)' : v >= 70 ? 'var(--neg)' : v <= 30 ? 'var(--pos)' : 'var(--text)';
   return `<span class="eyebrow">Allocation model</span><h1>Markets</h1>
-  <p class="sub">Latest close for every security in the universe, from the daily Tiingo job.</p>
+  <p class="sub">Latest close and standard technicals for every security in the universe, from the daily job.</p>
   <div class="kpis">
    <div class="card kpi"><span class="eyebrow">Universe</span><b>${rows.length}</b><small>tracked securities</small></div>
    <div class="card kpi"><span class="eyebrow">Priced</span><b>${withPrice}/${rows.length}</b><small>have a latest close</small></div>
    <div class="card kpi"><span class="eyebrow">As of</span><b style="font-size:20px">${esc(D.run ? D.run.latest_price_date || '—' : '—')}</b><small>last daily job: ${esc(D.run ? D.run.status : 'no run yet')}</small></div>
   </div>
-  <div class="card"><table><thead><tr><th>Ticker</th><th>Class</th><th>Role</th><th class="num">Close</th><th class="num">1-day</th><th>As of</th><th>Source</th></tr></thead><tbody>
-  ${rows.map(r => `<tr><td><b>${esc(r.ticker)}</b><br><small style="color:var(--muted)">${esc(r.name)}</small></td><td>${esc(D.classNames[r.cls] || r.cls)}</td>
-   <td><span class="chip">${esc(r.role)}</span></td><td class="num">${r.price ? '$' + Number(r.price.close).toFixed(2) : '<span style="color:var(--muted)">no price</span>'}</td>
-   <td class="num">${r.price ? chg(r.price.day_change_pct) : ''}</td><td>${r.price ? esc(r.price.as_of) : ''}</td><td>${r.price ? esc(r.price.source) : ''}</td></tr>`).join('')}
-  </tbody></table><p class="note">1-day change compares the latest close to the prior close in the same source's history. Mutual funds post once a day after close, so their "1-day" figure lags ETFs, which can be intraday-stale here too until live quotes are added.</p></div>`;
+  <div class="card"><table><thead><tr><th>Ticker</th><th>Class</th><th class="num">Close</th><th class="num">1-day</th><th class="num">RSI14</th><th>Trend</th><th class="num">vs SMA50</th><th class="num">vs SMA200</th></tr></thead><tbody>
+  ${rows.map(r => { const t = r.tech; const vs = (c, sma) => sma ? `<span style="color:${c > sma ? 'var(--pos)' : 'var(--neg)'}">${c > sma ? '+' : ''}${(((c - sma) / sma) * 100).toFixed(1)}%</span>` : '–';
+    return `<tr><td><b>${esc(r.ticker)}</b><br><small style="color:var(--muted)">${esc(r.name)}</small></td><td>${esc(D.classNames[r.cls] || r.cls)}</td>
+     <td class="num">${r.price ? '$' + Number(r.price.close).toFixed(2) : '<span style="color:var(--muted)">no price</span>'}</td>
+     <td class="num">${r.price ? chg(r.price.day_change_pct) : ''}</td>
+     <td class="num" style="color:${rsiColor(t?.rsi14)}">${t?.rsi14 != null ? t.rsi14.toFixed(1) : '–'}</td>
+     <td>${trendChip(t?.trend)}</td>
+     <td class="num">${t ? vs(t.close ?? r.price?.close, t.sma50) : '–'}</td>
+     <td class="num">${t ? vs(t.close ?? r.price?.close, t.sma200) : '–'}</td></tr>`; }).join('')}
+  </tbody></table><p class="note">RSI14 uses Wilder's smoothing; below 30 (green) is oversold, above 70 (red) is overbought by the standard convention, not a signal to act on alone. Trend: bullish = close &gt; SMA50 &gt; SMA200, bearish = the reverse, else neutral. SMA200 needs ~10 months of history — newer listings show "–". Parameters: desk-workspace/stan/technicals-parameters.md.</p></div>`;
 }
 
 function openModel(id) {
@@ -188,10 +209,35 @@ function closeDrawer() { $('#drawer').hidden = true; $('#scrim').hidden = true; 
 function viewsPage() {
   const cell = v => v === null ? ['M', 'UNSCORED'] : v > 0.4 ? ['L', 'LONG'] : v < -0.75 ? ['S', 'SHORT'] : v < -0.25 ? ['M', 'FLAT / SHORT'] : ['F', 'FLAT'];
   const rows = D.matrix.map(r => `<div class="rl">${esc(r.name)}</div>${r.v.map(x => { const [c, t] = cell(x === null ? null : +x); return `<div class="${c}">${t}</div>`; }).join('')}`).join('');
-  return `<span class="eyebrow">Allocation model</span><h1>Views</h1><p class="sub">Exposure of each asset class. Stances and theses per class come next.</p>
-  <div class="card"><div class="mx"><div class="hd"></div>${D.factors.map(f => `<div class="hd">${esc(fname(f).toUpperCase())}</div>`).join('')}${rows}</div>
+
+  const stanceChip = s => { if (!s) return ''; const cls = /overweight/.test(s) ? 'long' : /underweight/.test(s) ? 'short' : 'flat'; return `<span class="chip ${cls}">${esc(s.replace(/_/g, ' '))}</span>`; };
+  const haveViews = D.viewsByClass.some(v => v.view);
+  const viewCards = D.viewsByClass.map(({ name, view: v }) => !v ? '' : `
+    <div class="card" style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">${esc(name)} ${stanceChip(v.stance)} ${v.status === 'draft' ? '<span class="chip draft">draft</span>' : ''}</h2>
+        <small style="color:var(--muted)">${esc(v.author || '')} · ${esc(v.as_of)}${v.confidence != null ? ` · confidence ${pct(v.confidence, 0)}` : ''}</small>
+      </div>
+      <p>${esc(v.thesis)}</p>
+      ${v.role_in_profile ? `<p class="note"><b>Role in the profile:</b> ${esc(v.role_in_profile)}</p>` : ''}
+      ${v.change_my_mind ? `<p class="note"><b>Would change our mind:</b> ${esc(v.change_my_mind)}</p>` : ''}
+    </div>`).join('');
+
+  const macroSection = D.factors.map(f => {
+    const rows = (D.macroByFactor[f.slug] || []).sort((a, b) => a.fred_code.localeCompare(b.fred_code));
+    if (!rows.length) return '';
+    return `<div class="card" style="margin-bottom:10px"><h2>${esc(fname(f))}</h2><table><thead><tr><th>Series</th><th class="num">Value</th><th>As of</th></tr></thead><tbody>
+     ${rows.map(r => `<tr><td>${esc(r.name)} <small style="color:var(--muted)">(${esc(r.fred_code)})</small></td><td class="num">${r.value}${/percent/i.test(r.unit || '') ? '%' : ''}</td><td>${esc(r.obs_date)}</td></tr>`).join('')}
+     </tbody></table></div>`;
+  }).join('');
+
+  return `<span class="eyebrow">Allocation model</span><h1>Views</h1><p class="sub">Exposure of each asset class, the desk's current stance where recorded, and the macro data behind it.</p>
+  <div class="card" style="margin-bottom:14px"><h2>Exposure matrix</h2><div class="mx"><div class="hd"></div>${D.factors.map(f => `<div class="hd">${esc(fname(f).toUpperCase())}</div>`).join('')}${rows}</div>
   <p class="note">Long +1, Flat 0, Short −1, Flat/Short −0.5. Subjective judgments.</p></div>
-  <div class="empty">No stance recorded yet for any asset class.</div>`;
+  <h2 style="margin:18px 0 10px">Stances</h2>
+  ${haveViews ? viewCards : '<div class="empty">No stance recorded yet for any asset class.</div>'}
+  <h2 style="margin:18px 0 10px">Macro data</h2>
+  ${macroSection || '<div class="empty">No macro data loaded yet.</div>'}`;
 }
 
 function agents() {
