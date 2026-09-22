@@ -62,7 +62,7 @@ async function q(query) { const { data, error } = await query; if (error) throw 
 function latestBy(rows, keyFn) { const m = new Map(); for (const r of rows) { const k = keyFn(r); const p = m.get(k); if (!p || r.as_of > p.as_of) m.set(k, r); } return m; }
 
 async function load() {
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
@@ -72,6 +72,7 @@ async function load() {
     q(sb.from('security_factor_loadings').select('security_id,factor_id,loading,as_of')),
     q(sb.from('data_runs').select('status,latest_price_date,started_at').order('started_at', { ascending: false }).limit(1)),
     q(sb.from('agent_outputs').select('agent,kind,title,body_md,as_of').order('as_of', { ascending: false }).limit(50)),
+    q(sb.from('current_prices').select('security_id,as_of,close,prev_close,day_change_pct,source')),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -96,7 +97,10 @@ async function load() {
   });
   const classNames = Object.fromEntries(classes.map(c => [c.slug, c.name])); classNames.unclassified = 'Unclassified';
   const matrix = classes.map(c => ({ slug: c.slug, name: c.name, v: factors.map(f => (cl.get(c.id + '|' + f.id) || {}).loading ?? null) }));
-  return { models, factors, matrix, classNames, run: runs[0] || null, outputs };
+  const priceBySec = Object.fromEntries(prices.map(p => [p.security_id, p]));
+  const markets = secs.map(s => ({ ticker: s.ticker, name: s.name, role: s.role, cls: cls[s.asset_class_id]?.slug || 'unclassified', price: priceBySec[s.id] || null }))
+    .sort((a, b) => a.ticker.localeCompare(b.ticker));
+  return { models, factors, matrix, classNames, run: runs[0] || null, outputs, markets };
 }
 
 // ---------- Views ----------
@@ -110,7 +114,7 @@ function route() {
   const [page, arg] = (location.hash || '#overview').slice(1).split('/');
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
-  const pages = { overview, models, views: viewsPage, agents, inbox };
+  const pages = { overview, models, markets, views: viewsPage, agents, inbox };
   $('#app').innerHTML = (pages[page] || overview)();
   if (page === 'models' && arg) openModel(arg);
 }
@@ -144,6 +148,24 @@ function models() {
   <div class="card"><table><thead><tr><th>Model</th><th>Last allocation</th><th class="num">Holdings</th><th class="num">Cash</th>${factorHeads()}<th>Scored</th></tr></thead><tbody>
   ${D.models.map(m => `<tr class="click" data-go="#models/${esc(m.id)}"><td><b>${esc(m.name)}</b> <span class="chip">${esc(m.label)}</span></td><td>${esc(m.last || '—')}</td><td class="num">${m.holdings.length}</td>
    <td class="num">${pct((m.byClass.find(c => c[0] === 'cash') || [0, 0])[1])}</td>${netCells(m)}<td><div class="bar"><i style="width:${m.cov * 100}%"></i></div></td></tr>`).join('')}</tbody></table></div>`;
+}
+
+function markets() {
+  const rows = D.markets;
+  const withPrice = rows.filter(r => r.price).length;
+  const chg = v => v === null || v === undefined ? '<span style="color:var(--muted)">–</span>' : `<span style="color:${v > 0 ? 'var(--pos)' : v < 0 ? 'var(--neg)' : 'var(--muted)'}">${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%</span>`;
+  return `<span class="eyebrow">Allocation model</span><h1>Markets</h1>
+  <p class="sub">Latest close for every security in the universe, from the daily Tiingo job.</p>
+  <div class="kpis">
+   <div class="card kpi"><span class="eyebrow">Universe</span><b>${rows.length}</b><small>tracked securities</small></div>
+   <div class="card kpi"><span class="eyebrow">Priced</span><b>${withPrice}/${rows.length}</b><small>have a latest close</small></div>
+   <div class="card kpi"><span class="eyebrow">As of</span><b style="font-size:20px">${esc(D.run ? D.run.latest_price_date || '—' : '—')}</b><small>last daily job: ${esc(D.run ? D.run.status : 'no run yet')}</small></div>
+  </div>
+  <div class="card"><table><thead><tr><th>Ticker</th><th>Class</th><th>Role</th><th class="num">Close</th><th class="num">1-day</th><th>As of</th><th>Source</th></tr></thead><tbody>
+  ${rows.map(r => `<tr><td><b>${esc(r.ticker)}</b><br><small style="color:var(--muted)">${esc(r.name)}</small></td><td>${esc(D.classNames[r.cls] || r.cls)}</td>
+   <td><span class="chip">${esc(r.role)}</span></td><td class="num">${r.price ? '$' + Number(r.price.close).toFixed(2) : '<span style="color:var(--muted)">no price</span>'}</td>
+   <td class="num">${r.price ? chg(r.price.day_change_pct) : ''}</td><td>${r.price ? esc(r.price.as_of) : ''}</td><td>${r.price ? esc(r.price.source) : ''}</td></tr>`).join('')}
+  </tbody></table><p class="note">1-day change compares the latest close to the prior close in the same source's history. Mutual funds post once a day after close, so their "1-day" figure lags ETFs, which can be intraday-stale here too until live quotes are added.</p></div>`;
 }
 
 function openModel(id) {
