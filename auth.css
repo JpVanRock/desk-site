@@ -1,5 +1,8 @@
 #gate{min-height:100vh;display:grid;place-items:center;padding:24px}
-.gate{width:min(400px,100%);display:flex;flex-direction:column;gap:12px;padding:28px}
+.gate{width:min(400px,100%);display:flex;flex-direction:column;align-items:center;gap:12px;padding:28px}
+.gate label,.gate .primary,.gate .err{align-self:stretch}
+.logo-gate{width:88px;height:88px;display:block;margin-bottom:2px}
+.logo-header{width:30px;height:30px;display:block;border-radius:6px}
 .gate label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}
 .gate input{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}
 .gate input:focus{outline:2px solid var(--accent);outline-offset:1px}

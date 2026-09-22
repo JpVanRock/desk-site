@@ -11,7 +11,6 @@
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Inter","Segoe UI",sans-serif}
 .top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:24px;padding:12px 24px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
 .brand{display:flex;gap:10px;align-items:center}.brand b{display:block;font-size:15px;letter-spacing:.2px}.brand small{color:var(--muted);font-size:11px;letter-spacing:.6px;text-transform:uppercase}
-.mark{width:22px;height:22px;border-radius:6px;background:conic-gradient(from 210deg,var(--accent),var(--pos),var(--flat),var(--accent))}
 nav{display:flex;gap:4px;flex:1}nav a{color:var(--muted);text-decoration:none;padding:6px 12px;border-radius:8px}nav a:hover{color:var(--text)}nav a.on{color:var(--text);background:var(--panel2)}
 .tools{display:flex;gap:10px;align-items:center}
 button#theme{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;width:32px;height:32px;cursor:pointer}

@@ -27,7 +27,7 @@ jobs:
       - name: Keep only site files
         run: |
           mkdir _site
-          cp -r index.html style.css auth.css app.js config.js vendor .nojekyll _site/
+          cp -r index.html style.css auth.css app.js config.js vendor assets .nojekyll _site/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
