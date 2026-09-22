@@ -62,7 +62,7 @@ async function q(query) { const { data, error } = await query; if (error) throw 
 function latestBy(rows, keyFn) { const m = new Map(); for (const r of rows) { const k = keyFn(r); const p = m.get(k); if (!p || r.as_of > p.as_of) m.set(k, r); } return m; }
 
 async function load() {
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
@@ -80,6 +80,9 @@ async function load() {
     q(sb.from('source_track_record').select('source,category,n_directional,hit_rate,n_open,last_call_at').order('source')),
     q(sb.from('research_calls').select('id,source,category,agent,called_at,asset_class_id,direction,confidence,thesis,review_at,scored_at,actual_return,hit').order('called_at', { ascending: false }).limit(200)),
     q(sb.from('inbox_routing_log').select('file,source,received_at,routed_to,reason,status,processed_at').order('processed_at', { ascending: false }).limit(200)),
+    q(sb.from('holding_contributions').select('strategy_id,security_id,as_of,weight,risk_share,risk_ratio,corr_to_rest,max_corr,closest_peer_id,verdict,rationale').order('as_of', { ascending: false })),
+    q(sb.from('stress_scenarios').select('id,slug,name,description,shocks').order('sort_order')),
+    q(sb.from('strategy_stress_results').select('strategy_id,scenario_id,as_of,factor_score,coverage,n_windows,mean_return,worst_return,best_return,replay_coverage,windows').order('as_of', { ascending: false })),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -120,7 +123,16 @@ async function load() {
   const macroRun = runs.find(r => r.job === 'daily_macro') || null;
   const classSlugById = Object.fromEntries(classes.map(c => [c.id, c.slug]));
   const callsOut = calls.map(c => ({ ...c, classSlug: classSlugById[c.asset_class_id] || null }));
-  return { models, factors, matrix, classNames, run, macroRun, outputs, markets, macroByFactor, viewsByClass, roadmap, sources, calls: callsOut, routingLog };
+
+  // Both allocation tests are written with an as_of, and a re-run makes a new dated set rather
+  // than overwriting. Keep only the newest set so a stale run can't sit alongside a fresh one.
+  const newest = rows => { const d = rows.map(r => r.as_of).sort().pop(); return rows.filter(r => r.as_of === d); };
+  const contribByStrategy = {}, stressByStrategy = {};
+  for (const c of newest(contribs)) (contribByStrategy[c.strategy_id] ||= []).push({ ...c, ticker: sec[c.security_id]?.ticker || '?', peer: sec[c.closest_peer_id]?.ticker || null });
+  for (const s of newest(stress)) (stressByStrategy[s.strategy_id] ||= []).push(s);
+
+  return { models, factors, matrix, classNames, run, macroRun, outputs, markets, macroByFactor, viewsByClass, roadmap, sources, calls: callsOut, routingLog,
+    contribByStrategy, stressByStrategy, scenarios };
 }
 
 // ---------- Views ----------
@@ -203,6 +215,63 @@ function markets() {
   </tbody></table><p class="note">RSI14 uses Wilder's smoothing; below 30 (green) is oversold, above 70 (red) is overbought by the standard convention, not a signal to act on alone. Trend: bullish = close &gt; SMA50 &gt; SMA200, bearish = the reverse, else neutral. RS vs class = 63-day return minus the median of same-asset-class peers. SMA200 and RS need ~10 months of history — newer listings show "–". This is price action and trend, not a rating: the desk decided the underlying trend-anchored rating hasn't earned a role in decisions yet (see ROADMAP.md / the Status tab). Parameters: desk-workspace/stan/technicals-parameters.md.</p></div>`;
 }
 
+const VERDICT = {
+  earns_place: { label: 'earns place', cls: 'flat' },
+  diversifier: { label: 'diversifier', cls: 'long' },
+  review:      { label: 'review',      cls: 'short' },
+  redundant:   { label: 'redundant',   cls: 'short' },
+  no_data:     { label: 'no data',     cls: '' },
+};
+
+// "If inflation rises and liquidity becomes scarce, how does your allocation remain resilient?"
+// Two readings, deliberately shown side by side because they can disagree and the disagreement
+// is informative: the score is the framework's own forward-looking lens, the replay is what
+// today's weights actually did in the historical stretches that matched the scenario.
+function stressCard(m) {
+  const rows = D.stressByStrategy?.[m.id] || [];
+  if (!rows.length) return '';
+  const byId = Object.fromEntries((D.scenarios || []).map(s => [s.id, s]));
+  const pctv = x => x === null || x === undefined ? '<span style="color:var(--muted)">–</span>'
+    : `<span style="color:${x >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(x >= 0 ? '+' : '') + (x * 100).toFixed(1)}%</span>`;
+  return `<div class="card" style="margin-bottom:14px"><h2>Stress scenarios</h2>
+   <table><thead><tr><th>Scenario</th><th class="num">Exposure score</th><th class="num">Replay mean</th><th class="num">Worst</th><th class="num">Windows</th></tr></thead><tbody>
+   ${rows.slice().sort((a, b) => (byId[a.scenario_id]?.name || '').localeCompare(byId[b.scenario_id]?.name || '')).map(r => {
+     const sc = byId[r.scenario_id] || {};
+     const s = r.factor_score === null ? null : +r.factor_score;
+     return `<tr><td><b>${esc(sc.name || '—')}</b><br><small style="color:var(--muted)">${esc(sc.description || '')}</small></td>
+      <td class="num"><span class="cell" style="${heat(s === null ? 0 : Math.max(-1, Math.min(1, s)))}">${s === null ? '–' : sgn(s)}</span></td>
+      <td class="num">${pctv(r.mean_return === null ? null : +r.mean_return)}</td>
+      <td class="num">${pctv(r.worst_return === null ? null : +r.worst_return)}</td>
+      <td class="num">${r.n_windows || 0}${r.replay_coverage ? `<br><small style="color:var(--muted)">≥${(+r.replay_coverage * 100).toFixed(0)}% covered</small>` : ''}</td></tr>`;
+   }).join('')}
+   </tbody></table>
+   <p class="note">The exposure score is this model's net growth/inflation/liquidity exposure read against the scenario's shock. It is a <b>directional score, not a predicted return</b> — negative means the model is positioned against the scenario. The replay is measured in real returns: what today's weights would have done across the historical stretches where that macro rule actually held, found from the data rather than chosen by hand. Windows covering under 60% of today's holdings are excluded, which is why the 2020 growth shock drops out — most of this book did not exist yet. A small number of recent windows is a hint, not a distribution, and the two columns can disagree.</p></div>`;
+}
+
+function earnsPlaceCard(m) {
+  const rows = D.contribByStrategy?.[m.id] || [];
+  if (!rows.length) return '';
+  const measured = rows.filter(r => r.risk_share !== null).sort((a, b) => +b.risk_share - +a.risk_share);
+  if (!measured.length) return '';
+  const top3 = measured.slice(0, 3);
+  const top3Risk = top3.reduce((s, r) => s + +r.risk_share, 0), top3Wt = top3.reduce((s, r) => s + +r.weight, 0);
+  return `<div class="card" style="margin-bottom:14px"><h2>Does every position earn its place?</h2>
+   <p class="sub" style="margin-top:-4px">Top 3 by risk — ${top3.map(r => esc(r.ticker)).join(', ')} — carry <b>${(top3Risk * 100).toFixed(0)}%</b> of this model's risk on <b>${(top3Wt * 100).toFixed(0)}%</b> of its weight.</p>
+   <table><thead><tr><th>Holding</th><th class="num">Weight</th><th class="num">Risk share</th><th class="num">Ratio</th><th class="num">Corr to rest</th><th>Verdict</th></tr></thead><tbody>
+   ${measured.map(r => {
+     const v = VERDICT[r.verdict] || VERDICT.no_data;
+     return `<tr title="${esc(r.rationale || '')}"><td><b>${esc(r.ticker)}</b></td>
+      <td class="num">${(+r.weight * 100).toFixed(1)}%</td>
+      <td class="num">${(+r.risk_share * 100).toFixed(1)}%</td>
+      <td class="num" style="color:${+r.risk_ratio >= 2 ? 'var(--neg)' : +r.risk_ratio <= 0.85 ? 'var(--pos)' : 'var(--text)'}">${(+r.risk_ratio).toFixed(2)}×</td>
+      <td class="num">${r.corr_to_rest === null ? '–' : (+r.corr_to_rest).toFixed(2)}</td>
+      <td><span class="chip ${v.cls}">${v.label}</span></td></tr>`;
+   }).join('')}
+   ${rows.filter(r => r.risk_share === null).map(r => `<tr><td><b>${esc(r.ticker)}</b></td><td class="num">${(+r.weight * 100).toFixed(1)}%</td><td class="num" colspan="3" style="color:var(--muted)">not enough price history</td><td><span class="chip">no data</span></td></tr>`).join('')}
+   </tbody></table>
+   <p class="note">Risk share is each holding's marginal contribution to the model's volatility; the shares sum to 100%, so they compare directly against weight. Ratio above 1 means a position consumes more of the model's risk than its size suggests — which is not a criticism (equity risk in a growth model <i>should</i> outrun its weight), it is the prompt to say out loud what the position is for. "Review" marks 2× or more. Hover a row for the full reasoning. Measured on volatility and correlation only: it says nothing about drawdown shape, tail behaviour, liquidity or tax, any of which can be the real reason a holding is there.</p></div>`;
+}
+
 function openModel(id) {
   const m = D.models.find(x => x.id === id); if (!m) return;
   const stack = m.byClass.map(([k, v]) => `<i title="${esc(D.classNames[k])} ${pct(v)}" style="width:${(v / m.total) * 100}%;background:${CLASS_COLORS[k] || '#888'}"></i>`).join('');
@@ -212,6 +281,8 @@ function openModel(id) {
    <p class="sub">Last allocation ${esc(m.last || '—')} · weights sum to ${pct(m.total)}</p>
    <div class="kpis">${D.factors.map((f, i) => `<div class="card kpi"><span class="eyebrow">${esc(fname(f))}</span><b style="color:${m.net[i] >= 0 ? 'var(--pos)' : 'var(--neg)'}">${sgn(m.net[i])}</b><small>net exposure</small></div>`).join('')}</div>
    <div class="card" style="margin-bottom:14px"><h2>By asset class</h2><div class="stack">${stack}</div><div class="legend">${legend}</div></div>
+   ${stressCard(m)}
+   ${earnsPlaceCard(m)}
    <div class="card"><h2>Holdings <span class="chip draft">draft loadings</span></h2><table><thead><tr><th>Holding</th><th>Class</th><th class="num">Weight</th>${D.factors.map(f => `<th class="num">${esc(f.slug[0].toUpperCase())}</th>`).join('')}</tr></thead><tbody>
    ${m.holdings.map(h => `<tr><td><b>${esc(h.ticker)}</b><br><small style="color:var(--muted)">${esc(h.name)}</small></td><td>${esc(D.classNames[h.cls] || h.cls)}</td><td class="num">${pct(h.weight)}</td>
     ${h.loading ? h.loading.map(v => v === null ? '<td class="num" style="color:var(--muted)">–</td>' : `<td class="num" style="color:${v > 0 ? 'var(--pos)' : v < 0 ? 'var(--neg)' : 'var(--muted)'}">${sgn(v)}</td>`).join('') : `<td class="num" colspan="${D.factors.length}" style="color:var(--muted)">not scored</td>`}</tr>`).join('')}
