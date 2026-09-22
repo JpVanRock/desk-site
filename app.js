@@ -79,7 +79,7 @@ async function load() {
     q(sb.from('roadmap_items').select('area,item,status,detail,sort_order').order('sort_order')),
     q(sb.from('source_track_record').select('source,category,n_directional,hit_rate,n_open,last_call_at').order('source')),
     q(sb.from('research_calls').select('id,source,category,agent,called_at,asset_class_id,direction,confidence,thesis,review_at,scored_at,actual_return,hit').order('called_at', { ascending: false }).limit(200)),
-    q(sb.from('inbox_routing_log').select('file,source,received_at,routed_to,reason,status,processed_at').order('processed_at', { ascending: false }).limit(200)),
+    q(sb.from('inbox_routing_log').select('file,source,received_at,routed_to,lens,reason,status,processed_at').order('processed_at', { ascending: false }).limit(200)),
     q(sb.from('holding_contributions').select('strategy_id,security_id,as_of,weight,risk_share,risk_ratio,corr_to_rest,max_corr,closest_peer_id,verdict,rationale').order('as_of', { ascending: false })),
     q(sb.from('stress_scenarios').select('id,slug,name,description,shocks').order('sort_order')),
     q(sb.from('strategy_stress_results').select('strategy_id,scenario_id,as_of,factor_score,coverage,n_windows,mean_return,worst_return,best_return,replay_coverage,windows').order('as_of', { ascending: false })),
@@ -694,6 +694,14 @@ function agents() {
 function inbox() {
   const log = D.routingLog || [];
   const statusChip = s => { const cls = s === 'routed' ? 'long' : s === 'held' ? 'held' : 'flat'; return `<span class="chip ${cls}">${esc((s || '').replace(/_/g, ' '))}</span>`; };
+  // Weights are the framework's, shown on the chip so it's obvious why the lens matters: a
+  // Predictive call carries six times a Positioning one in the master Speed Limit.
+  const LENS_W = { predictive: '60%', descriptive: '20%', sentiment: '10%', positioning: '10%' };
+  const lensChip = l => l && l !== 'unclassified'
+    ? `<span class="chip" title="${esc(LENS_W[l] || '')} of the master Speed Limit">${esc(l)}</span>`
+    : '<span class="chip" title="Source not yet placed in a lens bucket — add it to _source-policy.md">unclassified</span>';
+  const byLens = {};
+  for (const r of log) byLens[r.lens || 'unclassified'] = (byLens[r.lens || 'unclassified'] || 0) + 1;
   const held = log.filter(r => r.status === 'held').length;
   const byAgent = {};
   for (const r of log) if (r.routed_to) byAgent[r.routed_to] = (byAgent[r.routed_to] || 0) + 1;
@@ -702,11 +710,12 @@ function inbox() {
    <div class="card kpi"><span class="eyebrow">Items</span><b>${log.length}</b><small>processed</small></div>
    <div class="card kpi"><span class="eyebrow">Routed to</span><b style="font-size:16px">${Object.entries(byAgent).map(([a, n]) => `${esc(a)} ${n}`).join(' · ') || '—'}</b><small></small></div>
    <div class="card kpi"><span class="eyebrow">Held</span><b class="${held ? 'stale' : ''}">${held}</b><small>not read by any agent</small></div>
+   <div class="card kpi"><span class="eyebrow">By lens</span><b style="font-size:15px">${Object.entries(byLens).sort((a, b) => b[1] - a[1]).map(([l, n]) => `${esc(l)} ${n}`).join(' · ') || '—'}</b><small>research lens</small></div>
   </div>
-  <div class="card">${log.length ? `<table><thead><tr><th>Item</th><th>Source</th><th>Received</th><th>Routed to</th><th>Reason</th><th>Status</th></tr></thead><tbody>
+  <div class="card">${log.length ? `<table><thead><tr><th>Item</th><th>Source</th><th>Received</th><th>Routed to</th><th>Lens</th><th>Reason</th><th>Status</th></tr></thead><tbody>
    ${log.map(r => `<tr><td>${esc((r.file || '').split('/').pop())}</td><td>${esc(r.source || '—')}</td><td>${esc(r.received_at || '—')}</td>
-    <td>${esc(r.routed_to || '—')}</td><td style="max-width:320px;color:var(--muted)">${esc(r.reason || '')}</td><td>${statusChip(r.status)}</td></tr>`).join('')}
-   </tbody></table><p class="note">Held items are deliberately not read by any agent — a publisher's terms restrict it. Source policy lives in desk-workspace/inbox/_source-policy.md; that file, not this table, is what the processor actually enforces.</p>`
+    <td>${esc(r.routed_to || '—')}</td><td>${lensChip(r.lens)}</td><td style="max-width:320px;color:var(--muted)">${esc(r.reason || '')}</td><td>${statusChip(r.status)}</td></tr>`).join('')}
+   </tbody></table><p class="note">Held items are deliberately not read by any agent — a publisher's terms restrict it. Source policy lives in desk-workspace/inbox/_source-policy.md; that file, not this table, is what the processor actually enforces. The lens is the framework's research bucket, taken from the source rather than the subject matter, and it sets how much the item weighs in the master Speed Limit (Predictive 60%, Descriptive 20%, Sentiment 10%, Positioning 10%). It is not a judgment of quality — how often a source is right is tracked separately on the Sources tab.</p>`
    : '<div class="empty">Nothing processed yet. Run the inbox-processor skill, then jobs/sync-routing-log.mjs.</div>'}</div>`;
 }
 
