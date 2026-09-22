@@ -62,7 +62,7 @@ async function q(query) { const { data, error } = await query; if (error) throw 
 function latestBy(rows, keyFn) { const m = new Map(); for (const r of rows) { const k = keyFn(r); const p = m.get(k); if (!p || r.as_of > p.as_of) m.set(k, r); } return m; }
 
 async function load() {
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
@@ -73,9 +73,10 @@ async function load() {
     q(sb.from('data_runs').select('job,status,latest_price_date,started_at').order('started_at', { ascending: false }).limit(10)),
     q(sb.from('agent_outputs').select('agent,kind,title,body_md,as_of').order('as_of', { ascending: false }).limit(50)),
     q(sb.from('current_prices').select('security_id,as_of,close,prev_close,day_change_pct,source')),
-    q(sb.from('current_technicals').select('security_id,as_of,sma50,sma200,rsi14,vol20_ann,trend')),
+    q(sb.from('current_technical_snapshot').select('security_id,as_of,close,sma50,sma200,rsi14,macd_hist,hv20_ann,trend_state,rs_vs_class_63,support,resistance')),
     q(sb.from('current_macro_readings').select('fred_code,name,factor_id,unit,obs_date,value')),
     q(sb.from('asset_class_views').select('asset_class_id,as_of,stance,confidence,thesis,role_in_profile,change_my_mind,status,author').order('as_of', { ascending: false })),
+    q(sb.from('roadmap_items').select('area,item,status,detail,sort_order').order('sort_order')),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -114,7 +115,7 @@ async function load() {
 
   const run = runs.find(r => r.job === 'daily_prices') || null;
   const macroRun = runs.find(r => r.job === 'daily_macro') || null;
-  return { models, factors, matrix, classNames, run, macroRun, outputs, markets, macroByFactor, viewsByClass };
+  return { models, factors, matrix, classNames, run, macroRun, outputs, markets, macroByFactor, viewsByClass, roadmap };
 }
 
 // ---------- Views ----------
@@ -128,7 +129,7 @@ function route() {
   const [page, arg] = (location.hash || '#overview').slice(1).split('/');
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
-  const pages = { overview, models, markets, views: viewsPage, agents, inbox };
+  const pages = { overview, models, markets, views: viewsPage, agents, inbox, status };
   $('#app').innerHTML = (pages[page] || overview)();
   if (page === 'models' && arg) openModel(arg);
 }
@@ -177,16 +178,18 @@ function markets() {
    <div class="card kpi"><span class="eyebrow">Priced</span><b>${withPrice}/${rows.length}</b><small>have a latest close</small></div>
    <div class="card kpi"><span class="eyebrow">As of</span><b style="font-size:20px">${esc(D.run ? D.run.latest_price_date || '—' : '—')}</b><small>last daily job: ${esc(D.run ? D.run.status : 'no run yet')}</small></div>
   </div>
-  <div class="card"><table><thead><tr><th>Ticker</th><th>Class</th><th class="num">Close</th><th class="num">1-day</th><th class="num">RSI14</th><th>Trend</th><th class="num">vs SMA50</th><th class="num">vs SMA200</th></tr></thead><tbody>
+  <div class="card"><table><thead><tr><th>Ticker</th><th>Class</th><th class="num">Close</th><th class="num">1-day</th><th class="num">RSI14</th><th>Trend</th><th class="num">vs SMA50</th><th class="num">vs SMA200</th><th class="num">RS vs class(63d)</th></tr></thead><tbody>
   ${rows.map(r => { const t = r.tech; const vs = (c, sma) => sma ? `<span style="color:${c > sma ? 'var(--pos)' : 'var(--neg)'}">${c > sma ? '+' : ''}${(((c - sma) / sma) * 100).toFixed(1)}%</span>` : '–';
+    const rs = t?.rs_vs_class_63; const rsStr = rs === null || rs === undefined ? '–' : `<span style="color:${rs >= 0 ? 'var(--pos)' : 'var(--neg)'}">${rs >= 0 ? '+' : ''}${(rs * 100).toFixed(1)}%</span>`;
     return `<tr><td><b>${esc(r.ticker)}</b><br><small style="color:var(--muted)">${esc(r.name)}</small></td><td>${esc(D.classNames[r.cls] || r.cls)}</td>
      <td class="num">${r.price ? '$' + Number(r.price.close).toFixed(2) : '<span style="color:var(--muted)">no price</span>'}</td>
      <td class="num">${r.price ? chg(r.price.day_change_pct) : ''}</td>
      <td class="num" style="color:${rsiColor(t?.rsi14)}">${t?.rsi14 != null ? t.rsi14.toFixed(1) : '–'}</td>
-     <td>${trendChip(t?.trend)}</td>
+     <td>${trendChip(t?.trend_state)}</td>
      <td class="num">${t ? vs(t.close ?? r.price?.close, t.sma50) : '–'}</td>
-     <td class="num">${t ? vs(t.close ?? r.price?.close, t.sma200) : '–'}</td></tr>`; }).join('')}
-  </tbody></table><p class="note">RSI14 uses Wilder's smoothing; below 30 (green) is oversold, above 70 (red) is overbought by the standard convention, not a signal to act on alone. Trend: bullish = close &gt; SMA50 &gt; SMA200, bearish = the reverse, else neutral. SMA200 needs ~10 months of history — newer listings show "–". Parameters: desk-workspace/stan/technicals-parameters.md.</p></div>`;
+     <td class="num">${t ? vs(t.close ?? r.price?.close, t.sma200) : '–'}</td>
+     <td class="num">${rsStr}</td></tr>`; }).join('')}
+  </tbody></table><p class="note">RSI14 uses Wilder's smoothing; below 30 (green) is oversold, above 70 (red) is overbought by the standard convention, not a signal to act on alone. Trend: bullish = close &gt; SMA50 &gt; SMA200, bearish = the reverse, else neutral. RS vs class = 63-day return minus the median of same-asset-class peers. SMA200 and RS need ~10 months of history — newer listings show "–". This is price action and trend, not a rating: the desk decided the underlying trend-anchored rating hasn't earned a role in decisions yet (see ROADMAP.md / the Status tab). Parameters: desk-workspace/stan/technicals-parameters.md.</p></div>`;
 }
 
 function openModel(id) {
@@ -249,6 +252,28 @@ function agents() {
 function inbox() {
   return `<span class="eyebrow">Allocation model</span><h1>Inbox</h1><p class="sub">Clipped and dropped items, where they were routed, and why.</p>
   <div class="empty">The routing log will appear here once the inbox processor syncs to the database.</div>`;
+}
+
+function status() {
+  const items = D.roadmap || [];
+  const byArea = new Map();
+  for (const it of items) { if (!byArea.has(it.area)) byArea.set(it.area, []); byArea.get(it.area).push(it); }
+  const doneCount = items.filter(i => i.status === 'done').length;
+  const dot = s => ({ done: 'var(--pos)', in_progress: 'var(--flat)', deferred: 'var(--muted)', not_started: 'var(--neg)' }[s] || 'var(--muted)');
+  const label = s => ({ done: 'Done', in_progress: 'In progress', deferred: 'Deferred', not_started: 'Not started' }[s] || s);
+  return `<span class="eyebrow">Allocation model</span><h1>Status</h1><p class="sub">What's built, in progress, or not started — kept in sync with the project roadmap.</p>
+  <div class="kpis">
+   <div class="card kpi"><span class="eyebrow">Items</span><b>${items.length}</b><small>tracked</small></div>
+   <div class="card kpi"><span class="eyebrow">Done</span><b style="color:var(--pos)">${doneCount}</b><small>of ${items.length}</small></div>
+   <div class="card kpi"><span class="eyebrow">Areas</span><b>${byArea.size}</b><small>tracked</small></div>
+  </div>
+  ${items.length ? [...byArea.entries()].map(([area, list]) => `
+   <div class="card" style="margin-bottom:10px"><h2>${esc(area)}</h2>
+    ${list.map(it => `<div class="alert"><span class="dot" style="background:${dot(it.status)}"></span><div>
+      <b>${esc(it.item)}</b> <span class="chip" style="color:${dot(it.status)};border-color:${dot(it.status)}">${label(it.status)}</span>
+      ${it.detail ? `<div class="note" style="margin-top:2px">${esc(it.detail)}</div>` : ''}
+    </div></div>`).join('')}
+   </div>`).join('') : '<div class="empty">No roadmap items synced yet.</div>'}`;
 }
 
 // ---------- Wiring ----------
