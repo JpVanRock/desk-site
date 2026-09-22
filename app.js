@@ -103,7 +103,7 @@ async function load() {
   const matrix = classes.map(c => ({ slug: c.slug, name: c.name, v: factors.map(f => (cl.get(c.id + '|' + f.id) || {}).loading ?? null) }));
   const priceBySec = Object.fromEntries(prices.map(p => [p.security_id, p]));
   const techBySec = Object.fromEntries(technicals.map(t => [t.security_id, t]));
-  const markets = secs.map(s => ({ ticker: s.ticker, name: s.name, role: s.role, cls: cls[s.asset_class_id]?.slug || 'unclassified', price: priceBySec[s.id] || null, tech: techBySec[s.id] || null }))
+  const markets = secs.map(s => ({ id: s.id, ticker: s.ticker, name: s.name, role: s.role, cls: cls[s.asset_class_id]?.slug || 'unclassified', price: priceBySec[s.id] || null, tech: techBySec[s.id] || null }))
     .sort((a, b) => a.ticker.localeCompare(b.ticker));
 
   const factorSlug = Object.fromEntries(factors.map(f => [f.id, f.slug]));
@@ -132,6 +132,7 @@ function route() {
   const pages = { overview, models, markets, views: viewsPage, agents, inbox, status };
   $('#app').innerHTML = (pages[page] || overview)();
   if (page === 'models' && arg) openModel(arg);
+  if (page === 'markets' && arg) openChart(arg);
 }
 
 function overview() {
@@ -172,7 +173,7 @@ function markets() {
   const trendChip = t => t ? `<span class="chip ${t === 'bullish' ? 'long' : t === 'bearish' ? 'short' : 'flat'}">${esc(t)}</span>` : '<span style="color:var(--muted)">–</span>';
   const rsiColor = v => v === null || v === undefined ? 'var(--muted)' : v >= 70 ? 'var(--neg)' : v <= 30 ? 'var(--pos)' : 'var(--text)';
   return `<span class="eyebrow">Allocation model</span><h1>Markets</h1>
-  <p class="sub">Latest close and standard technicals for every security in the universe, from the daily job.</p>
+  <p class="sub">Latest close and standard technicals for every security in the universe, from the daily job. Click a row for its chart.</p>
   <div class="kpis">
    <div class="card kpi"><span class="eyebrow">Universe</span><b>${rows.length}</b><small>tracked securities</small></div>
    <div class="card kpi"><span class="eyebrow">Priced</span><b>${withPrice}/${rows.length}</b><small>have a latest close</small></div>
@@ -181,7 +182,7 @@ function markets() {
   <div class="card"><table><thead><tr><th>Ticker</th><th>Class</th><th class="num">Close</th><th class="num">1-day</th><th class="num">RSI14</th><th>Trend</th><th class="num">vs SMA50</th><th class="num">vs SMA200</th><th class="num">RS vs class(63d)</th></tr></thead><tbody>
   ${rows.map(r => { const t = r.tech; const vs = (c, sma) => sma ? `<span style="color:${c > sma ? 'var(--pos)' : 'var(--neg)'}">${c > sma ? '+' : ''}${(((c - sma) / sma) * 100).toFixed(1)}%</span>` : '–';
     const rs = t?.rs_vs_class_63; const rsStr = rs === null || rs === undefined ? '–' : `<span style="color:${rs >= 0 ? 'var(--pos)' : 'var(--neg)'}">${rs >= 0 ? '+' : ''}${(rs * 100).toFixed(1)}%</span>`;
-    return `<tr><td><b>${esc(r.ticker)}</b><br><small style="color:var(--muted)">${esc(r.name)}</small></td><td>${esc(D.classNames[r.cls] || r.cls)}</td>
+    return `<tr class="click" data-go="#markets/${esc(r.id)}"><td><b>${esc(r.ticker)}</b><br><small style="color:var(--muted)">${esc(r.name)}</small></td><td>${esc(D.classNames[r.cls] || r.cls)}</td>
      <td class="num">${r.price ? '$' + Number(r.price.close).toFixed(2) : '<span style="color:var(--muted)">no price</span>'}</td>
      <td class="num">${r.price ? chg(r.price.day_change_pct) : ''}</td>
      <td class="num" style="color:${rsiColor(t?.rsi14)}">${t?.rsi14 != null ? t.rsi14.toFixed(1) : '–'}</td>
@@ -208,6 +209,85 @@ function openModel(id) {
   $('#drawer').hidden = false; $('#scrim').hidden = false;
 }
 function closeDrawer() { $('#drawer').hidden = true; $('#scrim').hidden = true; }
+
+// ---------- Chart (hand-rolled SVG: price + SMA overlays, RSI panel) ----------
+function linePath(vals, x, y) {
+  let d = '', started = false;
+  vals.forEach((v, i) => {
+    if (v === null || v === undefined) { started = false; return; }
+    d += (started ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(v).toFixed(1) + ' ';
+    started = true;
+  });
+  return d.trim();
+}
+function priceChartSvg(dates, series, W, H) {
+  const pad = { l: 44, r: 10, t: 8, b: 14 };
+  const all = series.flatMap(s => s.vals).filter(v => v !== null && v !== undefined);
+  if (!all.length) return '<div class="empty">No history to chart.</div>';
+  const min = Math.min(...all), max = Math.max(...all), span = (max - min) || 1;
+  const x = i => pad.l + (i / Math.max(1, dates.length - 1)) * (W - pad.l - pad.r);
+  const y = v => H - pad.b - ((v - min) / span) * (H - pad.t - pad.b);
+  const gridY = [0, 0.25, 0.5, 0.75, 1].map(f => min + f * span);
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block">
+    ${gridY.map(v => `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--line)" stroke-width="1"/>
+      <text x="2" y="${(y(v) + 3).toFixed(1)}" font-size="9" fill="var(--muted)">${v.toFixed(v < 10 ? 3 : 2)}</text>`).join('')}
+    ${series.map(s => `<path d="${linePath(s.vals, x, y)}" fill="none" stroke="${s.color}" stroke-width="${s.width || 1.5}" ${s.dash ? `stroke-dasharray="${s.dash}"` : ''}/>`).join('')}
+    <text x="${pad.l}" y="${H - 2}" font-size="9" fill="var(--muted)">${esc(dates[0] || '')}</text>
+    <text x="${W - pad.r}" y="${H - 2}" font-size="9" fill="var(--muted)" text-anchor="end">${esc(dates.at(-1) || '')}</text>
+  </svg>`;
+}
+function rsiChartSvg(dates, rsi, W, H) {
+  const pad = { l: 44, r: 10, t: 6, b: 4 };
+  const x = i => pad.l + (i / Math.max(1, dates.length - 1)) * (W - pad.l - pad.r);
+  const y = v => H - pad.b - (v / 100) * (H - pad.t - pad.b);
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block">
+    <line x1="${pad.l}" x2="${W - pad.r}" y1="${y(70).toFixed(1)}" y2="${y(70).toFixed(1)}" stroke="var(--neg)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="${pad.l}" x2="${W - pad.r}" y1="${y(30).toFixed(1)}" y2="${y(30).toFixed(1)}" stroke="var(--pos)" stroke-width="1" stroke-dasharray="3,3"/>
+    <text x="2" y="${(y(70) + 3).toFixed(1)}" font-size="9" fill="var(--muted)">70</text>
+    <text x="2" y="${(y(30) + 3).toFixed(1)}" font-size="9" fill="var(--muted)">30</text>
+    <path d="${linePath(rsi, x, y)}" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+  </svg>`;
+}
+
+async function openChart(securityId) {
+  const row = D.markets.find(m => m.id === securityId); if (!row) return;
+  $('#drawer').innerHTML = `<button class="close" data-go="#markets">Close</button>
+   <span class="eyebrow">${esc(D.classNames[row.cls] || row.cls)}</span><h1>${esc(row.ticker)}</h1>
+   <p class="sub">${esc(row.name)}</p><div class="empty">Loading chart…</div>`;
+  $('#drawer').hidden = false; $('#scrim').hidden = false;
+
+  let hist;
+  try {
+    hist = await q(sb.from('technical_snapshots').select('as_of,close,sma50,sma200,rsi14')
+      .eq('security_id', securityId).order('as_of', { ascending: false }).limit(300));
+    hist.reverse();
+  } catch (ex) {
+    $('#drawer').querySelector('.empty').textContent = `Could not load history: ${ex.message}`;
+    return;
+  }
+  if (!hist.length) { $('#drawer').querySelector('.empty').textContent = 'No technical history for this security yet.'; return; }
+
+  const dates = hist.map(h => h.as_of);
+  const t = row.tech;
+  $('#drawer').innerHTML = `<button class="close" data-go="#markets">Close</button>
+   <span class="eyebrow">${esc(D.classNames[row.cls] || row.cls)}</span><h1>${esc(row.ticker)}</h1>
+   <p class="sub">${esc(row.name)} · ${dates.length} trading days shown, through ${esc(dates.at(-1))}</p>
+   <div class="kpis">
+    <div class="card kpi"><span class="eyebrow">Close</span><b>${row.price ? '$' + Number(row.price.close).toFixed(2) : '—'}</b><small>${row.price ? esc(row.price.as_of) : ''}</small></div>
+    <div class="card kpi"><span class="eyebrow">RSI14</span><b style="color:${t?.rsi14 >= 70 ? 'var(--neg)' : t?.rsi14 <= 30 ? 'var(--pos)' : 'var(--text)'}">${t?.rsi14 != null ? t.rsi14.toFixed(1) : '—'}</b><small>Wilder's</small></div>
+    <div class="card kpi"><span class="eyebrow">Trend</span><b style="font-size:16px">${trendChip(t?.trend_state)}</b><small>close vs SMA50/200</small></div>
+   </div>
+   <div class="card" style="margin-bottom:10px"><h2>Price · close, SMA50, SMA200</h2>
+    ${priceChartSvg(dates, [
+      { vals: hist.map(h => h.close), color: 'var(--text)', width: 1.75 },
+      { vals: hist.map(h => h.sma50), color: 'var(--accent)', dash: '4,3' },
+      { vals: hist.map(h => h.sma200), color: 'var(--flat)', dash: '4,3' },
+    ], 560, 220)}
+    <div class="legend" style="margin-top:8px"><span><b style="background:var(--text)"></b>Close</span><span><b style="background:var(--accent)"></b>SMA50</span><span><b style="background:var(--flat)"></b>SMA200</span></div>
+   </div>
+   <div class="card"><h2>RSI14</h2>${rsiChartSvg(dates, hist.map(h => h.rsi14), 560, 90)}
+    <p class="note">Dashed lines at 30 (oversold) and 70 (overbought) by the standard convention, not a signal to act on alone. Descriptive context only — see the Markets note for why no rating is shown.</p></div>`;
+}
 
 function viewsPage() {
   const cell = v => v === null ? ['M', 'UNSCORED'] : v > 0.4 ? ['L', 'LONG'] : v < -0.75 ? ['S', 'SHORT'] : v < -0.25 ? ['M', 'FLAT / SHORT'] : ['F', 'FLAT'];
@@ -278,8 +358,9 @@ function status() {
 
 // ---------- Wiring ----------
 document.addEventListener('click', e => { const t = e.target.closest('[data-go]'); if (t) location.hash = t.dataset.go; });
-$('#scrim').addEventListener('click', () => { location.hash = '#models'; });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#drawer').hidden) location.hash = '#models'; });
+const closeDrawerHash = () => { location.hash = (location.hash || '#overview').split('/')[0]; };
+$('#scrim').addEventListener('click', closeDrawerHash);
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#drawer').hidden) closeDrawerHash(); });
 $('#theme').addEventListener('click', () => { const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = t; try { localStorage.setItem('theme', t); } catch (e) {} });
 try { const t = localStorage.getItem('theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
 window.addEventListener('hashchange', route);
