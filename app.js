@@ -220,7 +220,13 @@ function openModel(id) {
 }
 function closeDrawer() { $('#drawer').hidden = true; $('#scrim').hidden = true; }
 
-// ---------- Chart (hand-rolled SVG: price + SMA overlays, RSI panel) ----------
+// ---------- Chart (hand-rolled SVG: price, Layer 2 overlays, RSI panel) ----------
+//
+// Everything drawn here is descriptive. The desk's standing position is that none of it drives
+// an allocation call — the source build spec measured TD Sequential, the T/B/R markers and the
+// track line as weak-or-nothing predictors in its own backtests, and they are drawn because the
+// owner reads them, not because we have evidence they work. The risk-range constants are the
+// spec's, calibrated on its universe rather than ours, so those bands are indicative.
 function linePath(vals, x, y) {
   let d = '', started = false;
   vals.forEach((v, i) => {
@@ -230,33 +236,235 @@ function linePath(vals, x, y) {
   });
   return d.trim();
 }
-function priceChartSvg(dates, series, W, H) {
-  const pad = { l: 44, r: 10, t: 8, b: 14 };
-  const all = series.flatMap(s => s.vals).filter(v => v !== null && v !== undefined);
-  if (!all.length) return '<div class="empty">No history to chart.</div>';
-  const min = Math.min(...all), max = Math.max(...all), span = (max - min) || 1;
+// Filled area between two series, for the risk-range bands. Breaks the band wherever either
+// edge is missing, so a warm-up period at the left of the chart doesn't get a bogus fill.
+function bandPath(lo, hi, x, y) {
+  let d = '';
+  let run = [];
+  const flush = () => {
+    if (run.length < 2) { run = []; return; }
+    d += 'M' + run.map(i => `${x(i).toFixed(1)},${y(hi[i]).toFixed(1)}`).join('L');
+    d += 'L' + run.slice().reverse().map(i => `${x(i).toFixed(1)},${y(lo[i]).toFixed(1)}`).join('L') + 'Z ';
+    run = [];
+  };
+  for (let i = 0; i < lo.length; i++) {
+    if (lo[i] == null || hi[i] == null) flush(); else run.push(i);
+  }
+  flush();
+  return d.trim();
+}
+// The track line is one line whose colour changes with track_state, so it has to be drawn as
+// separate paths. Each segment carries the first point of the next one, otherwise the colour
+// changes leave a one-bar gap in the line.
+function stateSegments(vals, states, colors) {
+  const segs = [];
+  let cur = null;
+  for (let i = 0; i < vals.length; i++) {
+    const st = states[i] || 'neutral';
+    if (!cur || cur.state !== st) {
+      if (cur) { cur.vals[i] = vals[i]; segs.push(cur); }
+      cur = { state: st, color: colors[st] || colors.neutral, vals: new Array(vals.length).fill(null) };
+    }
+    cur.vals[i] = vals[i];
+  }
+  if (cur) segs.push(cur);
+  return segs;
+}
+const TRACK_COLORS = { bullish: 'var(--pos)', bearish: 'var(--neg)', neutral: 'var(--muted)' };
+
+// opts: { series, bands, hlines, markers }. A bare array is accepted as shorthand for just
+// series — the exposure and macro charts only ever draw lines, and silently rendering them as
+// "no history" because they passed the older shape is a worse failure than accepting both.
+function priceChartSvg(dates, opts, W, H) {
+  const { series = [], bands = [], hlines = [], markers = [] } = Array.isArray(opts) ? { series: opts } : (opts || {});
+  const pad = { l: 46, r: 46, t: 10, b: 16 };
+  // The scale comes from the plotted series and bands only. Horizontal levels deliberately do
+  // NOT get a vote: a support level well below anything in the window would compress the price
+  // action into a sliver to make room for a line. Levels outside the resulting range are simply
+  // not drawn — they're real, but they belong to a longer window than this chart shows.
+  const scaleVals = [
+    ...series.flatMap(s => s.vals),
+    ...bands.flatMap(b => [...b.lo, ...b.hi]),
+  ].filter(v => v !== null && v !== undefined && Number.isFinite(v));
+  if (!scaleVals.length) return '<div class="empty">No history to chart.</div>';
+  const lo = Math.min(...scaleVals), hi = Math.max(...scaleVals);
+  const padY = (hi - lo) * 0.06 || 1;          // headroom so markers near the extremes stay legible
+  const min = lo - padY, max = hi + padY, span = (max - min) || 1;
+  const drawn = hlines.filter(h => Number.isFinite(h.v) && h.v >= min && h.v <= max);
   const x = i => pad.l + (i / Math.max(1, dates.length - 1)) * (W - pad.l - pad.r);
   const y = v => H - pad.b - ((v - min) / span) * (H - pad.t - pad.b);
+  const dp = max < 10 ? 3 : 2;
   const gridY = [0, 0.25, 0.5, 0.75, 1].map(f => min + f * span);
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block">
+
+  // Markers are placed a fixed fraction of the pane away from the bar so they never sit on it.
+  const off = (H - pad.t - pad.b) * 0.05;
+  const markerSvg = markers.map(m => {
+    const px = x(m.i), py = y(m.v) + (m.place === 'below' ? off + 8 : -off);
+    return `<text x="${px.toFixed(1)}" y="${py.toFixed(1)}" font-size="${m.size || 10}" font-weight="700"
+      fill="${m.color}" text-anchor="middle">${esc(m.text)}</text>`;
+  }).join('');
+
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block" role="img">
     ${gridY.map(v => `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--line)" stroke-width="1"/>
-      <text x="2" y="${(y(v) + 3).toFixed(1)}" font-size="9" fill="var(--muted)">${v.toFixed(v < 10 ? 3 : 2)}</text>`).join('')}
-    ${series.map(s => `<path d="${linePath(s.vals, x, y)}" fill="none" stroke="${s.color}" stroke-width="${s.width || 1.5}" ${s.dash ? `stroke-dasharray="${s.dash}"` : ''}/>`).join('')}
-    <text x="${pad.l}" y="${H - 2}" font-size="9" fill="var(--muted)">${esc(dates[0] || '')}</text>
-    <text x="${W - pad.r}" y="${H - 2}" font-size="9" fill="var(--muted)" text-anchor="end">${esc(dates.at(-1) || '')}</text>
+      <text x="2" y="${(y(v) + 3).toFixed(1)}" font-size="9" fill="var(--muted)">${v.toFixed(dp)}</text>`).join('')}
+    ${bands.map(b => `<path d="${bandPath(b.lo, b.hi, x, y)}" fill="${b.color}" fill-opacity="${b.opacity ?? 0.13}" stroke="none"/>`).join('')}
+    ${drawn.map(h => `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(h.v).toFixed(1)}" y2="${y(h.v).toFixed(1)}"
+      stroke="${h.color}" stroke-width="1" stroke-dasharray="${h.dash || '5,4'}" opacity="0.85"/>
+      <text x="${W - pad.r + 3}" y="${(y(h.v) + 3).toFixed(1)}" font-size="9" fill="${h.color}">${esc(h.label)}</text>`).join('')}
+    ${series.map(s => `<path d="${linePath(s.vals, x, y)}" fill="none" stroke="${s.color}" stroke-width="${s.width || 1.5}"
+      ${s.dash ? `stroke-dasharray="${s.dash}"` : ''} ${s.opacity ? `opacity="${s.opacity}"` : ''} stroke-linejoin="round"/>`).join('')}
+    ${markerSvg}
+    <text x="${pad.l}" y="${H - 3}" font-size="9" fill="var(--muted)">${esc(dates[0] || '')}</text>
+    <text x="${W - pad.r}" y="${H - 3}" font-size="9" fill="var(--muted)" text-anchor="end">${esc(dates.at(-1) || '')}</text>
   </svg>`;
 }
-function rsiChartSvg(dates, rsi, W, H) {
-  const pad = { l: 44, r: 10, t: 6, b: 4 };
+
+// RSI with its 9-day signal line and the Cardwell/Brown regime bands. The regime is what makes
+// the 40 and 60 lines matter: in a bull regime RSI tends to hold 40 on pullbacks and run to 80,
+// in a bear regime it tends to cap near 60 and reach 20. The strip along the bottom shows which
+// regime each bar was in, because the regime changes across the window.
+function rsiChartSvg(dates, rsi, signal, regimes, W, H) {
+  const pad = { l: 46, r: 46, t: 8, b: 14 };
   const x = i => pad.l + (i / Math.max(1, dates.length - 1)) * (W - pad.l - pad.r);
   const y = v => H - pad.b - (v / 100) * (H - pad.t - pad.b);
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block">
-    <line x1="${pad.l}" x2="${W - pad.r}" y1="${y(70).toFixed(1)}" y2="${y(70).toFixed(1)}" stroke="var(--neg)" stroke-width="1" stroke-dasharray="3,3"/>
-    <line x1="${pad.l}" x2="${W - pad.r}" y1="${y(30).toFixed(1)}" y2="${y(30).toFixed(1)}" stroke="var(--pos)" stroke-width="1" stroke-dasharray="3,3"/>
-    <text x="2" y="${(y(70) + 3).toFixed(1)}" font-size="9" fill="var(--muted)">70</text>
-    <text x="2" y="${(y(30) + 3).toFixed(1)}" font-size="9" fill="var(--muted)">30</text>
+  const REG = { bull: 'var(--pos)', bear: 'var(--neg)', neutral: 'var(--muted)' };
+  const step = (W - pad.l - pad.r) / Math.max(1, dates.length - 1);
+  const strip = (regimes || []).map((r, i) => r && r !== 'neutral'
+    ? `<rect x="${x(i).toFixed(1)}" y="${(H - pad.b + 1).toFixed(1)}" width="${Math.max(step, 1).toFixed(2)}" height="4"
+        fill="${REG[r]}" fill-opacity="0.75"/>` : '').join('');
+  const gl = (v, color, dash, op) => `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"
+      stroke="${color}" stroke-width="1" stroke-dasharray="${dash}" opacity="${op}"/>
+    <text x="2" y="${(y(v) + 3).toFixed(1)}" font-size="9" fill="var(--muted)">${v}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="display:block" role="img">
+    ${gl(70, 'var(--neg)', '3,3', 0.9)}${gl(60, 'var(--muted)', '2,4', 0.5)}
+    ${gl(40, 'var(--muted)', '2,4', 0.5)}${gl(30, 'var(--pos)', '3,3', 0.9)}
+    ${strip}
+    <path d="${linePath(signal, x, y)}" fill="none" stroke="var(--flat)" stroke-width="1" opacity="0.9"/>
     <path d="${linePath(rsi, x, y)}" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
   </svg>`;
+}
+
+// Layers are toggleable because all of them at once on 300 bars is unreadable, and because the
+// ones that are off by default (anchored VWAP, the wider trend range) are the ones the owner
+// asked for occasionally rather than always. Defaults are what's useful at a glance.
+const CHART_LAYERS = [
+  { key: 'ma',    label: 'SMA 50 / 200',   on: true },
+  { key: 'track', label: 'Track line',     on: true },
+  { key: 'rr',    label: 'Risk range',     on: true },
+  { key: 'sr',    label: 'Support / res.', on: true },
+  { key: 'td',    label: 'TD Sequential',  on: true },
+  { key: 'tbr',   label: 'T / B / R',      on: true },
+  { key: 'avwap', label: 'Anchored VWAP',  on: false },
+  { key: 'trend', label: 'Trend range',    on: false },
+];
+const TECH_HISTORY_COLS = ['as_of', 'close', 'sma50', 'sma200', 'ema26', 'track_state', 'atr14',
+  'rsi14', 'rsi_signal', 'rsi_regime', 'td_setup_buy', 'td_setup_sell', 'td_countdown_buy',
+  'td_countdown_sell', 'marker', 'avwap_52w_low', 'avwap_ytd', 'rr_trade_low', 'rr_trade_high',
+  'rr_trend_low', 'rr_trend_high', 'support', 'resistance'].join(',');
+
+let chartCtx = null;   // { row, hist, dates, layers:Set } — kept so a toggle can re-render without refetching
+
+// Returns null for anything that isn't a finite number, so a NaN can never reach an SVG
+// coordinate. Postgres numerics arrive as strings, and some columns (support/resistance) are
+// JSON arrays — coercing one of those with + yields NaN, which silently renders y="NaN".
+function num(v) { const n = v === null || v === undefined ? NaN : +v; return Number.isFinite(n) ? n : null; }
+
+function renderChart() {
+  if (!chartCtx) return;
+  const { row, hist, dates, layers } = chartCtx;
+  const t = row.tech, last = hist.at(-1);
+  const close = hist.map(h => num(h.close));
+
+  const series = [];
+  const bands = [];
+  const hlines = [];
+  const markers = [];
+
+  if (layers.has('rr')) {
+    bands.push({ lo: hist.map(h => num(h.rr_trade_low)), hi: hist.map(h => num(h.rr_trade_high)), color: 'var(--accent)', opacity: 0.16 });
+  }
+  if (layers.has('trend')) {
+    bands.push({ lo: hist.map(h => num(h.rr_trend_low)), hi: hist.map(h => num(h.rr_trend_high)), color: 'var(--flat)', opacity: 0.10 });
+  }
+  if (layers.has('ma')) {
+    series.push({ vals: hist.map(h => num(h.sma50)), color: 'var(--accent)', dash: '4,3', width: 1.2, opacity: 0.9 });
+    series.push({ vals: hist.map(h => num(h.sma200)), color: 'var(--flat)', dash: '4,3', width: 1.2, opacity: 0.9 });
+  }
+  if (layers.has('avwap')) {
+    series.push({ vals: hist.map(h => num(h.avwap_52w_low)), color: 'var(--pos)', dash: '1,3', width: 1.2, opacity: 0.85 });
+    series.push({ vals: hist.map(h => num(h.avwap_ytd)), color: 'var(--warn)', dash: '1,3', width: 1.2, opacity: 0.85 });
+  }
+  if (layers.has('track')) {
+    for (const seg of stateSegments(hist.map(h => num(h.ema26)), hist.map(h => h.track_state), TRACK_COLORS)) {
+      series.push({ vals: seg.vals, color: seg.color, width: 2 });
+    }
+  }
+  series.push({ vals: close, color: 'var(--text)', width: 1.75 });
+
+  if (layers.has('sr')) {
+    // support/resistance are arrays of pivots, [{level, touches}]. A level the price has turned
+    // at repeatedly is the one worth seeing, so rank by touches, keep the top few, and draw the
+    // well-tested ones more solidly than the single-touch ones.
+    const pivots = (arr, color, tag) => (Array.isArray(arr) ? arr : [])
+      .map(p => ({ v: num(p && p.level), touches: (p && p.touches) || 1 }))
+      .filter(p => p.v !== null)
+      .sort((a, b) => b.touches - a.touches).slice(0, 3)
+      .forEach(p => hlines.push({ v: p.v, color, label: tag + (p.touches > 1 ? '·' + p.touches : ''), dash: p.touches >= 3 ? '7,3' : '2,4' }));
+    pivots(last.support, 'var(--pos)', 'S');
+    pivots(last.resistance, 'var(--neg)', 'R');
+  }
+  if (layers.has('td')) {
+    hist.forEach((h, i) => {
+      if (h.td_countdown_buy === 13) markers.push({ i, v: close[i], text: '13', color: 'var(--pos)', place: 'below', size: 11 });
+      else if (h.td_setup_buy === 9) markers.push({ i, v: close[i], text: '9', color: 'var(--pos)', place: 'below' });
+      if (h.td_countdown_sell === 13) markers.push({ i, v: close[i], text: '13', color: 'var(--neg)', place: 'above', size: 11 });
+      else if (h.td_setup_sell === 9) markers.push({ i, v: close[i], text: '9', color: 'var(--neg)', place: 'above' });
+    });
+  }
+  if (layers.has('tbr')) {
+    hist.forEach((h, i) => {
+      if (h.marker === 'T') markers.push({ i, v: close[i], text: 'T', color: 'var(--neg)', place: 'above', size: 11 });
+      if (h.marker === 'B') markers.push({ i, v: close[i], text: 'B', color: 'var(--pos)', place: 'below', size: 11 });
+      if (h.marker === 'R') markers.push({ i, v: close[i], text: 'R', color: 'var(--accent)', place: 'below', size: 11 });
+    });
+  }
+
+  const rrChip = (lab, lo, hi, pos, dir) => {
+    if (num(lo) == null || num(hi) == null) return '';
+    const col = dir === 'bullish' ? 'var(--pos)' : dir === 'bearish' ? 'var(--neg)' : 'var(--muted)';
+    return `<div class="card kpi"><span class="eyebrow">${lab} range</span>
+      <b style="font-size:15px">${num(lo).toFixed(2)} – ${num(hi).toFixed(2)}</b>
+      <small style="color:${col}">${pos != null ? (num(pos) * 100).toFixed(0) + '% of range' : ''}${dir ? ' · ' + esc(dir) : ''}</small></div>`;
+  };
+  const regimeLabel = { bull: 'Bull regime', bear: 'Bear regime', neutral: 'No regime' }[last.rsi_regime] || 'No regime';
+  const regimeColor = last.rsi_regime === 'bull' ? 'var(--pos)' : last.rsi_regime === 'bear' ? 'var(--neg)' : 'var(--muted)';
+  const tdNow = last.td_setup_buy ? `Buy setup ${last.td_setup_buy}` : last.td_setup_sell ? `Sell setup ${last.td_setup_sell}`
+    : last.td_countdown_buy ? `Buy countdown ${last.td_countdown_buy}` : last.td_countdown_sell ? `Sell countdown ${last.td_countdown_sell}` : '—';
+
+  $('#drawer').innerHTML = `<button class="close" data-go="#markets">Close</button>
+   <span class="eyebrow">${esc(D.classNames[row.cls] || row.cls)}</span><h1>${esc(row.ticker)}</h1>
+   <p class="sub">${esc(row.name)} · ${dates.length} trading days shown, through ${esc(dates.at(-1))}</p>
+   <div class="kpis">
+    <div class="card kpi"><span class="eyebrow">Close</span><b>${row.price ? '$' + Number(row.price.close).toFixed(2) : '—'}</b><small>${row.price ? esc(row.price.as_of) : ''}</small></div>
+    <div class="card kpi"><span class="eyebrow">RSI14</span><b style="color:${t?.rsi14 >= 70 ? 'var(--neg)' : t?.rsi14 <= 30 ? 'var(--pos)' : 'var(--text)'}">${t?.rsi14 != null ? t.rsi14.toFixed(1) : '—'}</b><small style="color:${regimeColor}">${esc(regimeLabel)}</small></div>
+    <div class="card kpi"><span class="eyebrow">Trend</span><b style="font-size:16px">${trendChip(t?.trend_state)}</b><small>close vs SMA50/200</small></div>
+    <div class="card kpi"><span class="eyebrow">Track line</span><b style="font-size:15px;color:${TRACK_COLORS[last.track_state] || 'var(--muted)'}">${esc(last.track_state || 'neutral')}</b><small>EMA26, 2-close confirm</small></div>
+    <div class="card kpi"><span class="eyebrow">TD Sequential</span><b style="font-size:15px">${esc(tdNow)}</b><small>DeMark count</small></div>
+    ${rrChip('Trade', last.rr_trade_low, last.rr_trade_high, last.rr_trade_pos, last.rr_trade_dir)}
+   </div>
+   <div class="card" style="margin-bottom:10px">
+    <h2>Price</h2>
+    <div class="legend" style="margin:0 0 8px">
+      ${CHART_LAYERS.map(l => `<span class="click layer-toggle" data-layer="${l.key}" style="cursor:pointer;opacity:${layers.has(l.key) ? 1 : 0.4}">
+        <b style="background:${layers.has(l.key) ? 'var(--accent)' : 'var(--muted)'}"></b>${esc(l.label)}</span>`).join('')}
+    </div>
+    ${priceChartSvg(dates, { series, bands, hlines, markers }, 560, 300)}
+    <p class="note">Track line is EMA26, coloured by state — it only flips after two consecutive closes more than 1.5 ATR beyond the line, so it lags deliberately. Shaded band is the trade-duration risk range. 9 and 13 are TD Sequential setup and countdown completions; T, B and R are top, bottom and reversal markers.</p>
+   </div>
+   <div class="card"><h2>RSI14 · signal line and regime</h2>
+    ${rsiChartSvg(dates, hist.map(h => num(h.rsi14)), hist.map(h => num(h.rsi_signal)), hist.map(h => h.rsi_regime), 560, 160)}
+    <div class="legend" style="margin-top:8px"><span><b style="background:var(--accent)"></b>RSI14</span><span><b style="background:var(--flat)"></b>Signal (9)</span><span><b style="background:var(--pos)"></b>Bull regime</span><span><b style="background:var(--neg)"></b>Bear regime</span></div>
+    <p class="note">The strip under the axis marks the regime bar by bar. Regime is the Cardwell/Brown reading over 60 bars: in a bull regime RSI tends to hold 40 on pullbacks and reach 80, in a bear regime to cap near 60 and reach 20 — which is why 30/70 alone can mislead in a strong trend. Descriptive context only; none of this drives an allocation call.</p></div>`;
 }
 
 async function openChart(securityId) {
@@ -268,7 +476,7 @@ async function openChart(securityId) {
 
   let hist;
   try {
-    hist = await q(sb.from('technical_snapshots').select('as_of,close,sma50,sma200,rsi14')
+    hist = await q(sb.from('technical_snapshots').select(TECH_HISTORY_COLS)
       .eq('security_id', securityId).order('as_of', { ascending: false }).limit(300));
     hist.reverse();
   } catch (ex) {
@@ -277,26 +485,11 @@ async function openChart(securityId) {
   }
   if (!hist.length) { $('#drawer').querySelector('.empty').textContent = 'No technical history for this security yet.'; return; }
 
-  const dates = hist.map(h => h.as_of);
-  const t = row.tech;
-  $('#drawer').innerHTML = `<button class="close" data-go="#markets">Close</button>
-   <span class="eyebrow">${esc(D.classNames[row.cls] || row.cls)}</span><h1>${esc(row.ticker)}</h1>
-   <p class="sub">${esc(row.name)} · ${dates.length} trading days shown, through ${esc(dates.at(-1))}</p>
-   <div class="kpis">
-    <div class="card kpi"><span class="eyebrow">Close</span><b>${row.price ? '$' + Number(row.price.close).toFixed(2) : '—'}</b><small>${row.price ? esc(row.price.as_of) : ''}</small></div>
-    <div class="card kpi"><span class="eyebrow">RSI14</span><b style="color:${t?.rsi14 >= 70 ? 'var(--neg)' : t?.rsi14 <= 30 ? 'var(--pos)' : 'var(--text)'}">${t?.rsi14 != null ? t.rsi14.toFixed(1) : '—'}</b><small>Wilder's</small></div>
-    <div class="card kpi"><span class="eyebrow">Trend</span><b style="font-size:16px">${trendChip(t?.trend_state)}</b><small>close vs SMA50/200</small></div>
-   </div>
-   <div class="card" style="margin-bottom:10px"><h2>Price · close, SMA50, SMA200</h2>
-    ${priceChartSvg(dates, [
-      { vals: hist.map(h => h.close), color: 'var(--text)', width: 1.75 },
-      { vals: hist.map(h => h.sma50), color: 'var(--accent)', dash: '4,3' },
-      { vals: hist.map(h => h.sma200), color: 'var(--flat)', dash: '4,3' },
-    ], 560, 220)}
-    <div class="legend" style="margin-top:8px"><span><b style="background:var(--text)"></b>Close</span><span><b style="background:var(--accent)"></b>SMA50</span><span><b style="background:var(--flat)"></b>SMA200</span></div>
-   </div>
-   <div class="card"><h2>RSI14</h2>${rsiChartSvg(dates, hist.map(h => h.rsi14), 560, 90)}
-    <p class="note">Dashed lines at 30 (oversold) and 70 (overbought) by the standard convention, not a signal to act on alone. Descriptive context only — see the Markets note for why no rating is shown.</p></div>`;
+  // Keep the layer choice across securities within a session — flipping between tickers with the
+  // same overlays on is the whole point of having the toggles.
+  const layers = chartCtx ? chartCtx.layers : new Set(CHART_LAYERS.filter(l => l.on).map(l => l.key));
+  chartCtx = { row, hist, dates: hist.map(h => h.as_of), layers };
+  renderChart();
 }
 
 const FACTOR_COLORS = { growth: 'var(--pos)', inflation: 'var(--warn)', liquidity_cost: 'var(--accent)' };
@@ -500,6 +693,13 @@ function status() {
 
 // ---------- Wiring ----------
 document.addEventListener('click', e => { const t = e.target.closest('[data-go]'); if (t) location.hash = t.dataset.go; });
+// Chart layer toggles re-render from the already-fetched history — no refetch, no hash change.
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-layer]'); if (!t || !chartCtx) return;
+  const k = t.dataset.layer;
+  if (chartCtx.layers.has(k)) chartCtx.layers.delete(k); else chartCtx.layers.add(k);
+  renderChart();
+});
 const closeDrawerHash = () => { location.hash = (location.hash || '#overview').split('/')[0]; };
 $('#scrim').addEventListener('click', closeDrawerHash);
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#drawer').hidden) closeDrawerHash(); });
