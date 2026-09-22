@@ -124,6 +124,10 @@ async function load() {
 }
 
 // ---------- Views ----------
+// Shared by markets(), openChart() and indexSection() — must stay at module scope: it was
+// briefly a local inside markets(), which made openChart() throw ReferenceError mid-render
+// and leave the drawer stuck on "Loading chart…".
+const trendChip = t => t ? `<span class="chip ${t === 'bullish' ? 'long' : t === 'bearish' ? 'short' : 'flat'}">${esc(t)}</span>` : '<span style="color:var(--muted)">–</span>';
 function heat(v) { const a = Math.min(Math.abs(v) / 0.6, 1) * 0.75 + 0.08; return `background:rgba(${v >= 0 ? '63,178,127' : '224,96,94'},${a.toFixed(2)})`; }
 const fname = f => (f.slug === 'liquidity_cost' ? 'Cost of liquidity' : f.name);
 const netCells = m => m.net.map(v => `<td class="num"><span class="cell" style="${heat(v)}">${sgn(v)}</span></td>`).join('');
@@ -177,7 +181,6 @@ function markets() {
   const rows = D.markets;
   const withPrice = rows.filter(r => r.price).length;
   const chg = v => v === null || v === undefined ? '<span style="color:var(--muted)">–</span>' : `<span style="color:${v > 0 ? 'var(--pos)' : v < 0 ? 'var(--neg)' : 'var(--muted)'}">${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%</span>`;
-  const trendChip = t => t ? `<span class="chip ${t === 'bullish' ? 'long' : t === 'bearish' ? 'short' : 'flat'}">${esc(t)}</span>` : '<span style="color:var(--muted)">–</span>';
   const rsiColor = v => v === null || v === undefined ? 'var(--muted)' : v >= 70 ? 'var(--neg)' : v <= 30 ? 'var(--pos)' : 'var(--text)';
   return `<span class="eyebrow">Allocation model</span><h1>Markets</h1>
   <p class="sub">Latest close and standard technicals for every security in the universe, from the daily job. Click a row for its chart.</p>
@@ -398,7 +401,6 @@ function viewsPage() {
 function indexSection() {
   const idx = (D.markets || []).filter(m => m.role === 'benchmark');
   if (!idx.length) return '<div class="empty">No index securities in the universe yet.</div>';
-  const trendChip = t => t ? `<span class="chip ${t === 'bullish' ? 'long' : t === 'bearish' ? 'short' : 'flat'}">${esc(t)}</span>` : '<span style="color:var(--muted)">–</span>';
   const rsiColor = v => v === null || v === undefined ? 'var(--muted)' : v >= 70 ? 'var(--neg)' : v <= 30 ? 'var(--pos)' : 'var(--text)';
   const vs = (c, sma) => sma && c ? `<span style="color:${c > sma ? 'var(--pos)' : 'var(--neg)'}">${c > sma ? '+' : ''}${(((c - sma) / sma) * 100).toFixed(1)}%</span>` : '–';
   return `<div class="card"><table><thead><tr><th>Index</th><th class="num">Close</th><th class="num">RSI14</th><th>Trend</th><th class="num">vs SMA50</th><th class="num">vs SMA200</th><th>As of</th></tr></thead><tbody>
