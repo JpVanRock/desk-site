@@ -62,7 +62,7 @@ async function q(query) { const { data, error } = await query; if (error) throw 
 function latestBy(rows, keyFn) { const m = new Map(); for (const r of rows) { const k = keyFn(r); const p = m.get(k); if (!p || r.as_of > p.as_of) m.set(k, r); } return m; }
 
 async function load() {
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
@@ -79,6 +79,7 @@ async function load() {
     q(sb.from('roadmap_items').select('area,item,status,detail,sort_order').order('sort_order')),
     q(sb.from('source_track_record').select('source,category,n_directional,hit_rate,n_open,last_call_at').order('source')),
     q(sb.from('research_calls').select('id,source,category,agent,called_at,asset_class_id,direction,confidence,thesis,review_at,scored_at,actual_return,hit').order('called_at', { ascending: false }).limit(200)),
+    q(sb.from('inbox_routing_log').select('file,source,received_at,routed_to,reason,status,processed_at').order('processed_at', { ascending: false }).limit(200)),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -119,7 +120,7 @@ async function load() {
   const macroRun = runs.find(r => r.job === 'daily_macro') || null;
   const classSlugById = Object.fromEntries(classes.map(c => [c.id, c.slug]));
   const callsOut = calls.map(c => ({ ...c, classSlug: classSlugById[c.asset_class_id] || null }));
-  return { models, factors, matrix, classNames, run, macroRun, outputs, markets, macroByFactor, viewsByClass, roadmap, sources, calls: callsOut };
+  return { models, factors, matrix, classNames, run, macroRun, outputs, markets, macroByFactor, viewsByClass, roadmap, sources, calls: callsOut, routingLog };
 }
 
 // ---------- Views ----------
@@ -386,19 +387,61 @@ function viewsPage() {
   <p class="note">Long +1, Flat 0, Short −1, Flat/Short −0.5. Subjective judgments.</p></div>
   <h2 style="margin:18px 0 10px">Stances</h2>
   ${haveViews ? viewCards : '<div class="empty">No stance recorded yet for any asset class.</div>'}
+  <h2 style="margin:18px 0 10px">Indexes</h2>
+  ${indexSection()}
   <h2 style="margin:18px 0 10px">Macro data</h2>
   ${macroSection || '<div class="empty">No macro data loaded yet.</div>'}`;
 }
 
+// Price action and trend for the benchmark/index securities, shown alongside the views they
+// inform. Same descriptive technicals as the Markets tab — no rating, same reasoning.
+function indexSection() {
+  const idx = (D.markets || []).filter(m => m.role === 'benchmark');
+  if (!idx.length) return '<div class="empty">No index securities in the universe yet.</div>';
+  const trendChip = t => t ? `<span class="chip ${t === 'bullish' ? 'long' : t === 'bearish' ? 'short' : 'flat'}">${esc(t)}</span>` : '<span style="color:var(--muted)">–</span>';
+  const rsiColor = v => v === null || v === undefined ? 'var(--muted)' : v >= 70 ? 'var(--neg)' : v <= 30 ? 'var(--pos)' : 'var(--text)';
+  const vs = (c, sma) => sma && c ? `<span style="color:${c > sma ? 'var(--pos)' : 'var(--neg)'}">${c > sma ? '+' : ''}${(((c - sma) / sma) * 100).toFixed(1)}%</span>` : '–';
+  return `<div class="card"><table><thead><tr><th>Index</th><th class="num">Close</th><th class="num">RSI14</th><th>Trend</th><th class="num">vs SMA50</th><th class="num">vs SMA200</th><th>As of</th></tr></thead><tbody>
+   ${idx.map(r => { const t = r.tech; const c = t?.close ?? r.price?.close;
+     return `<tr class="click" data-go="#markets/${esc(r.id)}"><td><b>${esc(r.ticker)}</b><br><small style="color:var(--muted)">${esc(r.name)}</small></td>
+      <td class="num">${r.price ? '$' + Number(r.price.close).toFixed(2) : '–'}</td>
+      <td class="num" style="color:${rsiColor(t?.rsi14)}">${t?.rsi14 != null ? t.rsi14.toFixed(1) : '–'}</td>
+      <td>${trendChip(t?.trend_state)}</td>
+      <td class="num">${vs(c, t?.sma50)}</td><td class="num">${vs(c, t?.sma200)}</td>
+      <td>${esc(t?.as_of || r.price?.as_of || '–')}</td></tr>`; }).join('')}
+   </tbody></table><p class="note">Click an index for its full chart on the Markets tab. Descriptive price action and trend only — no rating, for the same reason given on Markets.</p></div>`;
+}
+
 function agents() {
-  const A = [['adam', 'Adam', 'Macro'], ['stan', 'Stan', 'Risk'], ['megan', 'Megan', 'Planning ideas'], ['annie', 'Annie', 'Decision quality'], ['sisyphus', 'Sisyphus', 'Executive']];
-  return `<span class="eyebrow">Allocation model</span><h1>Agents</h1><p class="sub">Each agent's latest output, with its as-of date.</p>
-  <div class="agents">${A.map(([k, n, r]) => { const o = D.outputs.find(x => x.agent === k);
-   return `<div class="card"><span class="eyebrow">${r}</span><h2 style="font-size:18px">${n}</h2>${o ? `<div><b>${esc(o.title)}</b> <span class="chip">${esc(o.as_of)}</span></div><p style="white-space:pre-wrap;color:var(--muted)">${esc(o.body_md.slice(0, 900))}${o.body_md.length > 900 ? '…' : ''}</p>` : '<div class="empty">No output yet.</div>'}</div>`; }).join('')}</div>`;
+  // isolated: true for agents whose output never feeds a brief or Stan's process unless
+  // explicitly tapped in — worth showing on the card so the distinction stays visible.
+  const A = [
+    ['adam', 'Adam', 'Macro', false], ['stan', 'Stan', 'Risk', false],
+    ['megan', 'Megan', 'Planning ideas', false], ['annie', 'Annie', 'Decision quality', false],
+    ['sisyphus', 'Sisyphus', 'Executive', false],
+    ['sven', 'Sven', 'Market internals', true], ['gail', 'Gail', 'Geopolitics', true],
+  ];
+  return `<span class="eyebrow">Allocation model</span><h1>Agents</h1><p class="sub">Each agent's latest output, with its as-of date. Isolated agents are shown here to read, but their work never feeds a brief or the allocation process unless explicitly tapped in.</p>
+  <div class="agents">${A.map(([k, n, r, isolated]) => { const o = D.outputs.find(x => x.agent === k);
+   return `<div class="card"><span class="eyebrow">${r}</span><h2 style="font-size:18px">${n} ${isolated ? '<span class="chip">isolated</span>' : ''}</h2>${o ? `<div><b>${esc(o.title)}</b> <span class="chip">${esc(o.as_of)}</span></div><p style="white-space:pre-wrap;color:var(--muted)">${esc(o.body_md.slice(0, 900))}${o.body_md.length > 900 ? '…' : ''}</p>` : '<div class="empty">No output yet.</div>'}</div>`; }).join('')}</div>`;
 }
 function inbox() {
+  const log = D.routingLog || [];
+  const statusChip = s => { const cls = s === 'routed' ? 'long' : s === 'held' ? 'held' : 'flat'; return `<span class="chip ${cls}">${esc((s || '').replace(/_/g, ' '))}</span>`; };
+  const held = log.filter(r => r.status === 'held').length;
+  const byAgent = {};
+  for (const r of log) if (r.routed_to) byAgent[r.routed_to] = (byAgent[r.routed_to] || 0) + 1;
   return `<span class="eyebrow">Allocation model</span><h1>Inbox</h1><p class="sub">Clipped and dropped items, where they were routed, and why.</p>
-  <div class="empty">The routing log will appear here once the inbox processor syncs to the database.</div>`;
+  <div class="kpis">
+   <div class="card kpi"><span class="eyebrow">Items</span><b>${log.length}</b><small>processed</small></div>
+   <div class="card kpi"><span class="eyebrow">Routed to</span><b style="font-size:16px">${Object.entries(byAgent).map(([a, n]) => `${esc(a)} ${n}`).join(' · ') || '—'}</b><small></small></div>
+   <div class="card kpi"><span class="eyebrow">Held</span><b class="${held ? 'stale' : ''}">${held}</b><small>not read by any agent</small></div>
+  </div>
+  <div class="card">${log.length ? `<table><thead><tr><th>Item</th><th>Source</th><th>Received</th><th>Routed to</th><th>Reason</th><th>Status</th></tr></thead><tbody>
+   ${log.map(r => `<tr><td>${esc((r.file || '').split('/').pop())}</td><td>${esc(r.source || '—')}</td><td>${esc(r.received_at || '—')}</td>
+    <td>${esc(r.routed_to || '—')}</td><td style="max-width:320px;color:var(--muted)">${esc(r.reason || '')}</td><td>${statusChip(r.status)}</td></tr>`).join('')}
+   </tbody></table><p class="note">Held items are deliberately not read by any agent — a publisher's terms restrict it. Source policy lives in desk-workspace/inbox/_source-policy.md; that file, not this table, is what the processor actually enforces.</p>`
+   : '<div class="empty">Nothing processed yet. Run the inbox-processor skill, then jobs/sync-routing-log.mjs.</div>'}</div>`;
 }
 
 function sources() {
