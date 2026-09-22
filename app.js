@@ -62,7 +62,7 @@ async function q(query) { const { data, error } = await query; if (error) throw 
 function latestBy(rows, keyFn) { const m = new Map(); for (const r of rows) { const k = keyFn(r); const p = m.get(k); if (!p || r.as_of > p.as_of) m.set(k, r); } return m; }
 
 async function load() {
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
@@ -74,9 +74,11 @@ async function load() {
     q(sb.from('agent_outputs').select('agent,kind,title,body_md,as_of').order('as_of', { ascending: false }).limit(50)),
     q(sb.from('current_prices').select('security_id,as_of,close,prev_close,day_change_pct,source')),
     q(sb.from('current_technical_snapshot').select('security_id,as_of,close,sma50,sma200,rsi14,macd_hist,hv20_ann,trend_state,rs_vs_class_63,support,resistance')),
-    q(sb.from('current_macro_readings').select('fred_code,name,factor_id,unit,obs_date,value')),
+    q(sb.from('current_macro_readings').select('series_id,fred_code,name,factor_id,unit,obs_date,value')),
     q(sb.from('asset_class_views').select('asset_class_id,as_of,stance,confidence,thesis,role_in_profile,change_my_mind,status,author').order('as_of', { ascending: false })),
     q(sb.from('roadmap_items').select('area,item,status,detail,sort_order').order('sort_order')),
+    q(sb.from('source_track_record').select('source,category,n_directional,hit_rate,n_open,last_call_at').order('source')),
+    q(sb.from('research_calls').select('id,source,category,agent,called_at,asset_class_id,direction,confidence,thesis,review_at,scored_at,actual_return,hit').order('called_at', { ascending: false }).limit(200)),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -115,7 +117,9 @@ async function load() {
 
   const run = runs.find(r => r.job === 'daily_prices') || null;
   const macroRun = runs.find(r => r.job === 'daily_macro') || null;
-  return { models, factors, matrix, classNames, run, macroRun, outputs, markets, macroByFactor, viewsByClass, roadmap };
+  const classSlugById = Object.fromEntries(classes.map(c => [c.id, c.slug]));
+  const callsOut = calls.map(c => ({ ...c, classSlug: classSlugById[c.asset_class_id] || null }));
+  return { models, factors, matrix, classNames, run, macroRun, outputs, markets, macroByFactor, viewsByClass, roadmap, sources, calls: callsOut };
 }
 
 // ---------- Views ----------
@@ -129,10 +133,12 @@ function route() {
   const [page, arg] = (location.hash || '#overview').slice(1).split('/');
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
-  const pages = { overview, models, markets, views: viewsPage, agents, inbox, status };
+  const pages = { overview, models, markets, views: viewsPage, agents, inbox, status, sources };
   $('#app').innerHTML = (pages[page] || overview)();
   if (page === 'models' && arg) openModel(arg);
   if (page === 'markets' && arg) openChart(arg);
+  if (page === 'overview' && arg) openExposureChart(arg);
+  if (page === 'views' && arg) openMacroChart(arg);
 }
 
 function overview() {
@@ -154,8 +160,8 @@ function overview() {
   </div>
   <div class="grid2"><div class="card"><h2>Net exposure by model <span class="chip draft">draft loadings</span></h2>
    <table><thead><tr><th>Model</th>${factorHeads()}<th class="num">Scored</th></tr></thead><tbody>
-   ${M.map(m => `<tr class="click" data-go="#models/${esc(m.id)}"><td><b>${esc(m.name)}</b> <span class="chip">${esc(m.label)}</span></td>${netCells(m)}<td class="num">${pct(m.cov, 0)}</td></tr>`).join('')}</tbody></table>
-   <p class="note">Net exposure = Σ weight × loading on each model's last recorded allocation (not drifted). Unscored holdings count as zero, so low coverage understates the figures.</p></div>
+   ${M.map(m => `<tr class="click" data-go="#overview/${esc(m.id)}"><td><b>${esc(m.name)}</b> <span class="chip">${esc(m.label)}</span></td>${netCells(m)}<td class="num">${pct(m.cov, 0)}</td></tr>`).join('')}</tbody></table>
+   <p class="note">Net exposure = Σ weight × loading on each model's last recorded allocation (not drifted). Unscored holdings count as zero, so low coverage understates the figures. Click a row for its exposure history.</p></div>
   <div class="card"><h2>Needs attention</h2>${alerts.length ? alerts.map(a => `<div class="alert"><span class="dot"></span><div>${a}</div></div>`).join('') : '<div class="empty">Nothing flagged.</div>'}</div></div>`;
 }
 
@@ -289,6 +295,67 @@ async function openChart(securityId) {
     <p class="note">Dashed lines at 30 (oversold) and 70 (overbought) by the standard convention, not a signal to act on alone. Descriptive context only — see the Markets note for why no rating is shown.</p></div>`;
 }
 
+const FACTOR_COLORS = { growth: 'var(--pos)', inflation: 'var(--warn)', liquidity_cost: 'var(--accent)' };
+
+async function openExposureChart(strategyId) {
+  const m = D.models.find(x => x.id === strategyId); if (!m) return;
+  $('#drawer').innerHTML = `<button class="close" data-go="#overview">Close</button>
+   <span class="eyebrow">Model · ${esc(m.label)}</span><h1>${esc(m.name)}</h1>
+   <p class="sub">Net exposure over time, computed at each historical allocation snapshot.</p><div class="empty">Loading chart…</div>`;
+  $('#drawer').hidden = false; $('#scrim').hidden = false;
+
+  let hist;
+  try {
+    hist = await q(sb.from('strategy_exposure_history').select('factor_id,as_of,net_exposure,coverage')
+      .eq('strategy_id', strategyId).order('as_of', { ascending: true }));
+  } catch (ex) {
+    $('#drawer').querySelector('.empty').textContent = `Could not load history: ${ex.message}`;
+    return;
+  }
+  if (!hist.length) { $('#drawer').querySelector('.empty').textContent = 'No exposure history yet. Run jobs/compute-exposure-history.mjs.'; return; }
+
+  const dates = [...new Set(hist.map(h => h.as_of))].sort();
+  const byFactorDate = new Map(hist.map(h => [h.factor_id + '|' + h.as_of, h.net_exposure]));
+  const series = D.factors.map(f => ({
+    vals: dates.map(d => { const v = byFactorDate.get(f.id + '|' + d); return v === undefined ? null : +v; }),
+    color: FACTOR_COLORS[f.slug] || 'var(--text)', width: 1.75,
+  }));
+  $('#drawer').innerHTML = `<button class="close" data-go="#overview">Close</button>
+   <span class="eyebrow">Model · ${esc(m.label)}</span><h1>${esc(m.name)}</h1>
+   <p class="sub">Net exposure at each of ${dates.length} allocation snapshots, ${esc(dates[0])} to ${esc(dates.at(-1))}. Not drifted between snapshots — each point is that snapshot's target weights.</p>
+   <div class="card"><h2>Growth, inflation, cost of liquidity</h2>${priceChartSvg(dates, series, 560, 240)}
+    <div class="legend" style="margin-top:8px">${D.factors.map(f => `<span><b style="background:${FACTOR_COLORS[f.slug] || '#888'}"></b>${esc(fname(f))}</span>`).join('')}</div>
+    <p class="note">Uses today's factor loadings applied to each historical snapshot's weights, not the loadings as they stood at that time (loadings are mostly static judgments, not date-sensitive yet).</p></div>`;
+}
+
+async function openMacroChart(seriesId) {
+  const rows = Object.values(D.macroByFactor).flat();
+  const row = rows.find(r => r.series_id === seriesId); if (!row) return;
+  $('#drawer').innerHTML = `<button class="close" data-go="#views">Close</button>
+   <span class="eyebrow">${esc(row.fred_code)}</span><h1>${esc(row.name)}</h1><div class="empty">Loading chart…</div>`;
+  $('#drawer').hidden = false; $('#scrim').hidden = false;
+
+  let obs;
+  try {
+    obs = await q(sb.from('macro_observations').select('obs_date,value,vintage_date')
+      .eq('series_id', seriesId).order('obs_date', { ascending: true }).order('vintage_date', { ascending: true }).limit(2000));
+  } catch (ex) {
+    $('#drawer').querySelector('.empty').textContent = `Could not load history: ${ex.message}`;
+    return;
+  }
+  if (!obs.length) { $('#drawer').querySelector('.empty').textContent = 'No history for this series yet.'; return; }
+  // Latest vintage per obs_date (a revised series like GDP can have more than one reading per date).
+  const byDate = new Map();
+  for (const o of obs) byDate.set(o.obs_date, o.value);
+  const dates = [...byDate.keys()].sort();
+  const vals = dates.map(d => +byDate.get(d));
+  $('#drawer').innerHTML = `<button class="close" data-go="#views">Close</button>
+   <span class="eyebrow">${esc(row.fred_code)}</span><h1>${esc(row.name)}</h1>
+   <p class="sub">${dates.length} observations, ${esc(dates[0])} to ${esc(dates.at(-1))}. ${esc(row.unit || '')}</p>
+   <div class="card">${priceChartSvg(dates, [{ vals, color: 'var(--accent)', width: 1.75 }], 560, 240)}
+    <p class="note">Latest published value per date (a revised series like GDP can be restated after its first print). Source: FRED.</p></div>`;
+}
+
 function viewsPage() {
   const cell = v => v === null ? ['M', 'UNSCORED'] : v > 0.4 ? ['L', 'LONG'] : v < -0.75 ? ['S', 'SHORT'] : v < -0.25 ? ['M', 'FLAT / SHORT'] : ['F', 'FLAT'];
   const rows = D.matrix.map(r => `<div class="rl">${esc(r.name)}</div>${r.v.map(x => { const [c, t] = cell(x === null ? null : +x); return `<div class="${c}">${t}</div>`; }).join('')}`).join('');
@@ -310,11 +377,11 @@ function viewsPage() {
     const rows = (D.macroByFactor[f.slug] || []).sort((a, b) => a.fred_code.localeCompare(b.fred_code));
     if (!rows.length) return '';
     return `<div class="card" style="margin-bottom:10px"><h2>${esc(fname(f))}</h2><table><thead><tr><th>Series</th><th class="num">Value</th><th>As of</th></tr></thead><tbody>
-     ${rows.map(r => `<tr><td>${esc(r.name)} <small style="color:var(--muted)">(${esc(r.fred_code)})</small></td><td class="num">${r.value}${/percent/i.test(r.unit || '') ? '%' : ''}</td><td>${esc(r.obs_date)}</td></tr>`).join('')}
+     ${rows.map(r => `<tr class="click" data-go="#views/${esc(r.series_id)}"><td>${esc(r.name)} <small style="color:var(--muted)">(${esc(r.fred_code)})</small></td><td class="num">${r.value}${/percent/i.test(r.unit || '') ? '%' : ''}</td><td>${esc(r.obs_date)}</td></tr>`).join('')}
      </tbody></table></div>`;
   }).join('');
 
-  return `<span class="eyebrow">Allocation model</span><h1>Views</h1><p class="sub">Exposure of each asset class, the desk's current stance where recorded, and the macro data behind it.</p>
+  return `<span class="eyebrow">Allocation model</span><h1>Views</h1><p class="sub">Exposure of each asset class, the desk's current stance where recorded, and the macro data behind it. Click a macro series for its chart.</p>
   <div class="card" style="margin-bottom:14px"><h2>Exposure matrix</h2><div class="mx"><div class="hd"></div>${D.factors.map(f => `<div class="hd">${esc(fname(f).toUpperCase())}</div>`).join('')}${rows}</div>
   <p class="note">Long +1, Flat 0, Short −1, Flat/Short −0.5. Subjective judgments.</p></div>
   <h2 style="margin:18px 0 10px">Stances</h2>
@@ -332,6 +399,36 @@ function agents() {
 function inbox() {
   return `<span class="eyebrow">Allocation model</span><h1>Inbox</h1><p class="sub">Clipped and dropped items, where they were routed, and why.</p>
   <div class="empty">The routing log will appear here once the inbox processor syncs to the database.</div>`;
+}
+
+function sources() {
+  const src = D.sources || [], calls = D.calls || [];
+  const hitColor = h => h === null || h === undefined ? 'var(--muted)' : h ? 'var(--pos)' : 'var(--neg)';
+  const dirChip = d => { const cls = d === 'bullish' ? 'long' : d === 'bearish' ? 'short' : 'flat'; return `<span class="chip ${cls}">${esc(d)}</span>`; };
+  const totalScored = src.reduce((a, s) => a + (s.n_directional || 0), 0);
+  const totalOpen = src.reduce((a, s) => a + (s.n_open || 0), 0);
+  return `<span class="eyebrow">Allocation model</span><h1>Sources</h1>
+  <p class="sub">Which research sources have actually been right. Each directional call a source makes is papertraded against that asset class's benchmark once the horizon passes — this is measured, not a feeling.</p>
+  <div class="kpis">
+   <div class="card kpi"><span class="eyebrow">Sources tracked</span><b>${src.length}</b><small></small></div>
+   <div class="card kpi"><span class="eyebrow">Calls scored</span><b>${totalScored}</b><small>all-time</small></div>
+   <div class="card kpi"><span class="eyebrow">Calls open</span><b>${totalOpen}</b><small>awaiting their review date</small></div>
+  </div>
+  <div class="card" style="margin-bottom:14px"><h2>Track record by source</h2>
+   ${src.length ? `<table><thead><tr><th>Source</th><th>Category</th><th class="num">Scored</th><th class="num">Hit rate</th><th class="num">Open</th><th>Last call</th></tr></thead><tbody>
+    ${src.map(s => `<tr><td><b>${esc(s.source)}</b></td><td>${esc(s.category || '—')}</td><td class="num">${s.n_directional ?? 0}</td>
+     <td class="num">${s.hit_rate != null ? `<span style="color:${s.hit_rate >= 0.5 ? 'var(--pos)' : 'var(--neg)'}">${(s.hit_rate * 100).toFixed(0)}%</span>` : '<span style="color:var(--muted)">—</span>'}</td>
+     <td class="num">${s.n_open ?? 0}</td><td>${esc(s.last_call_at || '—')}</td></tr>`).join('')}
+    </tbody></table><p class="note">All-time hit rate; rolling 30d/3m/6m/12m windows come once there's enough call volume for them to mean something. A source needs at least a few scored, directional (non-neutral) calls before its hit rate is worth reading.</p>`
+    : '<div class="empty">No sources tracked yet. Adam logs a call with jobs/log-research-call.mjs whenever a source makes an explicit directional bet.</div>'}
+  </div>
+  <div class="card"><h2>Recent calls</h2>
+   ${calls.length ? `<table><thead><tr><th>Source</th><th>Called</th><th>Asset class</th><th>Direction</th><th class="num">Confidence</th><th>Thesis</th><th class="num">Result</th></tr></thead><tbody>
+    ${calls.slice(0, 40).map(c => `<tr><td><b>${esc(c.source)}</b></td><td>${esc(c.called_at)}</td><td>${esc(D.classNames[c.classSlug] || c.classSlug || '—')}</td><td>${dirChip(c.direction)}</td>
+     <td class="num">${c.confidence != null ? pct(c.confidence, 0) : '—'}</td><td style="max-width:280px">${esc((c.thesis || '').slice(0, 140))}${(c.thesis || '').length > 140 ? '…' : ''}</td>
+     <td class="num" style="color:${hitColor(c.hit)}">${c.scored_at ? (c.hit === null ? 'n/a (neutral)' : c.hit ? 'HIT' : 'MISS') + (c.actual_return != null ? ` (${c.actual_return >= 0 ? '+' : ''}${(c.actual_return * 100).toFixed(1)}%)` : '') : `due ${esc(c.review_at)}`}</td></tr>`).join('')}
+    </tbody></table>` : '<div class="empty">Nothing logged yet.</div>'}
+  </div>`;
 }
 
 function status() {
