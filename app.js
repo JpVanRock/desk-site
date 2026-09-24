@@ -62,7 +62,7 @@ async function q(query) { const { data, error } = await query; if (error) throw 
 function latestBy(rows, keyFn) { const m = new Map(); for (const r of rows) { const k = keyFn(r); const p = m.get(k); if (!p || r.as_of > p.as_of) m.set(k, r); } return m; }
 
 async function load() {
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
@@ -85,6 +85,11 @@ async function load() {
     q(sb.from('strategy_stress_results').select('strategy_id,scenario_id,as_of,factor_score,coverage,n_windows,mean_return,worst_return,best_return,replay_coverage,windows').order('as_of', { ascending: false })),
     q(sb.from('strategy_performance').select('strategy_id,period,as_of,start_date,end_date,portfolio_return,peer_benchmark_return,policy_benchmark_return,coverage,max_drawdown,peer_max_drawdown').order('as_of', { ascending: false })),
     q(sb.from('strategy_attribution').select('strategy_id,period,as_of,asset_class_id,w_portfolio,w_benchmark,r_portfolio,r_benchmark,contribution,allocation_effect,selection_effect,interaction_effect,attributable').order('as_of', { ascending: false })),
+    q(sb.from('speed_limit_readings').select('as_of,category,score,light,weight,n_calls,n_recorded,target_beta_low,target_beta_high,sign_label').order('as_of', { ascending: false })),
+    q(sb.from('strategy_speed_limit').select('strategy_id,as_of,actual_beta,r_squared,n_obs,target_low,target_high,light,note').order('as_of', { ascending: false })),
+    q(sb.from('market_roc_board').select('as_of,security_id,label,sort_order,close,price_roc_1d,price_roc_1w,price_roc_1m,volume_roc_1w,vol_ann,vol_roc_1m').order('sort_order')),
+    q(sb.from('trigger_hits').select('as_of,headline,value,rule_id,security_id,strategy_id').order('as_of', { ascending: false }).limit(200)),
+    q(sb.from('trigger_rules').select('id,name,kind,enabled')),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -142,7 +147,11 @@ async function load() {
   const roleByClassSlug = Object.fromEntries(classes.map(c => [c.slug, c.primary_role || null]));
 
   return { models, factors, matrix, classNames, run, macroRun, outputs, markets, macroByFactor, viewsByClass, roadmap, sources, calls: callsOut, routingLog,
-    contribByStrategy, stressByStrategy, scenarios, perfByStrategy, attribByStrategy, roleByClassSlug, classes };
+    contribByStrategy, stressByStrategy, scenarios, perfByStrategy, attribByStrategy, roleByClassSlug, classes,
+    speedLimit: newest(speedLimit),
+    modelSpeedLimit: newest(modelSpeed),
+    rocBoard: newest(rocBoard),
+    triggerHits: (trigHits || []).map(h => ({ ...h, rule_name: (trigRules || []).find(r => r.id === h.rule_id)?.name || null })) };
 }
 
 // ---------- Views ----------
@@ -160,7 +169,7 @@ function route() {
   const [page, arg] = (location.hash || '#overview').slice(1).split('/');
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
-  const pages = { overview, models, markets, views: viewsPage, agents, inbox, status, sources };
+  const pages = { overview, models, markets, views: viewsPage, signals, agents, inbox, status, sources };
   $('#app').innerHTML = (pages[page] || overview)();
   if (page === 'models' && arg) openModel(arg);
   if (page === 'markets' && arg) openChart(arg);
@@ -223,6 +232,87 @@ function markets() {
      <td class="num">${t ? vs(t.close ?? r.price?.close, t.sma200) : '–'}</td>
      <td class="num">${rsStr}</td></tr>`; }).join('')}
   </tbody></table><p class="note">RSI14 uses Wilder's smoothing; below 30 (green) is oversold, above 70 (red) is overbought by the standard convention, not a signal to act on alone. Trend: bullish = close &gt; SMA50 &gt; SMA200, bearish = the reverse, else neutral. RS vs class = 63-day return minus the median of same-asset-class peers. SMA200 and RS need ~10 months of history — newer listings show "–". This is price action and trend, not a rating: the desk decided the underlying trend-anchored rating hasn't earned a role in decisions yet (see ROADMAP.md / the Status tab). Parameters: desk-workspace/stan/technicals-parameters.md.</p></div>`;
+}
+
+// ---------- Signals: the Speed Limit lights, the ROC board, and trigger hits ----------
+const LIGHT_COLOR = { green: 'var(--pos)', yellow: 'var(--flat)', red: 'var(--neg)' };
+const LIGHT_MEANING = { green: 'risk on', yellow: 'neutral', red: 'risk off' };
+
+function lightDot(l, size = 14) {
+  return `<span style="display:inline-block;width:${size}px;height:${size}px;border-radius:50%;background:${l ? LIGHT_COLOR[l] : 'transparent'};border:${l ? 'none' : '2px solid var(--line)'};vertical-align:middle"></span>`;
+}
+
+function signals() {
+  const sl = D.speedLimit || [];
+  const master = sl.find(r => r.category === 'master');
+  // Heaviest lens first: predictive at 60% should lead, not whatever order the rows arrived in.
+  const cats = sl.filter(r => r.category !== 'master').sort((a, b) => (+b.weight || 0) - (+a.weight || 0));
+  const board = D.rocBoard || [];
+  const hits = D.triggerHits || [];
+  const modelSL = D.modelSpeedLimit || [];
+  const pc = (v, d = 1) => v === null || v === undefined ? '<span style="color:var(--muted)">–</span>'
+    : `<span style="color:${v >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(v >= 0 ? '+' : '') + (+v * 100).toFixed(d)}%</span>`;
+
+  const masterCard = !master ? '<div class="empty">No Speed Limit reading yet. Run jobs/compute-speed-limit.mjs.</div>' : `
+   <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+    <div style="text-align:center">
+     ${lightDot(master.light, 46)}
+     <div style="margin-top:6px;font-size:22px;font-weight:700;color:${master.light ? LIGHT_COLOR[master.light] : 'var(--muted)'}">${esc(master.sign_label || '—')}</div>
+     <div style="color:var(--muted);font-size:12px">${master.light ? esc(LIGHT_MEANING[master.light]) : 'no reading'}${master.score !== null ? ` · score ${(+master.score).toFixed(2)}` : ''}</div>
+     ${master.target_beta_low !== null ? `<div style="color:var(--muted);font-size:12px">target beta ${master.target_beta_low}–${master.target_beta_high}×</div>` : ''}
+    </div>
+    <table style="flex:1;min-width:280px;margin:0"><thead><tr><th>Lens</th><th class="num">Weight</th><th class="num">Score</th><th>Light</th><th class="num">Calls</th></tr></thead><tbody>
+    ${cats.map(c => `<tr><td>${esc(c.category)}</td><td class="num">${(+c.weight * 100).toFixed(0)}%</td>
+      <td class="num">${c.score === null ? '<span style="color:var(--muted)">–</span>' : (+c.score).toFixed(2)}</td>
+      <td>${c.light ? `${lightDot(c.light, 10)} <span style="color:${LIGHT_COLOR[c.light]}">${esc(LIGHT_MEANING[c.light])}</span>` : '<span style="color:var(--muted)">no reading</span>'}</td>
+      <td class="num">${c.n_calls}${c.n_recorded > c.n_calls ? ` <span style="color:var(--muted)">of ${c.n_recorded}</span>` : ''}</td></tr>`).join('')}
+    </tbody></table>
+   </div>
+   <p class="note"><b>Draft rule.</b> The framework set the lens weights; the scoring rule was left open, so this is a proposal to argue with, not a settled measure. A lens scores the confidence-weighted mean direction of its open research calls — green above +0.33, red below −0.33 — and the master is the weighted mean over the lenses that actually have calls, so a silent lens abstains rather than counting as neutral. ${master && master.n_calls < 6 ? `<b>This reading rests on ${master.n_calls} scoring call${master.n_calls === 1 ? '' : 's'}</b>, which is far too few to lean on — treat it as the machinery working, not as a signal.` : ''} Only equities and commodities calls carry a sign: cash, gold and bond calls are counted but score zero, because bearish bonds can mean growth or inflation and the call itself does not say which.</p>`;
+
+  const modelCard = !modelSL.length ? '' : `
+   <div class="card" style="margin-bottom:14px"><h2>Each model against the Speed Limit</h2>
+    <table><thead><tr><th>Model</th><th class="num">Actual beta</th><th class="num">R²</th><th class="num">Target</th><th>Light</th></tr></thead><tbody>
+    ${modelSL.map(r => {
+      const st = D.models.find(m => m.id === r.strategy_id);
+      return `<tr title="${esc(r.note || '')}"><td><b>${esc(st?.name || '—')}</b></td>
+       <td class="num">${r.actual_beta === null ? '–' : (+r.actual_beta).toFixed(2) + '×'}</td>
+       <td class="num" style="color:${r.r_squared !== null && +r.r_squared < 0.5 ? 'var(--neg)' : 'var(--text)'}">${r.r_squared === null ? '–' : (+r.r_squared).toFixed(2)}</td>
+       <td class="num">${r.target_low === null ? '–' : `${r.target_low}–${r.target_high}×`}</td>
+       <td>${r.light ? `${lightDot(r.light, 10)} <span style="color:${LIGHT_COLOR[r.light]}">${esc(r.light)}</span>` : '<span class="chip">unrated</span>'}</td></tr>`;
+    }).join('')}
+    </tbody></table>
+    <p class="note">Beta is measured against each model's peer benchmark by least squares over the last year. <b>Read R² first.</b> These models hold gold, commodities and alternatives their benchmark does not, which leaves a lot unexplained and drags the slope down — below 0.5 the beta is not describing risk posture, so the model is left <b>unrated</b> rather than shown red. Where the fit does hold, a model below its target band is positioned more defensively than the lights call for. Hover a row for the full reading.</p>
+   </div>`;
+
+  const boardCard = !board.length ? '' : `
+   <div class="card" style="margin-bottom:14px"><h2>Rate of change · major markets</h2>
+    <table><thead><tr><th>Market</th><th class="num">Close</th><th class="num">1D</th><th class="num">1W</th><th class="num">1M</th><th class="num">Vol</th><th class="num">Vol 1M</th><th class="num">Volume 1W</th></tr></thead><tbody>
+    ${board.map(r => `<tr><td><b>${esc(r.label)}</b> <small style="color:var(--muted)">${esc(D.markets.find(m => m.id === r.security_id)?.ticker || '')}</small></td>
+      <td class="num">${r.close === null ? '–' : (+r.close).toFixed(2)}</td>
+      <td class="num">${pc(r.price_roc_1d)}</td><td class="num">${pc(r.price_roc_1w)}</td><td class="num">${pc(r.price_roc_1m)}</td>
+      <td class="num">${r.vol_ann === null ? '–' : (+r.vol_ann * 100).toFixed(0) + '%'}</td>
+      <td class="num">${pc(r.vol_roc_1m, 0)}</td>
+      <td class="num">${r.volume_roc_1w === null ? '<span style="color:var(--muted)">n/r</span>' : pc(r.volume_roc_1w, 0)}</td></tr>`).join('')}
+    </tbody></table>
+    <p class="note">Change over 1, 5 and 21 trading bars — bars rather than calendar days, since a "week" in calendar days lands on a weekend a fifth of the time. Vol is 20-bar realised volatility annualised, and its 1M column is the change in that reading, not a price move. Volume compares the last 5 bars against the prior 5, because one day against one day is mostly noise; <span style="color:var(--muted)">n/r</span> means the security reports no volume, which is normal for a mutual fund.</p>
+   </div>`;
+
+  const byRule = {};
+  for (const h of hits) (byRule[h.rule_name || 'Other'] ||= []).push(h);
+  const hitsCard = `
+   <div class="card"><h2>Triggers <span class="chip">${hits.length} recent</span></h2>
+    ${!hits.length ? '<div class="empty">Nothing has fired recently. Run jobs/compute-triggers.mjs.</div>' : `
+    <table><thead><tr><th>Date</th><th>What fired</th><th>Rule</th></tr></thead><tbody>
+    ${hits.slice(0, 60).map(h => `<tr><td>${esc(h.as_of)}</td><td>${esc(h.headline)}</td><td><small style="color:var(--muted)">${esc(h.rule_name || '')}</small></td></tr>`).join('')}
+    </tbody></table>`}
+    <p class="note">A trigger fires on a CHANGE, not on a state: something bullish for months does not fire, the day it flips does. Rules live in the database and can be tuned without a deploy. None of these is a recommendation — the desk's standing position is that the technical layer is descriptive context, and the risk-range bands in particular use constants calibrated on the source spec's universe rather than ours.</p>
+   </div>`;
+
+  return `<span class="eyebrow">Gigantic Rocks</span><h1>Signals</h1>
+   <p class="sub">The Speed Limit, the rate-of-change board, and what has crossed a line recently.</p>
+   <div class="card" style="margin-bottom:14px"><h2>Master Speed Limit <span class="chip draft">draft scoring rule</span></h2>${masterCard}</div>
+   ${modelCard}${boardCard}${hitsCard}`;
 }
 
 // ---------- Donut (asset roles, toggling to asset class) ----------
