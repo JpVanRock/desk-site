@@ -62,11 +62,11 @@ async function q(query) { const { data, error } = await query; if (error) throw 
 function latestBy(rows, keyFn) { const m = new Map(); for (const r of rows) { const k = keyFn(r); const p = m.get(k); if (!p || r.as_of > p.as_of) m.set(k, r); } return m; }
 
 async function load() {
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
-    q(sb.from('asset_classes').select('id,slug,name,sort_order').order('sort_order')),
+    q(sb.from('asset_classes').select('id,slug,name,sort_order,primary_role,primary_role_is_draft').order('sort_order')),
     q(sb.from('factors').select('id,slug,name,sort_order').order('sort_order')),
     q(sb.from('asset_class_factor_loadings').select('asset_class_id,factor_id,loading,as_of')),
     q(sb.from('security_factor_loadings').select('security_id,factor_id,loading,as_of')),
@@ -83,6 +83,8 @@ async function load() {
     q(sb.from('holding_contributions').select('strategy_id,security_id,as_of,weight,risk_share,risk_ratio,corr_to_rest,max_corr,closest_peer_id,verdict,rationale').order('as_of', { ascending: false })),
     q(sb.from('stress_scenarios').select('id,slug,name,description,shocks').order('sort_order')),
     q(sb.from('strategy_stress_results').select('strategy_id,scenario_id,as_of,factor_score,coverage,n_windows,mean_return,worst_return,best_return,replay_coverage,windows').order('as_of', { ascending: false })),
+    q(sb.from('strategy_performance').select('strategy_id,period,as_of,start_date,end_date,portfolio_return,peer_benchmark_return,policy_benchmark_return,coverage,max_drawdown,peer_max_drawdown').order('as_of', { ascending: false })),
+    q(sb.from('strategy_attribution').select('strategy_id,period,as_of,asset_class_id,w_portfolio,w_benchmark,r_portfolio,r_benchmark,contribution,allocation_effect,selection_effect,interaction_effect,attributable').order('as_of', { ascending: false })),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -131,8 +133,16 @@ async function load() {
   for (const c of newest(contribs)) (contribByStrategy[c.strategy_id] ||= []).push({ ...c, ticker: sec[c.security_id]?.ticker || '?', peer: sec[c.closest_peer_id]?.ticker || null });
   for (const s of newest(stress)) (stressByStrategy[s.strategy_id] ||= []).push(s);
 
+  const perfByStrategy = {}, attribByStrategy = {};
+  for (const r of newest(perf))   (perfByStrategy[r.strategy_id] ||= []).push(r);
+  for (const r of newest(attrib)) (attribByStrategy[r.strategy_id] ||= []).push(r);
+  // Asset-class role, for the growth/inflation/liquidity donut. Roles are per asset class and are
+  // a draft; see desk-workspace/design/asset-role-vs-net-exposure.md for why this is NOT the same
+  // measure as the net factor exposure shown above it.
+  const roleByClassSlug = Object.fromEntries(classes.map(c => [c.slug, c.primary_role || null]));
+
   return { models, factors, matrix, classNames, run, macroRun, outputs, markets, macroByFactor, viewsByClass, roadmap, sources, calls: callsOut, routingLog,
-    contribByStrategy, stressByStrategy, scenarios };
+    contribByStrategy, stressByStrategy, scenarios, perfByStrategy, attribByStrategy, roleByClassSlug, classes };
 }
 
 // ---------- Views ----------
@@ -215,6 +225,150 @@ function markets() {
   </tbody></table><p class="note">RSI14 uses Wilder's smoothing; below 30 (green) is oversold, above 70 (red) is overbought by the standard convention, not a signal to act on alone. Trend: bullish = close &gt; SMA50 &gt; SMA200, bearish = the reverse, else neutral. RS vs class = 63-day return minus the median of same-asset-class peers. SMA200 and RS need ~10 months of history — newer listings show "–". This is price action and trend, not a rating: the desk decided the underlying trend-anchored rating hasn't earned a role in decisions yet (see ROADMAP.md / the Status tab). Parameters: desk-workspace/stan/technicals-parameters.md.</p></div>`;
 }
 
+// ---------- Donut (asset roles, toggling to asset class) ----------
+const ROLE_COLORS = { growth: 'var(--pos)', inflation: 'var(--warn)', liquidity: 'var(--accent)', unassigned: 'var(--muted)' };
+const ROLE_LABEL = { growth: 'Growth assets', inflation: 'Inflation assets', liquidity: 'Liquidity assets', unassigned: 'Unassigned' };
+let donutMode = 'role';   // 'role' | 'class'
+
+// A donut as SVG arcs. Shares are normalised so the ring always closes, and a single 100% slice
+// is drawn as a plain circle because an arc of exactly 360 degrees degenerates to a point.
+function donutSvg(parts, size = 190) {
+  const total = parts.reduce((s, p) => s + p.v, 0);
+  if (!total) return '<div class="empty">Nothing to chart.</div>';
+  const r = size / 2 - 6, cx = size / 2, cy = size / 2, hole = r * 0.62;
+  const live = parts.filter(p => p.v > 0);
+  let a0 = -Math.PI / 2, out = '';
+  if (live.length === 1) {
+    out = `<circle cx="${cx}" cy="${cy}" r="${(r + hole) / 2}" fill="none" stroke="${live[0].color}" stroke-width="${r - hole}"/>`;
+  } else {
+    for (const p of live) {
+      const a1 = a0 + (p.v / total) * Math.PI * 2;
+      const big = a1 - a0 > Math.PI ? 1 : 0;
+      const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+      const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+      const hx1 = cx + hole * Math.cos(a1), hy1 = cy + hole * Math.sin(a1);
+      const hx0 = cx + hole * Math.cos(a0), hy0 = cy + hole * Math.sin(a0);
+      out += `<path d="M${x0.toFixed(1)},${y0.toFixed(1)} A${r},${r} 0 ${big} 1 ${x1.toFixed(1)},${y1.toFixed(1)} L${hx1.toFixed(1)},${hy1.toFixed(1)} A${hole},${hole} 0 ${big} 0 ${hx0.toFixed(1)},${hy0.toFixed(1)} Z" fill="${p.color}"><title>${esc(p.label)} ${pct(p.v / total)}</title></path>`;
+      a0 = a1;
+    }
+  }
+  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" style="display:block">${out}</svg>`;
+}
+
+function donutCard(m) {
+  const byRole = {};
+  for (const [slug, w] of m.byClass) {
+    const role = D.roleByClassSlug?.[slug] || 'unassigned';
+    byRole[role] = (byRole[role] || 0) + w;
+  }
+  const roleParts = ['growth', 'inflation', 'liquidity', 'unassigned']
+    .filter(k => byRole[k]).map(k => ({ label: ROLE_LABEL[k], v: byRole[k], color: ROLE_COLORS[k] }));
+  const classParts = m.byClass.map(([k, v]) => ({ label: D.classNames[k] || k, v, color: CLASS_COLORS[k] || '#888' }));
+  const parts = donutMode === 'role' ? roleParts : classParts;
+  const total = parts.reduce((s, p) => s + p.v, 0);
+  const tab = (k, label) => `<span class="click" data-donut="${k}" style="cursor:pointer;padding:3px 9px;border-radius:6px;font-size:12px;background:${donutMode === k ? 'var(--panel2)' : 'transparent'};color:${donutMode === k ? 'var(--text)' : 'var(--muted)'}">${label}</span>`;
+
+  return `<div class="card" style="margin-bottom:14px">
+   <h2>Where the allocation sits <span class="chip draft">draft roles</span></h2>
+   <div style="margin-bottom:10px">${tab('role', 'By role')}${tab('class', 'By asset class')}</div>
+   <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
+    ${donutSvg(parts)}
+    <div style="flex:1;min-width:190px">
+     <table style="margin:0"><tbody>
+      ${parts.map(p => `<tr><td style="padding:3px 0"><b style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${p.color};margin-right:7px"></b>${esc(p.label)}</td><td class="num">${pct(p.v / total)}</td></tr>`).join('')}
+     </tbody></table>
+    </div>
+   </div>
+   <p class="note">${donutMode === 'role'
+     ? 'Every holding is assigned one primary role and the shares total 100%. This is <b>not</b> the net factor exposure above it: that is signed and sums to nothing, this is a share of allocation. A model can sit 25% in the inflation bucket and still read net short inflation, and both are true. Roles are a draft — gold is placed in inflation per the owner, and bonds sit with cash as the risk-off budget, which is the one worth confirming since it moves more of this chart than any other single decision.'
+     : 'Share of allocation by asset class. Classified by behaviour rather than prospectus label, which is why high-yield credit and REITs sit in equities.'}</p>
+  </div>`;
+}
+
+// ---------- Contribution and attribution ----------
+let perfPeriod = '1Y';
+const PERIODS = ['1M', '3M', '6M', 'YTD', '1Y'];
+
+function perfCard(m) {
+  const rows = (D.perfByStrategy?.[m.id] || []);
+  if (!rows.length) return '';
+  const p = rows.find(r => r.period === perfPeriod) || rows[0];
+  const attrib = (D.attribByStrategy?.[m.id] || []).filter(r => r.period === p.period);
+  const clsName = id => (D.classes || []).find(c => c.id === id) || {};
+  const n = v => v === null || v === undefined ? null : +v;
+  const pc = (v, d = 2) => v === null ? '<span style="color:var(--muted)">–</span>'
+    : `<span style="color:${v >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(v >= 0 ? '+' : '') + (v * 100).toFixed(d)}%</span>`;
+
+  const pr = n(p.portfolio_return), peer = n(p.peer_benchmark_return), pol = n(p.policy_benchmark_return);
+  const vsPeer = pr !== null && peer !== null ? pr - peer : null;
+  const vsPolicy = pr !== null && pol !== null ? pr - pol : null;
+
+  const sum = k => attrib.filter(r => r.attributable).reduce((s, r) => s + (n(r[k]) || 0), 0);
+  const alloc = sum('allocation_effect'), sel = sum('selection_effect'), inter = sum('interaction_effect');
+  const unattrib = attrib.filter(r => !r.attributable);
+  const unattribW = unattrib.reduce((s, r) => s + (n(r.w_portfolio) || 0), 0);
+  const residual = vsPolicy === null ? null : vsPolicy - (alloc + sel + inter);
+
+  const tab = k => `<span class="click" data-period="${k}" style="cursor:pointer;padding:3px 9px;border-radius:6px;font-size:12px;background:${perfPeriod === k ? 'var(--panel2)' : 'transparent'};color:${perfPeriod === k ? 'var(--text)' : 'var(--muted)'}">${k}</span>`;
+
+  const contribRows = attrib.slice().sort((a, b) => (n(b.contribution) || 0) - (n(a.contribution) || 0));
+  const maxAbsContrib = Math.max(...contribRows.map(r => Math.abs(n(r.contribution) || 0)), 1e-9);
+  const bar = (v, max, color) => {
+    const w = Math.min(Math.abs(v) / max, 1) * 46;
+    return `<span style="display:inline-block;width:100px;vertical-align:middle"><span style="display:inline-block;width:50%;text-align:right">${v < 0 ? `<i style="display:inline-block;height:9px;width:${w}%;background:${color};opacity:.75"></i>` : ''}</span><span style="display:inline-block;width:50%">${v >= 0 ? `<i style="display:inline-block;height:9px;width:${w}%;background:${color};opacity:.75"></i>` : ''}</span></span>`;
+  };
+
+  return `<div class="card" style="margin-bottom:14px">
+   <h2>Returns, contribution and attribution</h2>
+   <div style="margin-bottom:10px">${PERIODS.map(tab).join('')}</div>
+   <p class="sub" style="margin-top:0">${esc(p.start_date)} to ${esc(p.end_date)}${n(p.coverage) !== null && n(p.coverage) < 0.999 ? ` · ${(n(p.coverage) * 100).toFixed(0)}% of weight priced` : ''}</p>
+
+   <div class="kpis" style="margin-bottom:12px">
+    <div class="card kpi"><span class="eyebrow">Model</span><b>${pc(pr)}</b><small>target allocation</small></div>
+    <div class="card kpi"><span class="eyebrow">Peer benchmark</span><b>${pc(peer)}</b><small>vs model ${vsPeer === null ? '–' : ((vsPeer >= 0 ? '+' : '') + (vsPeer * 100).toFixed(2) + '%')}</small></div>
+    <div class="card kpi"><span class="eyebrow">Policy benchmark</span><b>${pc(pol)}</b><small>vs model ${vsPolicy === null ? '–' : ((vsPolicy >= 0 ? '+' : '') + (vsPolicy * 100).toFixed(2) + '%')}</small></div>
+    <div class="card kpi"><span class="eyebrow">Max drawdown</span><b>${pc(n(p.max_drawdown))}</b><small>peer ${n(p.peer_max_drawdown) === null ? '–' : (n(p.peer_max_drawdown) * 100).toFixed(1) + '%'}</small></div>
+   </div>
+
+   <h2 style="font-size:13px;margin-top:16px">Contribution — where the return came from</h2>
+   <table><thead><tr><th>Asset class</th><th class="num">Weight</th><th class="num">Return</th><th class="num">Contribution</th><th></th></tr></thead><tbody>
+   ${contribRows.map(r => {
+     const c = n(r.contribution);
+     return `<tr><td>${esc(clsName(r.asset_class_id).name || '—')}</td>
+      <td class="num">${(n(r.w_portfolio) * 100).toFixed(1)}%</td>
+      <td class="num">${pc(n(r.r_portfolio))}</td>
+      <td class="num">${pc(c)}</td>
+      <td>${bar(c, maxAbsContrib, c >= 0 ? 'var(--pos)' : 'var(--neg)')}</td></tr>`;
+   }).join('')}
+   <tr style="border-top:2px solid var(--line)"><td><b>Total</b></td><td class="num"></td><td class="num"></td><td class="num"><b>${pc(pr)}</b></td><td></td></tr>
+   </tbody></table>
+   <p class="note">Weight times return, per asset class. These sum to the model's return by construction — it is a decomposition, not an estimate. No benchmark is involved.</p>
+
+   <h2 style="font-size:13px;margin-top:18px">Attribution — why it differed from the policy benchmark</h2>
+   <table><thead><tr><th>Asset class</th><th class="num">Model wt</th><th class="num">Bench wt</th><th class="num">O/U</th><th class="num">Model ret</th><th class="num">Bench ret</th><th class="num">Allocation</th><th class="num">Selection</th></tr></thead><tbody>
+   ${attrib.slice().sort((a, b) => Math.abs((n(b.allocation_effect) || 0) + (n(b.selection_effect) || 0)) - Math.abs((n(a.allocation_effect) || 0) + (n(a.selection_effect) || 0))).map(r => {
+     const ou = (n(r.w_portfolio) || 0) - (n(r.w_benchmark) || 0);
+     return `<tr${r.attributable ? '' : ' style="opacity:.55"'}><td>${esc(clsName(r.asset_class_id).name || '—')}</td>
+      <td class="num">${(n(r.w_portfolio) * 100).toFixed(1)}%</td>
+      <td class="num">${(n(r.w_benchmark) * 100).toFixed(1)}%</td>
+      <td class="num" style="color:${ou > 0.0005 ? 'var(--pos)' : ou < -0.0005 ? 'var(--neg)' : 'var(--muted)'}">${(ou >= 0 ? '+' : '') + (ou * 100).toFixed(1)}%</td>
+      <td class="num">${pc(n(r.r_portfolio))}</td>
+      <td class="num">${pc(n(r.r_benchmark))}</td>
+      <td class="num">${r.attributable ? pc(n(r.allocation_effect)) : '<span style="color:var(--muted)">n/a</span>'}</td>
+      <td class="num">${r.attributable ? pc(n(r.selection_effect)) : '<span style="color:var(--muted)">n/a</span>'}</td></tr>`;
+   }).join('')}
+   </tbody></table>
+   <div class="kpis" style="margin-top:10px">
+    <div class="card kpi"><span class="eyebrow">Allocation effect</span><b>${pc(alloc)}</b><small>over/underweighting</small></div>
+    <div class="card kpi"><span class="eyebrow">Selection effect</span><b>${pc(sel)}</b><small>holdings vs their index</small></div>
+    <div class="card kpi"><span class="eyebrow">Interaction</span><b>${pc(inter)}</b><small>the cross term</small></div>
+    <div class="card kpi"><span class="eyebrow">Excess vs policy</span><b>${pc(vsPolicy)}</b><small>${residual !== null && Math.abs(residual) > 0.0001 ? `incl. ${((residual) * 100).toFixed(2)}% unattributable` : 'fully attributed'}</small></div>
+   </div>
+   <p class="note"><b>Allocation</b> is what holding a different weight than the benchmark earned: (model weight − benchmark weight) × (that class's index return − the benchmark's total return). Measured against the total on purpose (Brinson-Fachler), so overweighting a class that merely rose earns nothing unless it beat the benchmark overall. <b>Selection</b> is what the holdings inside a class did against that class's index: benchmark weight × (model's return in the class − the index's). <b>Interaction</b> is the cross term, shown rather than quietly folded into selection.
+   This runs against the <b>policy</b> benchmark — the model's own stated stock/bond split built from index proxies — not the peer benchmark, because a LifeStrategy fund gives a total return and not its composition, and Brinson needs both. That makes this the more telling comparison anyway: the policy benchmark is the plain stocks-and-bonds portfolio the framework calls structurally short inflation, so the allocation effect is what diversifying away from it has actually earned.${unattribW > 0.0005 ? ` ${(unattribW * 100).toFixed(0)}% of the model sits in classes with no honest index proxy (alternatives); that share is shown greyed and left out of the effects rather than forced into them.` : ''}</p>
+  </div>`;
+}
+
 const VERDICT = {
   earns_place: { label: 'earns place', cls: 'flat' },
   diversifier: { label: 'diversifier', cls: 'long' },
@@ -281,6 +435,8 @@ function openModel(id) {
    <p class="sub">Last allocation ${esc(m.last || '—')} · weights sum to ${pct(m.total)}</p>
    <div class="kpis">${D.factors.map((f, i) => `<div class="card kpi"><span class="eyebrow">${esc(fname(f))}</span><b style="color:${m.net[i] >= 0 ? 'var(--pos)' : 'var(--neg)'}">${sgn(m.net[i])}</b><small>net exposure</small></div>`).join('')}</div>
    <div class="card" style="margin-bottom:14px"><h2>By asset class</h2><div class="stack">${stack}</div><div class="legend">${legend}</div></div>
+   ${donutCard(m)}
+   ${perfCard(m)}
    ${stressCard(m)}
    ${earnsPlaceCard(m)}
    <div class="card"><h2>Holdings <span class="chip draft">draft loadings</span></h2><table><thead><tr><th>Holding</th><th>Class</th><th class="num">Weight</th>${D.factors.map(f => `<th class="num">${esc(f.slug[0].toUpperCase())}</th>`).join('')}</tr></thead><tbody>
@@ -605,14 +761,21 @@ async function openMacroChart(seriesId) {
 
   let obs;
   try {
+    // PostgREST caps a response at 1000 rows whatever limit is asked for, so this has to be
+    // ordered NEWEST first and reversed. Ordered oldest-first it silently returned the first 1000
+    // rows and stopped: once macro history was backfilled to 2015, every daily series (DGS10,
+    // VIXCLS, T10Y2Y) drew a chart that ended in 2018 and looked perfectly healthy doing it.
+    // The most recent 1000 observations is about four years of daily data, which is the useful
+    // window here; the full history stays in the table for the jobs that need it.
     obs = await q(sb.from('macro_observations').select('obs_date,value,vintage_date')
-      .eq('series_id', seriesId).order('obs_date', { ascending: true }).order('vintage_date', { ascending: true }).limit(2000));
+      .eq('series_id', seriesId).order('obs_date', { ascending: false }).order('vintage_date', { ascending: true }).limit(1000));
   } catch (ex) {
     $('#drawer').querySelector('.empty').textContent = `Could not load history: ${ex.message}`;
     return;
   }
   if (!obs.length) { $('#drawer').querySelector('.empty').textContent = 'No history for this series yet.'; return; }
-  // Latest vintage per obs_date (a revised series like GDP can have more than one reading per date).
+  // Latest vintage per obs_date (a revised series like GDP can have more than one reading per
+  // date). vintage_date still ascends within a date, so the last write per date wins.
   const byDate = new Map();
   for (const o of obs) byDate.set(o.obs_date, o.value);
   const dates = [...byDate.keys()].sort();
@@ -774,6 +937,15 @@ function status() {
 // ---------- Wiring ----------
 document.addEventListener('click', e => { const t = e.target.closest('[data-go]'); if (t) location.hash = t.dataset.go; });
 // Chart layer toggles re-render from the already-fetched history — no refetch, no hash change.
+// Donut and period toggles re-render the model drawer from data already loaded.
+document.addEventListener('click', e => {
+  const d = e.target.closest('[data-donut]'), p = e.target.closest('[data-period]');
+  if (!d && !p) return;
+  if (d) donutMode = d.dataset.donut;
+  if (p) perfPeriod = p.dataset.period;
+  const id = (location.hash.split('/')[1] || '');
+  if (id) openModel(id);
+});
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-layer]'); if (!t || !chartCtx) return;
   const k = t.dataset.layer;
