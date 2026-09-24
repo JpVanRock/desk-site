@@ -169,7 +169,7 @@ function route() {
   const [page, arg] = (location.hash || '#overview').slice(1).split('/');
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
-  const pages = { overview, models, markets, views: viewsPage, signals, agents, inbox, status, sources };
+  const pages = { overview, models, markets, views: viewsPage, signals, agents, decisions, briefs, inbox, status, sources };
   $('#app').innerHTML = (pages[page] || overview)();
   if (page === 'models' && arg) openModel(arg);
   if (page === 'markets' && arg) openChart(arg);
@@ -232,6 +232,106 @@ function markets() {
      <td class="num">${t ? vs(t.close ?? r.price?.close, t.sma200) : '–'}</td>
      <td class="num">${rsStr}</td></tr>`; }).join('')}
   </tbody></table><p class="note">RSI14 uses Wilder's smoothing; below 30 (green) is oversold, above 70 (red) is overbought by the standard convention, not a signal to act on alone. Trend: bullish = close &gt; SMA50 &gt; SMA200, bearish = the reverse, else neutral. RS vs class = 63-day return minus the median of same-asset-class peers. SMA200 and RS need ~10 months of history — newer listings show "–". This is price action and trend, not a rating: the desk decided the underlying trend-anchored rating hasn't earned a role in decisions yet (see ROADMAP.md / the Status tab). Parameters: desk-workspace/stan/technicals-parameters.md.</p></div>`;
+}
+
+// Minimal markdown for agent output. Everything is HTML-escaped BEFORE any formatting is applied,
+// so no markup can survive from the source text — the bodies are written by agents from material
+// the desk clipped off the web, and that is not content to trust with raw HTML. Only a small,
+// closed set of transforms runs afterwards: headings, bold, italic, inline code, bullet and
+// numbered lists, blockquotes, rules, tables and paragraphs. Link syntax renders as text plus a
+// bare URL rather than an anchor, deliberately — a clickable link from untrusted text is exactly
+// the thing not worth adding for a little convenience.
+function md(src) {
+  if (!src) return '';
+  const lines = esc(String(src)).split('\n');
+  const inline = t => t
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<i>$2</i>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '$1 <span style="color:var(--muted)">($2)</span>');
+
+  const out = [];
+  let list = null, inTable = false, para = [];
+  const flushPara = () => { if (para.length) { out.push(`<p>${inline(para.join(' '))}</p>`); para = []; } };
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  const closeTable = () => { if (inTable) { out.push('</tbody></table>'); inTable = false; } };
+
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, '');
+    if (!line.trim()) { flushPara(); closeList(); closeTable(); continue; }
+
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { flushPara(); closeList(); closeTable(); const lvl = Math.min(h[1].length + 1, 6); out.push(`<h${lvl} style="font-size:${17 - h[1].length}px;margin:12px 0 6px">${inline(h[2])}</h${lvl}>`); continue; }
+
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) { flushPara(); closeList(); closeTable(); out.push('<hr style="border:none;border-top:1px solid var(--line);margin:12px 0">'); continue; }
+
+    // Tables: a header row followed by a separator row of dashes.
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      const cells = line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+      if (/^[\s|:-]+$/.test(line)) continue;          // the separator row itself
+      flushPara(); closeList();
+      if (!inTable) { out.push(`<table><thead><tr>${cells.map(c => `<th>${inline(c)}</th>`).join('')}</tr></thead><tbody>`); inTable = true; }
+      else out.push(`<tr>${cells.map(c => `<td>${inline(c)}</td>`).join('')}</tr>`);
+      continue;
+    }
+    closeTable();
+
+    const q = line.match(/^&gt;\s?(.*)$/);
+    if (q) { flushPara(); closeList(); out.push(`<blockquote style="border-left:3px solid var(--line);margin:8px 0;padding:2px 0 2px 10px;color:var(--muted)">${inline(q[1])}</blockquote>`); continue; }
+
+    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ul || ol) {
+      flushPara();
+      const want = ul ? 'ul' : 'ol';
+      if (list !== want) { closeList(); out.push(`<${want} style="margin:6px 0 6px 18px">`); list = want; }
+      out.push(`<li>${inline((ul || ol)[1])}</li>`);
+      continue;
+    }
+    closeList();
+    para.push(line.trim());
+  }
+  flushPara(); closeList(); closeTable();
+  return out.join('');
+}
+
+// ---------- Decisions (Annie) and Briefs (Sisyphus) ----------
+// Both read agent_outputs, which is populated by jobs/sync-agent-outputs.mjs from the workspace.
+// Bodies are rendered with md() above, which escapes before formatting.
+function outputsFor(agent, kinds) {
+  return (D.outputs || []).filter(o => o.agent === agent && (!kinds || kinds.includes(o.kind)));
+}
+
+function decisions() {
+  const journal = outputsFor('annie', ['decision_journal']);
+  const open = outputsFor('annie', ['open_decisions']);
+  const stats = outputsFor('annie', ['decision_stats']);
+  const sec = (title, list, emptyMsg) => `
+   <div class="card" style="margin-bottom:14px"><h2>${esc(title)}</h2>
+    ${list.length ? list.map(o => `<div style="margin-bottom:10px"><div class="eyebrow">as of ${esc(o.as_of)}</div>${md(o.body_md)}</div>`).join('')
+                  : `<div class="empty">${esc(emptyMsg)}</div>`}</div>`;
+  return `<span class="eyebrow">Decision quality</span><h1>Decisions</h1>
+   <p class="sub">Annie's journal, the decisions still open, and how the desk's calls have actually turned out.</p>
+   ${sec('Open decisions', open, 'Nothing open. Annie records a decision before it is made, not after.')}
+   ${sec('Decision journal', journal, 'No entries yet. The journal is append-only and is written at the time of a decision, with the dashboard snapshot that informed it.')}
+   ${sec('Decision statistics', stats, 'No statistics yet — these need a run of decisions with outcomes recorded before they mean anything.')}
+   <p class="note">The journal exists to separate a good decision from a good outcome: an entry records the thesis, the probabilities assigned at the time, the kill criteria and the review date, and only later the result and a process grade. A decision can be right and lose money, and the grade is for the reasoning.</p>`;
+}
+
+function briefs() {
+  const morning = outputsFor('sisyphus', ['morning_brief']).slice().sort((a, b) => b.as_of.localeCompare(a.as_of));
+  const primers = outputsFor('sisyphus', ['sunday_primer']).slice().sort((a, b) => b.as_of.localeCompare(a.as_of));
+  const list = (title, rows, emptyMsg) => `
+   <div class="card" style="margin-bottom:14px"><h2>${esc(title)}</h2>
+    ${rows.length ? rows.map((o, i) => `<details ${i === 0 ? 'open' : ''} style="margin-bottom:8px">
+        <summary style="cursor:pointer;padding:6px 0"><b>${esc(o.title)}</b></summary>
+        <div style="padding-top:6px">${md(o.body_md)}</div></details>`).join('')
+      : `<div class="empty">${esc(emptyMsg)}</div>`}</div>`;
+  return `<span class="eyebrow">Sisyphus</span><h1>Briefs</h1>
+   <p class="sub">The daily morning brief and the Sunday primer, synthesised across the desk.</p>
+   ${list('Morning briefs', morning, 'No brief yet. Run the morning-brief skill, then jobs/sync-agent-outputs.mjs.')}
+   ${list('Sunday primers', primers, 'No primer yet. The primer answers "what do we care about this week and why?"')}
+   <p class="note">Briefs synthesise Adam, Stan, Megan and Annie. Sven's and Gail's data is deliberately excluded unless the owner explicitly taps it in for a specific question — that isolation is a standing rule, not an oversight, and a tap-in is recorded in their tap-ins log when it happens.</p>`;
 }
 
 // ---------- Signals: the Speed Limit lights, the ROC board, and trigger hits ----------
