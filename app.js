@@ -169,7 +169,7 @@ function route() {
   const [page, arg] = (location.hash || '#overview').slice(1).split('/');
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
-  const pages = { overview, models, markets, views: viewsPage, signals, agents, decisions, briefs, inbox, status, sources };
+  const pages = { overview, models, markets, views: viewsPage, signals, playground, agents, decisions, briefs, inbox, status, sources };
   $('#app').innerHTML = (pages[page] || overview)();
   if (page === 'models' && arg) openModel(arg);
   if (page === 'markets' && arg) openChart(arg);
@@ -293,6 +293,131 @@ function md(src) {
   }
   flushPara(); closeList(); closeTable();
   return out.join('');
+}
+
+// ---------- The Playground: a what-if sandbox ----------
+//
+// Change the asset-class mix and watch the model's factor exposures, its stress scores and its
+// role split move. Everything here is computed in the browser from data already loaded — nothing
+// is written, nothing is saved, and no allocation changes as a result. That is the point: a place
+// to ask "what would happen if" without touching the model.
+//
+// The arithmetic is the same as the server's: net exposure is the weight-sum of each class's
+// factor loadings, and a scenario's factor score is that exposure vector dotted with the
+// scenario's shock. So a number moved here means what the same number means everywhere else.
+let pgModelId = null;
+let pgWeights = null;   // { classSlug: weight } — null until a model is chosen
+
+function pgReset(m) {
+  pgWeights = {};
+  for (const [slug, w] of m.byClass) pgWeights[slug] = w;
+}
+function pgExposure(weights) {
+  const out = D.factors.map(() => 0);
+  let covered = 0, total = 0;
+  for (const [slug, w] of Object.entries(weights)) {
+    total += w;
+    const row = D.matrix.find(r => r.slug === slug);
+    if (!row) continue;
+    let any = false;
+    row.v.forEach((v, i) => { if (v !== null) { out[i] += w * +v; any = true; } });
+    if (any) covered += w;
+  }
+  return { net: out, coverage: total ? covered / total : 0, total };
+}
+
+function playground() {
+  const models = D.models;
+  if (!models.length) return '<div class="empty">No models loaded.</div>';
+  const m = models.find(x => x.id === pgModelId) || models[0];
+  if (!pgWeights || pgModelId !== m.id) { pgModelId = m.id; pgReset(m); }
+
+  const base = pgExposure(Object.fromEntries(m.byClass));
+  const now = pgExposure(pgWeights);
+  const total = Object.values(pgWeights).reduce((s, w) => s + w, 0);
+
+  const classes = (D.classes || []).map(c => c.slug).filter(s => s !== 'unclassified');
+  for (const s of Object.keys(pgWeights)) if (!classes.includes(s)) classes.push(s);
+
+  const roleOf = s => D.roleByClassSlug?.[s] || 'unassigned';
+  const byRole = {};
+  for (const [s, w] of Object.entries(pgWeights)) byRole[roleOf(s)] = (byRole[roleOf(s)] || 0) + w;
+  const roleParts = ['growth', 'inflation', 'liquidity', 'unassigned'].filter(k => byRole[k])
+    .map(k => ({ label: ROLE_LABEL[k], v: byRole[k], color: ROLE_COLORS[k] }));
+
+  const scenarios = D.scenarios || [];
+  const scRow = sc => {
+    const shocks = sc.shocks || {};
+    const scoreOf = exp => D.factors.reduce((s, f, i) => s + (exp.net[i] * (shocks[f.slug] ?? 0)), 0);
+    const b = scoreOf(base), n = scoreOf(now), d = n - b;
+    return `<tr><td>${esc(sc.name)}</td>
+      <td class="num"><span class="cell" style="${heat(Math.max(-1, Math.min(1, b)))}">${sgn(b)}</span></td>
+      <td class="num"><span class="cell" style="${heat(Math.max(-1, Math.min(1, n)))}">${sgn(n)}</span></td>
+      <td class="num" style="color:${Math.abs(d) < 0.005 ? 'var(--muted)' : d > 0 ? 'var(--pos)' : 'var(--neg)'}">${Math.abs(d) < 0.005 ? '—' : sgn(d)}</td></tr>`;
+  };
+
+  const dirty = classes.some(s => Math.abs((pgWeights[s] || 0) - (Object.fromEntries(m.byClass)[s] || 0)) > 1e-9);
+
+  return `<span class="eyebrow">Sandbox</span><h1>The Playground</h1>
+   <p class="sub">Change the mix and see where the exposures and the stress scores go. Nothing here is saved, and no allocation changes as a result.</p>
+
+   <div class="card" style="margin-bottom:14px">
+    <h2>Model</h2>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+     ${models.map(x => `<span class="click" data-pgmodel="${esc(x.id)}" style="cursor:pointer;padding:4px 10px;border-radius:6px;font-size:12px;background:${x.id === m.id ? 'var(--panel2)' : 'transparent'};color:${x.id === m.id ? 'var(--text)' : 'var(--muted)'}">${esc(x.name)}</span>`).join('')}
+    </div>
+    ${dirty ? '<span class="click chip" data-pgreset="1" style="cursor:pointer">Reset to the model\'s actual weights</span>' : '<span style="color:var(--muted);font-size:12px">Showing the model\'s actual weights.</span>'}
+   </div>
+
+   <div class="card" style="margin-bottom:14px"><h2>Mix <span class="num" style="float:right;color:${Math.abs(total - 1) < 0.005 ? 'var(--muted)' : 'var(--warn)'}">${pct(total)}</span></h2>
+    <table><thead><tr><th>Asset class</th><th>Role</th><th class="num">Model</th><th class="num">What-if</th><th></th></tr></thead><tbody>
+    ${classes.map(s => {
+      const cur = Object.fromEntries(m.byClass)[s] || 0;
+      const w = pgWeights[s] || 0;
+      const d = w - cur;
+      return `<tr><td><b>${esc(D.classNames[s] || s)}</b></td>
+       <td><span style="color:${ROLE_COLORS[roleOf(s)]};font-size:12px">${esc(roleOf(s))}</span></td>
+       <td class="num" style="color:var(--muted)">${pct(cur)}</td>
+       <td class="num" style="color:${Math.abs(d) < 1e-9 ? 'var(--text)' : d > 0 ? 'var(--pos)' : 'var(--neg)'}">${pct(w)}</td>
+       <td style="white-space:nowrap">
+        <span class="click" data-pgadj="${esc(s)}|-0.05" style="cursor:pointer;padding:1px 7px;border:1px solid var(--line);border-radius:4px">−5</span>
+        <span class="click" data-pgadj="${esc(s)}|-0.01" style="cursor:pointer;padding:1px 7px;border:1px solid var(--line);border-radius:4px">−1</span>
+        <span class="click" data-pgadj="${esc(s)}|0.01"  style="cursor:pointer;padding:1px 7px;border:1px solid var(--line);border-radius:4px">+1</span>
+        <span class="click" data-pgadj="${esc(s)}|0.05"  style="cursor:pointer;padding:1px 7px;border:1px solid var(--line);border-radius:4px">+5</span>
+       </td></tr>`;
+    }).join('')}
+    </tbody></table>
+    <p class="note">Weights are in percentage points of the whole model. They are not forced to sum to 100% — if the total drifts it is shown above in amber, because a mix that does not add up is a legitimate thing to look at on the way to one that does, and silently renormalising would hide it.</p>
+   </div>
+
+   <div class="card" style="margin-bottom:14px"><h2>Net exposure</h2>
+    <table><thead><tr><th>Factor</th><th class="num">Model</th><th class="num">What-if</th><th class="num">Change</th></tr></thead><tbody>
+    ${D.factors.map((f, i) => {
+      const b = base.net[i], n = now.net[i], d = n - b;
+      return `<tr><td>${esc(fname(f))}</td>
+       <td class="num"><span class="cell" style="${heat(b)}">${sgn(b)}</span></td>
+       <td class="num"><span class="cell" style="${heat(n)}">${sgn(n)}</span></td>
+       <td class="num" style="color:${Math.abs(d) < 0.005 ? 'var(--muted)' : d > 0 ? 'var(--pos)' : 'var(--neg)'}">${Math.abs(d) < 0.005 ? '—' : sgn(d)}</td></tr>`;
+    }).join('')}
+    </tbody></table>
+    <p class="note">Weight-summed asset-class loadings, the same arithmetic the model itself uses — so a number that moves here means what it means everywhere else. Loadings are subjective drafts. Coverage ${pct(now.coverage, 0)} of the mix has a loading.</p>
+   </div>
+
+   <div class="card" style="margin-bottom:14px"><h2>Stress scores</h2>
+    ${scenarios.length ? `<table><thead><tr><th>Scenario</th><th class="num">Model</th><th class="num">What-if</th><th class="num">Change</th></tr></thead><tbody>
+    ${scenarios.map(scRow).join('')}</tbody></table>` : '<div class="empty">No scenarios loaded.</div>'}
+    <p class="note">Each score is the exposure vector dotted with the scenario's shock. A <b>directional score, not a predicted return</b>. The historical replay on the model page cannot be recomputed here, because it needs holding-level prices rather than class weights.</p>
+   </div>
+
+   <div class="card"><h2>Role split</h2>
+    <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
+     ${donutSvg(roleParts, 170)}
+     <table style="flex:1;min-width:180px;margin:0"><tbody>
+      ${roleParts.map(p => `<tr><td><b style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${p.color};margin-right:7px"></b>${esc(p.label)}</td><td class="num">${pct(p.v / (roleParts.reduce((s, x) => s + x.v, 0) || 1))}</td></tr>`).join('')}
+     </tbody></table>
+    </div>
+    <p class="note">Roles are a draft; see the note on any model page. This is a share of allocation, not the signed exposure above.</p>
+   </div>`;
 }
 
 // ---------- Decisions (Annie) and Briefs (Sisyphus) ----------
@@ -1128,6 +1253,18 @@ function status() {
 document.addEventListener('click', e => { const t = e.target.closest('[data-go]'); if (t) location.hash = t.dataset.go; });
 // Chart layer toggles re-render from the already-fetched history — no refetch, no hash change.
 // Donut and period toggles re-render the model drawer from data already loaded.
+// Playground controls: all client-side, nothing saved.
+document.addEventListener('click', e => {
+  const adj = e.target.closest('[data-pgadj]'), pm = e.target.closest('[data-pgmodel]'), rs = e.target.closest('[data-pgreset]');
+  if (!adj && !pm && !rs) return;
+  if (pm) { pgModelId = pm.dataset.pgmodel; pgWeights = null; }
+  if (rs) { const m = D.models.find(x => x.id === pgModelId); if (m) pgReset(m); }
+  if (adj) {
+    const [slug, delta] = adj.dataset.pgadj.split('|');
+    pgWeights[slug] = Math.max(0, Math.round(((pgWeights[slug] || 0) + (+delta)) * 10000) / 10000);
+  }
+  $('#app').innerHTML = playground();
+});
 document.addEventListener('click', e => {
   const d = e.target.closest('[data-donut]'), p = e.target.closest('[data-period]');
   if (!d && !p) return;
