@@ -59,10 +59,22 @@ async function enter(session) {
 
 // ---------- Data ----------
 async function q(query) { const { data, error } = await query; if (error) throw new Error(error.message); return data; }
+// Same as q(), but a failure yields an empty set instead of taking the page down. Used for the
+// auxiliary datasets — the lights, the boards, the attribution — where a missing table means one
+// card renders empty and the rest of the site still works. It was not always this way: a single
+// migration lagging behind a deploy turned the WHOLE dashboard into "Could not load data",
+// because Promise.all rejects as a unit. The core tables below deliberately still use q(): if
+// strategies or securities are unreachable there is no dashboard to show, and saying so plainly
+// is better than rendering an empty one that looks real.
+const softFailures = [];
+async function qSoft(query, label) {
+  try { return await q(query); }
+  catch (ex) { softFailures.push(`${label}: ${ex.message}`); console.warn(`[desk] optional dataset "${label}" unavailable:`, ex.message); return []; }
+}
 function latestBy(rows, keyFn) { const m = new Map(); for (const r of rows) { const k = keyFn(r); const p = m.get(k); if (!p || r.as_of > p.as_of) m.set(k, r); } return m; }
 
 async function load() {
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
@@ -75,21 +87,22 @@ async function load() {
     q(sb.from('current_prices').select('security_id,as_of,close,prev_close,day_change_pct,source')),
     q(sb.from('current_technical_snapshot').select('security_id,as_of,close,sma50,sma200,rsi14,macd_hist,hv20_ann,trend_state,rs_vs_class_63,support,resistance')),
     q(sb.from('current_macro_readings').select('series_id,fred_code,name,factor_id,unit,obs_date,value')),
-    q(sb.from('asset_class_views').select('asset_class_id,as_of,stance,confidence,thesis,role_in_profile,change_my_mind,status,author').order('as_of', { ascending: false })),
-    q(sb.from('roadmap_items').select('area,item,status,detail,sort_order').order('sort_order')),
-    q(sb.from('source_track_record').select('source,category,n_directional,hit_rate,n_open,last_call_at').order('source')),
-    q(sb.from('research_calls').select('id,source,category,agent,called_at,asset_class_id,direction,confidence,thesis,review_at,scored_at,actual_return,hit').order('called_at', { ascending: false }).limit(200)),
-    q(sb.from('inbox_routing_log').select('file,source,received_at,routed_to,lens,reason,status,processed_at').order('processed_at', { ascending: false }).limit(200)),
-    q(sb.from('holding_contributions').select('strategy_id,security_id,as_of,weight,risk_share,risk_ratio,corr_to_rest,max_corr,closest_peer_id,verdict,rationale').order('as_of', { ascending: false })),
-    q(sb.from('stress_scenarios').select('id,slug,name,description,shocks').order('sort_order')),
-    q(sb.from('strategy_stress_results').select('strategy_id,scenario_id,as_of,factor_score,coverage,n_windows,mean_return,worst_return,best_return,replay_coverage,windows').order('as_of', { ascending: false })),
-    q(sb.from('strategy_performance').select('strategy_id,period,as_of,start_date,end_date,portfolio_return,peer_benchmark_return,policy_benchmark_return,coverage,max_drawdown,peer_max_drawdown').order('as_of', { ascending: false })),
-    q(sb.from('strategy_attribution').select('strategy_id,period,as_of,asset_class_id,w_portfolio,w_benchmark,r_portfolio,r_benchmark,contribution,allocation_effect,selection_effect,interaction_effect,attributable').order('as_of', { ascending: false })),
-    q(sb.from('speed_limit_readings').select('as_of,category,score,light,weight,n_calls,n_recorded,target_beta_low,target_beta_high,sign_label').order('as_of', { ascending: false })),
-    q(sb.from('strategy_speed_limit').select('strategy_id,as_of,actual_beta,r_squared,n_obs,target_low,target_high,light,note').order('as_of', { ascending: false })),
-    q(sb.from('market_roc_board').select('as_of,security_id,label,sort_order,close,price_roc_1d,price_roc_1w,price_roc_1m,volume_roc_1w,vol_ann,vol_roc_1m').order('sort_order')),
-    q(sb.from('trigger_hits').select('as_of,headline,value,rule_id,security_id,strategy_id').order('as_of', { ascending: false }).limit(200)),
-    q(sb.from('trigger_rules').select('id,name,kind,enabled')),
+    qSoft(sb.from('asset_class_views').select('asset_class_id,as_of,stance,confidence,thesis,role_in_profile,change_my_mind,status,author').order('as_of', { ascending: false }), 'asset class views'),
+    qSoft(sb.from('roadmap_items').select('area,item,status,detail,sort_order').order('sort_order'), 'roadmap'),
+    qSoft(sb.from('source_track_record').select('source,category,n_directional,hit_rate,n_open,last_call_at').order('source'), 'source track record'),
+    qSoft(sb.from('research_calls').select('id,source,category,agent,called_at,asset_class_id,direction,confidence,thesis,review_at,scored_at,actual_return,hit').order('called_at', { ascending: false }).limit(200), 'research calls'),
+    qSoft(sb.from('inbox_routing_log').select('file,source,received_at,routed_to,lens,reason,status,processed_at').order('processed_at', { ascending: false }).limit(200), 'routing log'),
+    qSoft(sb.from('holding_contributions').select('strategy_id,security_id,as_of,weight,risk_share,risk_ratio,corr_to_rest,max_corr,closest_peer_id,verdict,rationale').order('as_of', { ascending: false }), 'holding contributions'),
+    qSoft(sb.from('stress_scenarios').select('id,slug,name,description,shocks').order('sort_order'), 'stress scenarios'),
+    qSoft(sb.from('strategy_stress_results').select('strategy_id,scenario_id,as_of,factor_score,coverage,n_windows,mean_return,worst_return,best_return,replay_coverage,windows').order('as_of', { ascending: false }), 'stress results'),
+    qSoft(sb.from('strategy_performance').select('strategy_id,period,as_of,start_date,end_date,portfolio_return,peer_benchmark_return,policy_benchmark_return,coverage,max_drawdown,peer_max_drawdown').order('as_of', { ascending: false }), 'performance'),
+    qSoft(sb.from('strategy_attribution').select('strategy_id,period,as_of,asset_class_id,w_portfolio,w_benchmark,r_portfolio,r_benchmark,contribution,allocation_effect,selection_effect,interaction_effect,attributable').order('as_of', { ascending: false }), 'attribution'),
+    qSoft(sb.from('speed_limit_readings').select('as_of,category,score,light,weight,n_calls,n_recorded,target_beta_low,target_beta_high,sign_label').order('as_of', { ascending: false }), 'speed limit'),
+    qSoft(sb.from('strategy_speed_limit').select('strategy_id,as_of,actual_beta,r_squared,n_obs,target_low,target_high,light,note').order('as_of', { ascending: false }), 'model speed limit'),
+    qSoft(sb.from('market_roc_board').select('as_of,security_id,label,sort_order,close,price_roc_1d,price_roc_1w,price_roc_1m,volume_roc_1w,vol_ann,vol_roc_1m').order('sort_order'), 'ROC board'),
+    qSoft(sb.from('trigger_hits').select('as_of,headline,value,rule_id,security_id,strategy_id').order('as_of', { ascending: false }).limit(200), 'trigger hits'),
+    qSoft(sb.from('trigger_rules').select('id,name,kind,enabled'), 'trigger rules'),
+    qSoft(sb.from('source_signal_to_noise').select('source,category,window_label,n_scored,hit_rate,signal,noise,signal_to_noise,too_few_to_judge'), 'signal to noise'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -151,7 +164,8 @@ async function load() {
     speedLimit: newest(speedLimit),
     modelSpeedLimit: newest(modelSpeed),
     rocBoard: newest(rocBoard),
-    triggerHits: (trigHits || []).map(h => ({ ...h, rule_name: (trigRules || []).find(r => r.id === h.rule_id)?.name || null })) };
+    triggerHits: (trigHits || []).map(h => ({ ...h, rule_name: (trigRules || []).find(r => r.id === h.rule_id)?.name || null })),
+    signalToNoise: stn || [], softFailures: softFailures.slice() };
 }
 
 // ---------- Views ----------
@@ -1045,8 +1059,8 @@ async function openExposureChart(strategyId) {
 
   let hist;
   try {
-    hist = await q(sb.from('strategy_exposure_history').select('factor_id,as_of,net_exposure,coverage')
-      .eq('strategy_id', strategyId).order('as_of', { ascending: true }));
+    hist = await qSoft(sb.from('strategy_exposure_history').select('factor_id,as_of,net_exposure,coverage')
+      .eq('strategy_id', strategyId).order('as_of', { ascending: true }), 'exposure history');
   } catch (ex) {
     $('#drawer').querySelector('.empty').textContent = `Could not load history: ${ex.message}`;
     return;
@@ -1197,6 +1211,33 @@ function inbox() {
    : '<div class="empty">Nothing processed yet. Run the inbox-processor skill, then jobs/sync-routing-log.mjs.</div>'}</div>`;
 }
 
+// Signal-to-noise per source over trailing windows. A hit rate rewards being right about things
+// that barely moved; this asks whether the calls were right AND whether the moves mattered.
+function stnCard() {
+  const rows = D.signalToNoise || [];
+  const WINDOWS = ['1M', '1Q', '6M', 'YTD'];
+  const sources = [...new Set(rows.map(r => r.source))].sort();
+  const thin = rows.length && rows.every(r => r.too_few_to_judge);
+  if (!sources.length) {
+    return `<div class="card" style="margin-bottom:14px"><h2>Signal to noise</h2>
+     <div class="empty">Nothing scored yet. Each call is settled against its asset class's benchmark once its horizon passes; the first were logged 2026-09-24 and settle from December 2026.</div>
+     <p class="note">This will measure whether a source's calls were right <b>and</b> whether the moves were big enough to matter: signal is the mean return in the direction of the call, noise its standard deviation, the ratio the two divided. Being right by a hair every time scores below being right by a lot.</p></div>`;
+  }
+  const get = (src, w) => rows.find(r => r.source === src && r.window_label === w);
+  const cell = r => {
+    if (!r || !r.n_scored) return '<td class="num" style="color:var(--muted)">–</td>';
+    const v = r.signal_to_noise;
+    return `<td class="num" title="${r.n_scored} scored, hit rate ${r.hit_rate === null ? '–' : (+r.hit_rate * 100).toFixed(0) + '%'}, signal ${r.signal === null ? '–' : (+r.signal * 100).toFixed(1) + '%'}, noise ${r.noise === null ? '–' : (+r.noise * 100).toFixed(1) + '%'}"
+      style="opacity:${r.too_few_to_judge ? 0.5 : 1};color:${v === null ? 'var(--muted)' : +v > 0 ? 'var(--pos)' : 'var(--neg)'}">${v === null ? '–' : (+v).toFixed(2)}<br><small style="color:var(--muted)">n=${r.n_scored}</small></td>`;
+  };
+  return `<div class="card" style="margin-bottom:14px"><h2>Signal to noise ${thin ? '<span class="chip">too few to judge</span>' : ''}</h2>
+   <table><thead><tr><th>Source</th><th>Lens</th>${WINDOWS.map(w => `<th class="num">${w}</th>`).join('')}</tr></thead><tbody>
+   ${sources.map(src => `<tr><td><b>${esc(src)}</b></td><td><small style="color:var(--muted)">${esc(get(src, 'YTD')?.category || rows.find(r => r.source === src)?.category || '')}</small></td>
+     ${WINDOWS.map(w => cell(get(src, w))).join('')}</tr>`).join('')}
+   </tbody></table>
+   <p class="note">Signal is the mean return in the <b>direction</b> of the call; noise is its standard deviation; the figure shown is the two divided. So a source right by a hair every time scores below one right by a lot, and a scattered source scores below a consistent one at the same hit rate — an information ratio applied to opinions. Windows are anchored on when the call was <b>made</b>, not when it settled. Hover for the underlying hit rate, signal and noise. ${thin ? '<b>Every row here is below ten scored calls, which is too few to mean anything</b> — they are shown faded for that reason. The intended use, once there is volume, is to let consistently strong sources earn more weight in the traffic lights than the framework\'s flat lens weights give them.' : ''}</p></div>`;
+}
+
 function sources() {
   const src = D.sources || [], calls = D.calls || [];
   const hitColor = h => h === null || h === undefined ? 'var(--muted)' : h ? 'var(--pos)' : 'var(--neg)';
@@ -1210,6 +1251,7 @@ function sources() {
    <div class="card kpi"><span class="eyebrow">Calls scored</span><b>${totalScored}</b><small>all-time</small></div>
    <div class="card kpi"><span class="eyebrow">Calls open</span><b>${totalOpen}</b><small>awaiting their review date</small></div>
   </div>
+  ${stnCard()}
   <div class="card" style="margin-bottom:14px"><h2>Track record by source</h2>
    ${src.length ? `<table><thead><tr><th>Source</th><th>Category</th><th class="num">Scored</th><th class="num">Hit rate</th><th class="num">Open</th><th>Last call</th></tr></thead><tbody>
     ${src.map(s => `<tr><td><b>${esc(s.source)}</b></td><td>${esc(s.category || '—')}</td><td class="num">${s.n_directional ?? 0}</td>
@@ -1229,12 +1271,19 @@ function sources() {
 
 function status() {
   const items = D.roadmap || [];
+  // If an optional dataset failed to load, say so here rather than letting its card render empty
+  // and read as "nothing to show". An empty panel and a broken query look identical otherwise.
+  const degraded = (D.softFailures || []).length ? `<div class="card" style="margin-bottom:14px;border-left:3px solid var(--warn)">
+    <h2>Some data could not be loaded</h2>
+    <p class="sub" style="margin-top:0">The rest of the site is fine; these panels will be empty until it resolves. Most often this is a migration that has not finished deploying.</p>
+    <ul style="margin:6px 0 0 18px;color:var(--muted)">${D.softFailures.map(f => `<li>${esc(f)}</li>`).join('')}</ul></div>` : '';
   const byArea = new Map();
   for (const it of items) { if (!byArea.has(it.area)) byArea.set(it.area, []); byArea.get(it.area).push(it); }
   const doneCount = items.filter(i => i.status === 'done').length;
   const dot = s => ({ done: 'var(--pos)', in_progress: 'var(--flat)', deferred: 'var(--muted)', not_started: 'var(--neg)' }[s] || 'var(--muted)');
   const label = s => ({ done: 'Done', in_progress: 'In progress', deferred: 'Deferred', not_started: 'Not started' }[s] || s);
   return `<span class="eyebrow">Allocation model</span><h1>Status</h1><p class="sub">What's built, in progress, or not started — kept in sync with the project roadmap.</p>
+  ${degraded}
   <div class="kpis">
    <div class="card kpi"><span class="eyebrow">Items</span><b>${items.length}</b><small>tracked</small></div>
    <div class="card kpi"><span class="eyebrow">Done</span><b style="color:var(--pos)">${doneCount}</b><small>of ${items.length}</small></div>
