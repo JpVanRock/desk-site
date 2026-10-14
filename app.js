@@ -1045,7 +1045,7 @@ function annie() {
                   : `<div class="empty">${esc(emptyMsg)}</div>`}</div>`;
 
   return `<span class="eyebrow">Annie</span><h1>Decision Coach</h1>
-   <p class="sub">OODA — Observe, Orient, Decide, Assess.</p>
+   <p class="sub">OODA — Observe, Orient, Decide, Act.</p>
    ${scorecard}
    ${positions}
    ${journal}
