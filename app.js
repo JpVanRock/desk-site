@@ -906,9 +906,9 @@ function annie() {
           ${kpi('Wins vs losses', `<span style="color:var(--pos)">${s.n_wins}</span><span style="color:var(--muted)">/</span><span style="color:var(--neg)">${s.n_losses}</span>`,
                 `+${w.toFixed(0)} bps won, ${l.toFixed(0)} bps lost`,
                 'Completed trades split by whether they exited profitable, with the basis points each side contributed.')}
-          ${kpi('Median position', s.median_weight === null ? '—' : pct(+s.median_weight),
-                'the size a verdict is judged against',
-                'The median weight this model gives a position. The sizing verdict on each trade is read against it.')}
+          ${kpi('Backwards K', '<span style="color:var(--muted)">—</span>',
+                'needs a loss threshold per trade',
+                'Called out on strikes: positions sold at a loss BIGGER than the threshold set when the trade was entered. It cannot be counted yet — no trade here carries a recorded threshold, because the entry journal does not exist. Deliberately blank rather than zero: a zero would read as "no position has ever blown through its stop", which is a flattering claim nobody has earned. Build the entry journal and this counts itself.')}
         </div>
         <p class="note">${beatRate !== null && ba !== null && beatRate < ba - 0.05
           ? `<b>These two counts disagree, and the disagreement is the finding.</b> ${s.n_wins} of ${s.n_closed} trades exited profitable; ${beat} of the same ${s.n_closed} beat the benchmark${ex === null ? '' : `, and the per-trade excess sums to ${ex >= 0 ? '+' : ''}${ex.toFixed(0)} bps`}. A trade can exit profitable having cost the model everything the index would have paid instead — a cash line is the clean case, with a permanent perfect batting average and a permanently negative decision score in a rising market. <i>That excess total is a rough aggregate across trades that ran over different, non-overlapping spans; it answers "how did these decisions fare against the index, added up" and is not the model's underperformance over any period.</i> ` : ''}${s.n_unpriced ? `<b>${s.n_unpriced} position${s.n_unpriced === 1 ? '' : 's'} could not be priced</b> and ${s.n_unpriced === 1 ? 'is' : 'are'} excluded from every figure here. ` : ''}${s.gap_days ? `The history has a ${s.gap_days}-day hole, and a round trip that opened and closed inside it is invisible — not counted as a win or a loss, simply absent. ` : ''}Trades are derived from the dated snapshots, not from a broker file: a ticker present in one snapshot and absent from the one before was bought, present and then absent was sold. A round trip that opened and closed between two snapshots cannot be seen at all.</p></div>`;
@@ -958,6 +958,7 @@ function annie() {
 
   // ---- the journal: completed trades, graded ----
   const journal = (() => {
+    const medianWeight = n((stats.find(x => trades.some(t => t.strategy_id === x.strategy_id)) || {}).median_weight);
     const closed = trades.filter(t => t.status === 'closed').slice()
       .sort((a, b) => String(b.exit_date).localeCompare(String(a.exit_date)));
     if (!closed.length) {
@@ -997,7 +998,7 @@ function annie() {
           <td>${v ? `<span style="color:${v[1]}" title="${esc(v[2])}">${v[0]}</span>` : '<span style="color:var(--muted)">–</span>'}</td></tr>`;
       }).join('')}
       </tbody></table></div>
-      <p class="note">Contribution is accumulated at the weight actually held in each stretch, not average size times the whole-period return, because a position trimmed before a fall contributed less than its full-size return implies — and that gap is the entire sizing question.${divergent.length ? ` <b>${divergent.length} trade${divergent.length === 1 ? '' : 's'} here exited profitable but contributed negatively, or the reverse</b> (${divergent.slice(0, 4).map(t => esc(t.ticker)).join(', ')}${divergent.length > 4 ? '…' : ''}); when those two disagree the path is the story, not the entry and exit.` : ''} Faded rows were already held on the first day of the records, so their return is measured from where the file starts rather than from a decision. Exits are dated at the snapshot where the position was first absent, which is on or after the day it was sold.</p></div>`;
+      <p class="note">${medianWeight === null ? '' : `<b>Sizing is judged against this model's median position of ${pct(medianWeight)}</b>: a winner held well below it was too small, a loser held well above it was too large, and within a quarter either way is about right. `}Contribution is accumulated at the weight actually held in each stretch, not average size times the whole-period return, because a position trimmed before a fall contributed less than its full-size return implies — and that gap is the entire sizing question.${divergent.length ? ` <b>${divergent.length} trade${divergent.length === 1 ? '' : 's'} here exited profitable but contributed negatively, or the reverse</b> (${divergent.slice(0, 4).map(t => esc(t.ticker)).join(', ')}${divergent.length > 4 ? '…' : ''}); when those two disagree the path is the story, not the entry and exit.` : ''} Faded rows were already held on the first day of the records, so their return is measured from where the file starts rather than from a decision. Exits are dated at the snapshot where the position was first absent, which is on or after the day it was sold.</p></div>`;
   })();
 
   // ---- the written sections ----
