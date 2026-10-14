@@ -34,6 +34,12 @@ td{padding:10px;border-bottom:1px solid var(--line);vertical-align:middle}tr:las
 tbody tr.click{cursor:pointer}tbody tr.click:hover{background:var(--panel2)}
 .num{text-align:right;font-variant-numeric:tabular-nums}
 .cell{display:inline-block;min-width:64px;text-align:center;padding:6px 8px;border-radius:6px;font-variant-numeric:tabular-nums;font-weight:600}
+/* Streak chips. Deliberately small and square: five of them read as a sequence at a glance,
+   which a row of words would not. */
+.stk{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:4px;
+  font:700 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;cursor:default}
+.stk.w{background:rgba(63,178,127,.22);color:var(--pos)}
+.stk.l{background:rgba(224,96,94,.24);color:var(--neg)}
 /* The I-beam that opens a steel man. A button rather than a link so it is reachable by keyboard,
    and faded rather than hidden when nothing has been written — an absent icon reads as "no case
    against this", which is a claim nobody made. */

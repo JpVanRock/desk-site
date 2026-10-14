@@ -123,7 +123,7 @@ async function load() {
     qSoft(sb.from('model_monthly_returns').select('strategy_id,as_of,year,month,model_return,benchmark_return,excess_return,coverage,is_partial,in_gap,basis,unavailable_reason'), 'monthly returns'),
     qSoft(sb.from('model_trades').select('strategy_id,as_of,ticker,entry_date,exit_date,avg_weight,entry_weight,exit_weight,total_return,contribution_bps,excess_bps,status,sizing_verdict,starts_in_gap,pre_existing,unavailable_reason'), 'trade ledger'),
     qSoft(sb.from('position_decision_scores').select('strategy_id,as_of,ticker,window_key,sort_order,start_date,end_date,weight,position_return,benchmark_return,decision_bps,is_partial,starts_in_gap,unavailable_reason').order('sort_order'), 'position decision scores'),
-    qSoft(sb.from('model_decision_stats').select('strategy_id,as_of,n_closed,n_open,n_wins,n_losses,batting_average,slugging_bps,win_bps,loss_bps,median_weight,n_unpriced,first_snapshot,last_snapshot,gap_days,n_beat_benchmark,excess_bps_total,n_type_i,type_i_bps,n_type_ii,type_ii_reason'), 'decision stats'),
+    qSoft(sb.from('model_decision_stats').select('strategy_id,as_of,n_closed,n_open,n_wins,n_losses,batting_average,slugging_bps,win_bps,loss_bps,median_weight,n_unpriced,first_snapshot,last_snapshot,gap_days,n_beat_benchmark,excess_bps_total,n_type_i,type_i_bps,n_type_ii,type_ii_reason,avg_hold_days,n_trades_ytd'), 'decision stats'),
     qSoft(sb.from('annie_assessments').select('as_of,kind,strategy_id,ticker,headline,body_md,score,score_scale,confidence,sources,author').order('as_of', { ascending: false }), 'Annie assessments'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
@@ -984,10 +984,32 @@ function annie() {
         </div></div>`;
     };
 
+    // The last five completed trades, oldest on the left so the newest sits where the eye lands.
+    // Taken straight from the ledger rather than stored: it is five rows of a table already here,
+    // and a stored copy would be one more thing that can disagree with the journal below it.
+    const streakBox = list => {
+      const chips = list.map(t => {
+        const won = +t.total_return > 0;
+        const r = n(t.total_return);
+        const tip = `${t.ticker} · opened ${t.entry_date}\n${won ? 'Win' : 'Loss'} ${r === null ? '—' : (r >= 0 ? '+' : '') + (r * 100).toFixed(1) + '%'} · closed ${t.exit_date}`;
+        return `<span class="stk ${won ? 'w' : 'l'}" data-tip="${esc(tip)}">${won ? 'W' : 'L'}</span>`;
+      }).join('');
+      return `<div class="card kpi" title="The last five completed trades, oldest on the left. Hover one for the ticker, the date it was opened and what it returned.">
+        <span class="eyebrow">Current streak</span>
+        <div style="display:flex;gap:5px;margin:6px 0 4px">${chips || '<span style="color:var(--muted);font-size:22px">—</span>'}</div>
+        <small>${list.length ? 'last ' + list.length + ', oldest first' : 'no closed trades'}</small></div>`;
+    };
+
     const isOverall = annieModel === 'overall';
     const s = isOverall ? overall : (stats.find(x => x.strategy_id === annieModel) || null);
     const label = isOverall ? 'Overall' : bare(modelName(annieModel));
 
+    const streak = trades
+      .filter(t => t.status === 'closed' && t.total_return !== null && (isOverall || t.strategy_id === annieModel))
+      .sort((a, b) => String(a.exit_date).localeCompare(String(b.exit_date)))
+      .slice(-5);
+    const hold = !s ? null : isOverall ? (() => { const v = stats.map(x => n(x.avg_hold_days)).filter(x => x !== null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; })() : n(s.avg_hold_days);
+    const ytd = !s ? null : isOverall ? stats.reduce((a, x) => a + (n(x.n_trades_ytd) || 0), 0) : n(s.n_trades_ytd);
     const ba = s ? n(s.batting_average) : null;
     const sl = s ? n(s.slugging_bps) : null;
     const beatRate = !s ? null : isOverall ? s.beatRate : (s.n_closed ? (n(s.n_beat_benchmark) || 0) / s.n_closed : null);
@@ -1022,6 +1044,15 @@ function annie() {
               'Completed trades split by whether they exited profitable, with the basis points each side contributed. Counts, so on Overall these are totals rather than an average.')}
         ${kpi('Backwards K', DASH, 'needs a loss threshold per trade',
               'Called out on strikes: positions sold at a loss BIGGER than the threshold set when the trade was entered. It cannot be counted yet — no trade here carries a recorded threshold, because the entry journal does not exist. Deliberately blank rather than zero: a zero would read as "no position has ever blown through its stop", which is a flattering claim nobody has earned. Build the entry journal and this counts itself.')}
+      </div>
+      <div class="kpis" style="grid-template-columns:repeat(3,1fr);margin-top:10px">
+        ${kpi('Average hold time', hold === null ? DASH : `${hold.toFixed(0)}`,
+              hold === null ? 'no closed trades' : 'days, entry to exit',
+              'Mean days from entry to exit across closed trades the desk actually opened. An upper bound: an exit is dated at the snapshot where the position was first absent, so every hold is measured to a date at or beyond the real one. Pre-existing positions are excluded — their entry date is the first day of the records, not a purchase.')}
+        ${kpi('Trades YTD', ytd === null ? DASH : `${ytd}`,
+              ytd === null ? 'no ledger' : `buys and sells dated ${new Date().getUTCFullYear()}`,
+              'Trade events this calendar year — entries plus exits, not round trips. A position bought in March and sold in September is two decisions.')}
+        ${streakBox(streak)}
       </div>
       ${errorsBlock(s, isOverall)}
       <p class="note">${note}</p></div>`;
