@@ -202,7 +202,7 @@ function route() {
   const [page, arg] = (location.hash || '#overview').slice(1).split('/');
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
-  const pages = { overview, stan, markets, views: viewsPage, signals, reporting, playground, agents, decisions, briefs, inbox, status, sources };
+  const pages = { overview, stan, markets, views: viewsPage, signals, playground, agents, decisions, briefs, inbox, status, sources };
   $('#app').innerHTML = (pages[page] || overview)();
   if (page === 'stan' && arg) openModel(arg);
   if (page === 'markets' && arg) openChart(arg);
@@ -656,7 +656,7 @@ async function commitSplits() {
     if (split) D.factorOverrides.push({ security_id: sid, split, author: 'site', as_of: new Date().toISOString().slice(0, 10) });
   }
   repPending = {}; repSaveError = null;
-  $('#app').innerHTML = reporting();
+  openModel(repModelId);
   try {
     const ups = Object.entries(pending).filter(([, v]) => v)
       .map(([security_id, split]) => ({ security_id, split, author: 'site', as_of: new Date().toISOString().slice(0, 10) }));
@@ -666,7 +666,7 @@ async function commitSplits() {
   } catch (ex) {
     D.factorOverrides = prev;
     repSaveError = `Could not save ${keys.length === 1 ? 'that classification' : 'those classifications'}: ${ex.message}. The chart has been put back to what the database holds.`;
-    $('#app').innerHTML = reporting();
+    openModel(repModelId);
   }
 }
 
@@ -724,15 +724,10 @@ const STAT_HOW = {
   coverage:         'Share of model weight that was actually priced at the thinnest point of the window. A return computed over part of the model is not the model’s return.',
 };
 
-function reporting() {
-  const models = D.models || [];
-  if (!models.length) return `<span class="eyebrow">Client reporting</span><h1>Reporting</h1><div class="card"><div class="empty">No models loaded.</div></div>`;
-  // Default to a model that actually has a dated holdings history, so the page does not open on
-  // five empty panels when only some models have been loaded.
-  const withHistory = new Set((D.valueSeries || []).map(v => v.strategy_id));
-  const m = models.find(x => x.id === repModelId)
-    || models.find(x => withHistory.has(x.id))
-    || models[0];
+// Renders the dashboard body for ONE model. Lives in the model drawer rather than on a page of
+// its own: the drawer is already per-model, so a selector would be a second way to do the same
+// thing. Returns cards only — the caller supplies the heading and the holdings table.
+function modelDashboard(m) {
   repModelId = m.id;
 
   const n = v => v === null || v === undefined ? null : +v;
@@ -745,8 +740,6 @@ function reporting() {
   const contrib = (D.contribution || []).filter(c => c.strategy_id === m.id && c.period === repPeriod);
   const integ = (D.snapIntegrity || []).filter(i => i.strategy_id === m.id);
   const hasHistory = series.length > 0;
-
-  const modelTabs = models.map(x => `<button class="tab" data-repmodel="${esc(x.id)}" aria-selected="${x.id === m.id}">${esc(x.name)}</button>`).join('');
 
   // ---- model statistics strip ----
   const cells = [
@@ -907,9 +900,7 @@ function reporting() {
     <h2>Data quality</h2>${dq ? `<ul style="margin:6px 0 0 18px;line-height:1.6">${dq}</ul>` : '<div class="empty">No integrity problems found.</div>'}
     <p class="note">Reported, never silently repaired. ${integ.length} snapshots loaded, ${esc(integ[0].as_of)} to ${esc(integ.at(-1).as_of)}.</p></div>`;
 
-  return `<span class="eyebrow">Client reporting</span><h1>${esc(m.name)}</h1>
-   <p class="sub">Each holding's weight splits evenly across the factors it is long. Shorts are tallied separately, so they do not sum with the pie. Classify the unclassified positions and press Update to refresh.</p>
-   <div class="card" style="margin-bottom:18px"><h2>Model</h2><div class="tabs">${modelTabs}</div></div>
+  return `<p class="sub">Each holding's weight splits evenly across the factors it is long. Shorts are tallied separately, so they do not sum with the pie. Classify the unclassified positions and press Update to refresh.</p>
    ${repSaveError ? `<div class="card" style="margin-bottom:18px;border-left:3px solid var(--neg)"><p style="margin:0">${esc(repSaveError)}</p></div>` : ''}
    ${dqCard}${statsCard}${allocGrid}${contribCard}${ddCard}
    <details style="margin-top:22px;font-size:13px;color:var(--muted)">
@@ -1009,7 +1000,6 @@ function signals() {
 // ---------- Donut (asset roles, toggling to asset class) ----------
 const ROLE_COLORS = { growth: 'var(--pos)', inflation: 'var(--warn)', liquidity: 'var(--accent)', unassigned: 'var(--muted)' };
 const ROLE_LABEL = { growth: 'Growth assets', inflation: 'Inflation assets', liquidity: 'Liquidity assets', unassigned: 'Unassigned' };
-let donutMode = 'role';   // 'role' | 'class'
 
 // A donut as SVG arcs. Shares are normalised so the ring always closes, and a single 100% slice
 // is drawn as a plain circle because an arc of exactly 360 degrees degenerates to a point.
@@ -1036,191 +1026,20 @@ function donutSvg(parts, size = 190) {
   return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" style="display:block">${out}</svg>`;
 }
 
-function donutCard(m) {
-  const byRole = {};
-  for (const [slug, w] of m.byClass) {
-    const role = D.roleByClassSlug?.[slug] || 'unassigned';
-    byRole[role] = (byRole[role] || 0) + w;
-  }
-  const roleParts = ['growth', 'inflation', 'liquidity', 'unassigned']
-    .filter(k => byRole[k]).map(k => ({ label: ROLE_LABEL[k], v: byRole[k], color: ROLE_COLORS[k] }));
-  const classParts = m.byClass.map(([k, v]) => ({ label: D.classNames[k] || k, v, color: CLASS_COLORS[k] || '#888' }));
-  const parts = donutMode === 'role' ? roleParts : classParts;
-  const total = parts.reduce((s, p) => s + p.v, 0);
-  const tab = (k, label) => `<span class="click" data-donut="${k}" style="cursor:pointer;padding:3px 9px;border-radius:6px;font-size:12px;background:${donutMode === k ? 'var(--panel2)' : 'transparent'};color:${donutMode === k ? 'var(--text)' : 'var(--muted)'}">${label}</span>`;
-
-  return `<div class="card" style="margin-bottom:14px">
-   <h2>Where the allocation sits <span class="chip draft">draft roles</span></h2>
-   <div style="margin-bottom:10px">${tab('role', 'By role')}${tab('class', 'By asset class')}</div>
-   <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
-    ${donutSvg(parts)}
-    <div style="flex:1;min-width:190px">
-     <table style="margin:0"><tbody>
-      ${parts.map(p => `<tr><td style="padding:3px 0"><b style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${p.color};margin-right:7px"></b>${esc(p.label)}</td><td class="num">${pct(p.v / total)}</td></tr>`).join('')}
-     </tbody></table>
-    </div>
-   </div>
-   <p class="note">${donutMode === 'role'
-     ? 'Every holding is assigned one primary role and the shares total 100%. This is <b>not</b> the net factor exposure above it: that is signed and sums to nothing, this is a share of allocation. A model can sit 25% in the inflation bucket and still read net short inflation, and both are true. Roles are a draft — gold is placed in inflation per the owner, and bonds sit with cash as the risk-off budget, which is the one worth confirming since it moves more of this chart than any other single decision.'
-     : 'Share of allocation by asset class. Classified by behaviour rather than prospectus label, which is why high-yield credit and REITs sit in equities.'}</p>
-  </div>`;
-}
-
 // ---------- Contribution and attribution ----------
-let perfPeriod = '1Y';
-const PERIODS = ['1M', '3M', '6M', 'YTD', '1Y'];
 
-function perfCard(m) {
-  const rows = (D.perfByStrategy?.[m.id] || []);
-  if (!rows.length) return '';
-  const p = rows.find(r => r.period === perfPeriod) || rows[0];
-  const attrib = (D.attribByStrategy?.[m.id] || []).filter(r => r.period === p.period);
-  const clsName = id => (D.classes || []).find(c => c.id === id) || {};
-  const n = v => v === null || v === undefined ? null : +v;
-  const pc = (v, d = 2) => v === null ? '<span style="color:var(--muted)">–</span>'
-    : `<span style="color:${v >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(v >= 0 ? '+' : '') + (v * 100).toFixed(d)}%</span>`;
-
-  const pr = n(p.portfolio_return), peer = n(p.peer_benchmark_return), pol = n(p.policy_benchmark_return);
-  const vsPeer = pr !== null && peer !== null ? pr - peer : null;
-  const vsPolicy = pr !== null && pol !== null ? pr - pol : null;
-
-  const sum = k => attrib.filter(r => r.attributable).reduce((s, r) => s + (n(r[k]) || 0), 0);
-  const alloc = sum('allocation_effect'), sel = sum('selection_effect'), inter = sum('interaction_effect');
-  const unattrib = attrib.filter(r => !r.attributable);
-  const unattribW = unattrib.reduce((s, r) => s + (n(r.w_portfolio) || 0), 0);
-  const residual = vsPolicy === null ? null : vsPolicy - (alloc + sel + inter);
-
-  const tab = k => `<span class="click" data-period="${k}" style="cursor:pointer;padding:3px 9px;border-radius:6px;font-size:12px;background:${perfPeriod === k ? 'var(--panel2)' : 'transparent'};color:${perfPeriod === k ? 'var(--text)' : 'var(--muted)'}">${k}</span>`;
-
-  const contribRows = attrib.slice().sort((a, b) => (n(b.contribution) || 0) - (n(a.contribution) || 0));
-  const maxAbsContrib = Math.max(...contribRows.map(r => Math.abs(n(r.contribution) || 0)), 1e-9);
-  const bar = (v, max, color) => {
-    const w = Math.min(Math.abs(v) / max, 1) * 46;
-    return `<span style="display:inline-block;width:100px;vertical-align:middle"><span style="display:inline-block;width:50%;text-align:right">${v < 0 ? `<i style="display:inline-block;height:9px;width:${w}%;background:${color};opacity:.75"></i>` : ''}</span><span style="display:inline-block;width:50%">${v >= 0 ? `<i style="display:inline-block;height:9px;width:${w}%;background:${color};opacity:.75"></i>` : ''}</span></span>`;
-  };
-
-  return `<div class="card" style="margin-bottom:14px">
-   <h2>Returns, contribution and attribution</h2>
-   <div style="margin-bottom:10px">${PERIODS.map(tab).join('')}</div>
-   <p class="sub" style="margin-top:0">${esc(p.start_date)} to ${esc(p.end_date)}${n(p.coverage) !== null && n(p.coverage) < 0.999 ? ` · ${(n(p.coverage) * 100).toFixed(0)}% of weight priced` : ''}</p>
-
-   <div class="kpis" style="margin-bottom:12px">
-    <div class="card kpi"><span class="eyebrow">Model</span><b>${pc(pr)}</b><small>target allocation</small></div>
-    <div class="card kpi"><span class="eyebrow">Peer benchmark</span><b>${pc(peer)}</b><small>vs model ${vsPeer === null ? '–' : ((vsPeer >= 0 ? '+' : '') + (vsPeer * 100).toFixed(2) + '%')}</small></div>
-    <div class="card kpi"><span class="eyebrow">Policy benchmark</span><b>${pc(pol)}</b><small>vs model ${vsPolicy === null ? '–' : ((vsPolicy >= 0 ? '+' : '') + (vsPolicy * 100).toFixed(2) + '%')}</small></div>
-    <div class="card kpi"><span class="eyebrow">Max drawdown</span><b>${pc(n(p.max_drawdown))}</b><small>peer ${n(p.peer_max_drawdown) === null ? '–' : (n(p.peer_max_drawdown) * 100).toFixed(1) + '%'}</small></div>
-   </div>
-
-   <h2 style="font-size:13px;margin-top:16px">Contribution — where the return came from</h2>
-   <table><thead><tr><th>Asset class</th><th class="num">Weight</th><th class="num">Return</th><th class="num">Contribution</th><th></th></tr></thead><tbody>
-   ${contribRows.map(r => {
-     const c = n(r.contribution);
-     return `<tr><td>${esc(clsName(r.asset_class_id).name || '—')}</td>
-      <td class="num">${(n(r.w_portfolio) * 100).toFixed(1)}%</td>
-      <td class="num">${pc(n(r.r_portfolio))}</td>
-      <td class="num">${pc(c)}</td>
-      <td>${bar(c, maxAbsContrib, c >= 0 ? 'var(--pos)' : 'var(--neg)')}</td></tr>`;
-   }).join('')}
-   <tr style="border-top:2px solid var(--line)"><td><b>Total</b></td><td class="num"></td><td class="num"></td><td class="num"><b>${pc(pr)}</b></td><td></td></tr>
-   </tbody></table>
-   <p class="note">Weight times return, per asset class. These sum to the model's return by construction — it is a decomposition, not an estimate. No benchmark is involved.</p>
-
-   <h2 style="font-size:13px;margin-top:18px">Attribution — why it differed from the policy benchmark</h2>
-   <table><thead><tr><th>Asset class</th><th class="num">Model wt</th><th class="num">Bench wt</th><th class="num">O/U</th><th class="num">Model ret</th><th class="num">Bench ret</th><th class="num">Allocation</th><th class="num">Selection</th></tr></thead><tbody>
-   ${attrib.slice().sort((a, b) => Math.abs((n(b.allocation_effect) || 0) + (n(b.selection_effect) || 0)) - Math.abs((n(a.allocation_effect) || 0) + (n(a.selection_effect) || 0))).map(r => {
-     const ou = (n(r.w_portfolio) || 0) - (n(r.w_benchmark) || 0);
-     return `<tr${r.attributable ? '' : ' style="opacity:.55"'}><td>${esc(clsName(r.asset_class_id).name || '—')}</td>
-      <td class="num">${(n(r.w_portfolio) * 100).toFixed(1)}%</td>
-      <td class="num">${(n(r.w_benchmark) * 100).toFixed(1)}%</td>
-      <td class="num" style="color:${ou > 0.0005 ? 'var(--pos)' : ou < -0.0005 ? 'var(--neg)' : 'var(--muted)'}">${(ou >= 0 ? '+' : '') + (ou * 100).toFixed(1)}%</td>
-      <td class="num">${pc(n(r.r_portfolio))}</td>
-      <td class="num">${pc(n(r.r_benchmark))}</td>
-      <td class="num">${r.attributable ? pc(n(r.allocation_effect)) : '<span style="color:var(--muted)">n/a</span>'}</td>
-      <td class="num">${r.attributable ? pc(n(r.selection_effect)) : '<span style="color:var(--muted)">n/a</span>'}</td></tr>`;
-   }).join('')}
-   </tbody></table>
-   <div class="kpis" style="margin-top:10px">
-    <div class="card kpi"><span class="eyebrow">Allocation effect</span><b>${pc(alloc)}</b><small>over/underweighting</small></div>
-    <div class="card kpi"><span class="eyebrow">Selection effect</span><b>${pc(sel)}</b><small>holdings vs their index</small></div>
-    <div class="card kpi"><span class="eyebrow">Interaction</span><b>${pc(inter)}</b><small>the cross term</small></div>
-    <div class="card kpi"><span class="eyebrow">Excess vs policy</span><b>${pc(vsPolicy)}</b><small>${residual !== null && Math.abs(residual) > 0.0001 ? `incl. ${((residual) * 100).toFixed(2)}% unattributable` : 'fully attributed'}</small></div>
-   </div>
-   <p class="note"><b>Allocation</b> is what holding a different weight than the benchmark earned: (model weight − benchmark weight) × (that class's index return − the benchmark's total return). Measured against the total on purpose (Brinson-Fachler), so overweighting a class that merely rose earns nothing unless it beat the benchmark overall. <b>Selection</b> is what the holdings inside a class did against that class's index: benchmark weight × (model's return in the class − the index's). <b>Interaction</b> is the cross term, shown rather than quietly folded into selection.
-   This runs against the <b>policy</b> benchmark — the model's own stated stock/bond split built from index proxies — not the peer benchmark, because a LifeStrategy fund gives a total return and not its composition, and Brinson needs both. That makes this the more telling comparison anyway: the policy benchmark is the plain stocks-and-bonds portfolio the framework calls structurally short inflation, so the allocation effect is what diversifying away from it has actually earned.${unattribW > 0.0005 ? ` ${(unattribW * 100).toFixed(0)}% of the model sits in classes with no honest index proxy (alternatives); that share is shown greyed and left out of the effects rather than forced into them.` : ''}</p>
-  </div>`;
-}
-
-const VERDICT = {
-  earns_place: { label: 'earns place', cls: 'flat' },
-  diversifier: { label: 'diversifier', cls: 'long' },
-  review:      { label: 'review',      cls: 'short' },
-  redundant:   { label: 'redundant',   cls: 'short' },
-  no_data:     { label: 'no data',     cls: '' },
-};
-
-// "If inflation rises and liquidity becomes scarce, how does your allocation remain resilient?"
-// Two readings, deliberately shown side by side because they can disagree and the disagreement
-// is informative: the score is the framework's own forward-looking lens, the replay is what
-// today's weights actually did in the historical stretches that matched the scenario.
-function stressCard(m) {
-  const rows = D.stressByStrategy?.[m.id] || [];
-  if (!rows.length) return '';
-  const byId = Object.fromEntries((D.scenarios || []).map(s => [s.id, s]));
-  const pctv = x => x === null || x === undefined ? '<span style="color:var(--muted)">–</span>'
-    : `<span style="color:${x >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(x >= 0 ? '+' : '') + (x * 100).toFixed(1)}%</span>`;
-  return `<div class="card" style="margin-bottom:14px"><h2>Stress scenarios</h2>
-   <table><thead><tr><th>Scenario</th><th class="num">Exposure score</th><th class="num">Replay mean</th><th class="num">Worst</th><th class="num">Windows</th></tr></thead><tbody>
-   ${rows.slice().sort((a, b) => (byId[a.scenario_id]?.name || '').localeCompare(byId[b.scenario_id]?.name || '')).map(r => {
-     const sc = byId[r.scenario_id] || {};
-     const s = r.factor_score === null ? null : +r.factor_score;
-     return `<tr><td><b>${esc(sc.name || '—')}</b><br><small style="color:var(--muted)">${esc(sc.description || '')}</small></td>
-      <td class="num"><span class="cell" style="${heat(s === null ? 0 : Math.max(-1, Math.min(1, s)))}">${s === null ? '–' : sgn(s)}</span></td>
-      <td class="num">${pctv(r.mean_return === null ? null : +r.mean_return)}</td>
-      <td class="num">${pctv(r.worst_return === null ? null : +r.worst_return)}</td>
-      <td class="num">${r.n_windows || 0}${r.replay_coverage ? `<br><small style="color:var(--muted)">≥${(+r.replay_coverage * 100).toFixed(0)}% covered</small>` : ''}</td></tr>`;
-   }).join('')}
-   </tbody></table>
-   <p class="note">The exposure score is this model's net growth/inflation/liquidity exposure read against the scenario's shock. It is a <b>directional score, not a predicted return</b> — negative means the model is positioned against the scenario. The replay is measured in real returns: what today's weights would have done across the historical stretches where that macro rule actually held, found from the data rather than chosen by hand. Windows covering under 60% of today's holdings are excluded, which is why the 2020 growth shock drops out — most of this book did not exist yet. A small number of recent windows is a hint, not a distribution, and the two columns can disagree.</p></div>`;
-}
-
-function earnsPlaceCard(m) {
-  const rows = D.contribByStrategy?.[m.id] || [];
-  if (!rows.length) return '';
-  const measured = rows.filter(r => r.risk_share !== null).sort((a, b) => +b.risk_share - +a.risk_share);
-  if (!measured.length) return '';
-  const top3 = measured.slice(0, 3);
-  const top3Risk = top3.reduce((s, r) => s + +r.risk_share, 0), top3Wt = top3.reduce((s, r) => s + +r.weight, 0);
-  return `<div class="card" style="margin-bottom:14px"><h2>Does every position earn its place?</h2>
-   <p class="sub" style="margin-top:-4px">Top 3 by risk — ${top3.map(r => esc(r.ticker)).join(', ')} — carry <b>${(top3Risk * 100).toFixed(0)}%</b> of this model's risk on <b>${(top3Wt * 100).toFixed(0)}%</b> of its weight.</p>
-   <table><thead><tr><th>Holding</th><th class="num">Weight</th><th class="num">Risk share</th><th class="num">Ratio</th><th class="num">Corr to rest</th><th>Verdict</th></tr></thead><tbody>
-   ${measured.map(r => {
-     const v = VERDICT[r.verdict] || VERDICT.no_data;
-     return `<tr title="${esc(r.rationale || '')}"><td><b>${esc(r.ticker)}</b></td>
-      <td class="num">${(+r.weight * 100).toFixed(1)}%</td>
-      <td class="num">${(+r.risk_share * 100).toFixed(1)}%</td>
-      <td class="num" style="color:${+r.risk_ratio >= 2 ? 'var(--neg)' : +r.risk_ratio <= 0.85 ? 'var(--pos)' : 'var(--text)'}">${(+r.risk_ratio).toFixed(2)}×</td>
-      <td class="num">${r.corr_to_rest === null ? '–' : (+r.corr_to_rest).toFixed(2)}</td>
-      <td><span class="chip ${v.cls}">${v.label}</span></td></tr>`;
-   }).join('')}
-   ${rows.filter(r => r.risk_share === null).map(r => `<tr><td><b>${esc(r.ticker)}</b></td><td class="num">${(+r.weight * 100).toFixed(1)}%</td><td class="num" colspan="3" style="color:var(--muted)">not enough price history</td><td><span class="chip">no data</span></td></tr>`).join('')}
-   </tbody></table>
-   <p class="note">Risk share is each holding's marginal contribution to the model's volatility; the shares sum to 100%, so they compare directly against weight. Ratio above 1 means a position consumes more of the model's risk than its size suggests — which is not a criticism (equity risk in a growth model <i>should</i> outrun its weight), it is the prompt to say out loud what the position is for. "Review" marks 2× or more. Hover a row for the full reasoning. Measured on volatility and correlation only: it says nothing about drawdown shape, tail behaviour, liquidity or tax, any of which can be the real reason a holding is there.</p></div>`;
-}
 
 function openModel(id) {
   const m = D.models.find(x => x.id === id); if (!m) return;
-  const stack = m.byClass.map(([k, v]) => `<i title="${esc(D.classNames[k])} ${pct(v)}" style="width:${(v / m.total) * 100}%;background:${CLASS_COLORS[k] || '#888'}"></i>`).join('');
-  const legend = m.byClass.map(([k, v]) => `<span><b style="background:${CLASS_COLORS[k] || '#888'}"></b>${esc(D.classNames[k])} ${pct(v)}</span>`).join('');
+  // The drawer is the model's dashboard, laid out to the owner's reference, plus the holdings
+  // table. The earlier contents — the exposure KPI row, the asset-class stack, the stress,
+  // attribution and earn-its-place cards — were removed on the owner's instruction: the dashboard
+  // covers the same ground in the agreed layout, and keeping both would have shown the same
+  // figures twice in two different shapes.
   $('#drawer').innerHTML = `<button class="close" data-go="#stan">Close</button>
    <span class="eyebrow">Model · ${esc(m.label)}</span><h1>${esc(m.name)}</h1>
-   <p class="sub">Last allocation ${esc(m.last || '—')} · weights sum to ${pct(m.total)}</p>
-   <div class="kpis">${D.factors.map((f, i) => `<div class="card kpi"><span class="eyebrow">${esc(fname(f))}</span><b style="color:${m.net[i] >= 0 ? 'var(--pos)' : 'var(--neg)'}">${sgn(m.net[i])}</b><small>net exposure</small></div>`).join('')}</div>
-   <div class="card" style="margin-bottom:14px"><h2>By asset class</h2><div class="stack">${stack}</div><div class="legend">${legend}</div></div>
-   ${donutCard(m)}
-   ${perfCard(m)}
-   ${stressCard(m)}
-   ${earnsPlaceCard(m)}
-   <div class="card"><h2>Holdings <span class="chip draft">draft loadings</span></h2><table><thead><tr><th>Holding</th><th>Class</th><th class="num">Weight</th>${D.factors.map(f => `<th class="num">${esc(f.slug[0].toUpperCase())}</th>`).join('')}</tr></thead><tbody>
+   ${modelDashboard(m)}
+   <div class="card" style="margin-top:18px"><h2>Holdings <span class="chip draft">draft loadings</span></h2><table><thead><tr><th>Holding</th><th>Class</th><th class="num">Weight</th>${D.factors.map(f => `<th class="num">${esc(f.slug[0].toUpperCase())}</th>`).join('')}</tr></thead><tbody>
    ${m.holdings.map(h => `<tr><td><b>${esc(h.ticker)}</b><br><small style="color:var(--muted)">${esc(h.name)}</small></td><td>${esc(D.classNames[h.cls] || h.cls)}</td><td class="num">${pct(h.weight)}</td>
     ${h.loading ? h.loading.map(v => v === null ? '<td class="num" style="color:var(--muted)">–</td>' : `<td class="num" style="color:${v > 0 ? 'var(--pos)' : v < 0 ? 'var(--neg)' : 'var(--muted)'}">${sgn(v)}</td>`).join('') : `<td class="num" colspan="${D.factors.length}" style="color:var(--muted)">not scored</td>`}</tr>`).join('')}
    </tbody></table><p class="note">G = growth, I = inflation, L = cost of liquidity. Subjective loadings; overrides are drafts.</p></div>`;
@@ -1761,7 +1580,7 @@ document.addEventListener('change', e => {
   if (!sel) return;
   repSaveError = null;
   repPending[sel.dataset.splitfor] = sel.value || null;
-  $('#app').innerHTML = reporting();   // the donut previews the staged choice before it is saved
+  openModel(repModelId);   // the donut previews the staged choice before it is saved
 });
 document.addEventListener('click', e => {
   const rp = e.target.closest('[data-repperiod]'), rm = e.target.closest('[data-repmodel]');
@@ -1771,7 +1590,7 @@ document.addEventListener('click', e => {
   if (rd && !rd.disabled) repDdPeriod = rd.dataset.repdd;
   if (rm) { repModelId = rm.dataset.repmodel; repPending = {}; repSaveError = null; }
   if (ru) { commitSplits(); return; }
-  $('#app').innerHTML = reporting();
+  openModel(repModelId);
 });
 document.addEventListener('click', e => {
   const adj = e.target.closest('[data-pgadj]'), pm = e.target.closest('[data-pgmodel]'), rs = e.target.closest('[data-pgreset]');
@@ -1783,14 +1602,6 @@ document.addEventListener('click', e => {
     pgWeights[slug] = Math.max(0, Math.round(((pgWeights[slug] || 0) + (+delta)) * 10000) / 10000);
   }
   $('#app').innerHTML = playground();
-});
-document.addEventListener('click', e => {
-  const d = e.target.closest('[data-donut]'), p = e.target.closest('[data-period]');
-  if (!d && !p) return;
-  if (d) donutMode = d.dataset.donut;
-  if (p) perfPeriod = p.dataset.period;
-  const id = (location.hash.split('/')[1] || '');
-  if (id) openModel(id);
 });
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-layer]'); if (!t || !chartCtx) return;
