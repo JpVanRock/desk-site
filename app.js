@@ -178,8 +178,12 @@ async function load() {
     rocBoard: newest(rocBoard),
     triggerHits: (trigHits || []).map(h => ({ ...h, rule_name: (trigRules || []).find(r => r.id === h.rule_id)?.name || null })),
     signalToNoise: stn || [], softFailures: softFailures.slice(),
-    periodStats: periodStats || [], contribution: contribution || [],
-    factorAlloc: factorAlloc || [], valueSeries: valueSeries || [], snapIntegrity: snapIntegrity || [],
+    // newest() matters on every dated set: these jobs write a fresh as_of each run, so loading
+    // them raw sums every run ever made. It showed up as a contribution total of 200% weight and
+    // double the basis points the day a second run landed — a figure that looks like a number
+    // rather than like a bug, which is the dangerous kind.
+    periodStats: newest(periodStats), contribution: newest(contribution),
+    factorAlloc: newest(factorAlloc), valueSeries: valueSeries || [], snapIntegrity: snapIntegrity || [],
     currentHoldings: currentHoldings || [], factorOverrides: factorOverrides || [] };
 }
 
@@ -636,218 +640,289 @@ function computeFactorAllocation(holdings, classOf, overrideBySec) {
   return { longs, shorts, unclassified, unresolved, resolved };
 }
 
-// Persist a chosen split, then recompute and re-render. Writes are optimistic: the local map is
-// updated first so the chart answers at once, and a failed write is reported rather than silently
-// leaving the screen disagreeing with the database.
-async function setHoldingSplit(securityId, split) {
+// Commit the staged classifications in one go. The dropdowns only stage a choice; nothing is
+// written until Update is pressed. That is deliberate for client data — a classification changes
+// what the allocation chart reports, so it should be an action taken rather than a side effect of
+// brushing a dropdown. Writes are optimistic: local state updates first so the chart answers at
+// once, and a failure puts it back and says so rather than leaving the screen disagreeing with
+// the database.
+async function commitSplits() {
+  const pending = { ...repPending };
+  const keys = Object.keys(pending);
+  if (!keys.length) return;
   const prev = D.factorOverrides.slice();
-  D.factorOverrides = D.factorOverrides.filter(o => o.security_id !== securityId);
-  if (split) D.factorOverrides.push({ security_id: securityId, split, author: 'site', as_of: new Date().toISOString().slice(0, 10) });
+  for (const [sid, split] of Object.entries(pending)) {
+    D.factorOverrides = D.factorOverrides.filter(o => o.security_id !== sid);
+    if (split) D.factorOverrides.push({ security_id: sid, split, author: 'site', as_of: new Date().toISOString().slice(0, 10) });
+  }
+  repPending = {}; repSaveError = null;
   $('#app').innerHTML = reporting();
   try {
-    if (split) {
-      const { error } = await sb.from('holding_factor_overrides')
-        .upsert({ security_id: securityId, split, author: 'site', as_of: new Date().toISOString().slice(0, 10) }, { onConflict: 'security_id' });
-      if (error) throw new Error(error.message);
-    } else {
-      const { error } = await sb.from('holding_factor_overrides').delete().eq('security_id', securityId);
-      if (error) throw new Error(error.message);
-    }
+    const ups = Object.entries(pending).filter(([, v]) => v)
+      .map(([security_id, split]) => ({ security_id, split, author: 'site', as_of: new Date().toISOString().slice(0, 10) }));
+    const dels = Object.entries(pending).filter(([, v]) => !v).map(([k]) => k);
+    if (ups.length) { const { error } = await sb.from('holding_factor_overrides').upsert(ups, { onConflict: 'security_id' }); if (error) throw new Error(error.message); }
+    for (const sid of dels) { const { error } = await sb.from('holding_factor_overrides').delete().eq('security_id', sid); if (error) throw new Error(error.message); }
   } catch (ex) {
     D.factorOverrides = prev;
-    repSaveError = `Could not save that classification: ${ex.message}. The chart has been put back to what the database holds.`;
+    repSaveError = `Could not save ${keys.length === 1 ? 'that classification' : 'those classifications'}: ${ex.message}. The chart has been put back to what the database holds.`;
     $('#app').innerHTML = reporting();
   }
 }
-let repSaveError = null;
 
-// ---------- Reporting: the three sections from docs/claude-code-handoff.md ----------
+// ---------- Per-model dashboard, laid out to the owner's reference ----------
 //
-// The governing rule for this page: never show a number that was not computed from real data.
-// Where an input is missing, the row says what is missing and what would fill it. Every figure
-// carries its as-of date, and the reconstruction caveat is printed with the statistics rather
-// than buried in a tooltip, because a return that looks official and is not is the worst
-// failure available here.
-let repPeriod = '1YR';
-let repModelId = null;
+// Governing rule, from docs/claude-code-handoff.md: never show a number that was not computed
+// from real data. A missing input renders an empty state naming what is missing and what would
+// fill it — never a zero, never a blank that could be mistaken for one. Each statistic therefore
+// carries a hover note saying how it WILL be calculated, so a dash is self-explanatory.
+let repPeriod = '1YR', repDdPeriod = '1YR', repModelId = null, repSaveError = null;
+let repPending = {};   // securityId -> split, staged by the dropdowns until Update is pressed
 const REP_PERIODS = ['1W', '1M', '3M', '6M', 'YTD', '1YR', '3YR', '5YR', '10YR', 'ALL'];
+const FCOLOR = { growth: 'var(--growth)', inflation: 'var(--inflation)', liquidity: 'var(--liquidity)', unclassified: 'var(--unclass)' };
 
-// Drawdown within a window, peak reset at the window start. This matches the tested prototype
-// engine: the series [100, 110, 99, 120] must give [0%, 0%, -10%, 0%].
+// Drawdown within a window, peak reset at the window start — the prototype's tested rule:
+// [100,110,99,120] must give [0%, 0%, -10%, 0%].
 function drawdownSeries(points, get) {
   let peak = -Infinity;
   return points.map(p => { const v = get(p); if (v === null || v === undefined) return null; if (v > peak) peak = v; return v / peak - 1; });
 }
 
-function reporting() {
-  const withHistory = [...new Set((D.valueSeries || []).map(v => v.strategy_id))];
-  if (!withHistory.length) {
-    return `<span class="eyebrow">Reporting</span><h1>Reporting</h1>
-     <div class="card"><div class="empty">No model has a dated holdings history loaded yet. Load one with jobs/load-holdings-history.mjs, then run jobs/compute-model-reporting.mjs.</div></div>`;
+// Donut with the growth share called out in the middle, per the reference.
+function factorDonut(slices, size = 236) {
+  const total = slices.reduce((s, d) => s + d.v, 0) || 1;
+  const cx = size / 2, cy = size / 2, rO = size * 0.44, rI = size * 0.28;
+  const arc = (a0, a1) => {
+    const p = (r, a) => [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+    const big = (a1 - a0) > Math.PI ? 1 : 0;
+    const [x1, y1] = p(rO, a0), [x2, y2] = p(rO, a1), [x3, y3] = p(rI, a1), [x4, y4] = p(rI, a0);
+    return `M${x1.toFixed(1)} ${y1.toFixed(1)}A${rO} ${rO} 0 ${big} 1 ${x2.toFixed(1)} ${y2.toFixed(1)}L${x3.toFixed(1)} ${y3.toFixed(1)}A${rI} ${rI} 0 ${big} 0 ${x4.toFixed(1)} ${y4.toFixed(1)}Z`;
+  };
+  let a = -Math.PI / 2, out = '';
+  for (const d of slices) {
+    if (d.v <= 0) continue;
+    const a1 = a + (d.v / total) * Math.PI * 2;
+    out += `<path d="${arc(a, Math.min(a1, a + Math.PI * 2 - 1e-6))}" fill="${FCOLOR[d.k] || 'var(--unclass)'}" stroke="var(--panel)" stroke-width="2"><title>${esc(d.label)} ${pct(d.v)}</title></path>`;
+    a = a1;
   }
-  const m = D.models.find(x => x.id === repModelId) || D.models.find(x => withHistory.includes(x.id)) || D.models[0];
+  const g = slices.find(s => s.k === 'growth');
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="display:block;overflow:visible">${out}
+    <text class="hero" x="${cx}" y="${cy + 2}" text-anchor="middle">${pct(g ? g.v : 0)}</text>
+    <text class="herolab" x="${cx}" y="${cy + 20}" text-anchor="middle">growth</text></svg>`;
+}
+
+// How each statistic will be computed. Shown on hover so an empty cell explains itself rather
+// than looking like a bug.
+const STAT_HOW = {
+  model_return:     'Model return over the period, time-weighted. Reconstructed from holdings weights and daily adjusted prices, so it is gross of fees and approximate between trade dates.',
+  benchmark_return: "The model's peer benchmark over the same window, on the same basis.",
+  max_drawdown:     'Largest fall from a running peak inside the window. The peak resets at the window start, so each period begins at 0%.',
+  upside_capture:   "Model return during the benchmark's up days divided by the benchmark's return on those days.",
+  downside_capture: "Model return during the benchmark's down days divided by the benchmark's return on those days.",
+  beta_sp500:       'Slope of model returns regressed on the S&P 500 over the window. Read R² alongside it: a beta from a poor fit is a number without a meaning.',
+  dividend_yield:   "Weighted average of each holding's yield at current weights. No instrument-level yield source is connected, so this cannot be computed at all.",
+  coverage:         'Share of model weight that was actually priced at the thinnest point of the window. A return computed over part of the model is not the model’s return.',
+};
+
+function reporting() {
+  const models = D.models || [];
+  if (!models.length) return `<span class="eyebrow">Client reporting</span><h1>Reporting</h1><div class="card"><div class="empty">No models loaded.</div></div>`;
+  // Default to a model that actually has a dated holdings history, so the page does not open on
+  // five empty panels when only some models have been loaded.
+  const withHistory = new Set((D.valueSeries || []).map(v => v.strategy_id));
+  const m = models.find(x => x.id === repModelId)
+    || models.find(x => withHistory.has(x.id))
+    || models[0];
   repModelId = m.id;
 
+  const n = v => v === null || v === undefined ? null : +v;
+  const pc = (v, d = 2) => v === null ? null : (v >= 0 ? '+' : '') + (v * 100).toFixed(d) + '%';
+  const col = v => v === null ? 'var(--muted)' : v >= 0 ? 'var(--pos)' : 'var(--neg)';
+
   const stats = (D.periodStats || []).filter(r => r.strategy_id === m.id);
-  const stat = stats.find(r => r.period === repPeriod);
+  const stat = stats.find(r => r.period === repPeriod) || null;
   const series = (D.valueSeries || []).filter(v => v.strategy_id === m.id);
   const contrib = (D.contribution || []).filter(c => c.strategy_id === m.id && c.period === repPeriod);
-  const fa = (D.factorAlloc || []).filter(f => f.strategy_id === m.id);
   const integ = (D.snapIntegrity || []).filter(i => i.strategy_id === m.id);
-  const n = v => v === null || v === undefined ? null : +v;
-  const pc = (v, d = 2) => v === null ? '<span style="color:var(--muted)">–</span>'
-    : `<span style="color:${v >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(v >= 0 ? '+' : '') + (v * 100).toFixed(d)}%</span>`;
-  const plain = (v, d = 2) => v === null ? '<span style="color:var(--muted)">–</span>' : (v * 100).toFixed(d) + '%';
+  const hasHistory = series.length > 0;
 
-  const tab = k => {
-    const s = stats.find(r => r.period === k);
-    const dead = s && s.unavailable_reason;
-    return `<span class="click" data-repperiod="${k}" title="${dead ? esc(s.unavailable_reason) : ''}" style="cursor:pointer;padding:3px 9px;border-radius:6px;font-size:12px;background:${repPeriod === k ? 'var(--panel2)' : 'transparent'};color:${repPeriod === k ? 'var(--text)' : dead ? 'var(--muted)' : 'var(--muted)'};${dead ? 'text-decoration:line-through dotted;opacity:.6' : ''}">${k}</span>`;
+  const modelTabs = models.map(x => `<button class="tab" data-repmodel="${esc(x.id)}" aria-selected="${x.id === m.id}">${esc(x.name)}</button>`).join('');
+
+  // ---- model statistics strip ----
+  const cells = [
+    ['Total return', stat && !stat.unavailable_reason ? pc(n(stat.model_return)) : null, 'model_return'],
+    ['Benchmark', stat && !stat.unavailable_reason ? pc(n(stat.benchmark_return)) : null, 'benchmark_return'],
+    ['Max drawdown', stat && !stat.unavailable_reason ? pc(n(stat.max_drawdown)) : null, 'max_drawdown'],
+    ['Upside capture', stat && n(stat.upside_capture) !== null ? (n(stat.upside_capture) * 100).toFixed(0) + '%' : null, 'upside_capture'],
+    ['Downside capture', stat && n(stat.downside_capture) !== null ? (n(stat.downside_capture) * 100).toFixed(0) + '%' : null, 'downside_capture'],
+    ['Beta vs S&P 500', stat && n(stat.beta_sp500) !== null ? n(stat.beta_sp500).toFixed(2) + '×' : null, 'beta_sp500'],
+    ['Dividend yield', null, 'dividend_yield'],
+    ['Weight priced', stat && n(stat.min_coverage) !== null ? (n(stat.min_coverage) * 100).toFixed(0) + '%' : null, 'coverage'],
+  ];
+  const missing = cells.filter(c => c[1] === null).length;
+  const statNote = !hasHistory ? 'No dated holdings history for this model — load one with jobs/load-holdings-history.mjs'
+    : stat && stat.unavailable_reason ? esc(stat.unavailable_reason)
+    : missing ? `${missing} of ${cells.length} awaiting data` : '';
+  const statsCard = `<div class="card" style="margin-bottom:18px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:12px">
+      <h2 style="margin:0">Model statistics</h2>
+      <span style="font-size:12px;color:var(--muted)">${statNote}</span></div>
+    <div class="tabs">${REP_PERIODS.map(p => { const s = stats.find(r => r.period === p); const dead = !hasHistory || (s && s.unavailable_reason);
+      return `<button class="tab" data-repperiod="${p}" aria-selected="${p === repPeriod}" ${dead ? `disabled title="${esc(s && s.unavailable_reason || 'Needs a dated holdings history')}"` : ''}>${p}</button>`; }).join('')}</div>
+    ${stat && !stat.unavailable_reason ? `<p class="sub" style="margin:4px 0 12px">${esc(stat.start_date)} to ${esc(stat.end_date)}${stat.window_starts_in_gap ? ' · <b style="color:var(--warn)">window start fell inside the history gap and was pulled back</b>' : ''}</p>` : ''}
+    <div class="statstrip">${cells.map(([lab, val, how]) => `<div class="stat" title="${esc(STAT_HOW[how])}">
+      <div class="slab">${lab}</div><div class="sval${val === null ? ' pending' : ''}" ${val !== null && /^[+-]/.test(val) ? `style="color:${col(parseFloat(val))}"` : ''}>${val === null ? '—' : esc(val)}</div></div>`).join('')}</div>
+    <p class="note">Hover any statistic to see how it is calculated. ${stat && stat.method_note ? `<b>These are reconstructed, not the firm's reported figures.</b> ${esc(stat.method_note)}` : 'Nothing on this row is estimated or filled in by hand.'}</p></div>`;
+
+  // ---- the two allocation panels ----
+  const ovBySec = Object.fromEntries((D.factorOverrides || []).map(o => [o.security_id, o]));
+  const staged = { ...ovBySec };
+  for (const [sid, split] of Object.entries(repPending)) staged[sid] = split ? { security_id: sid, split } : undefined;
+  const actualH = (D.currentHoldings || []).filter(h => h.strategy_id === m.id);
+  const targetH = (m.holdings || []).filter(h => h.security_id);
+  const clsOfSec = id => (D.markets.find(x => x.id === id) || {}).cls || null;
+
+  const panel = (title, asof, holdings, classOf) => {
+    if (!holdings.length) {
+      return `<section class="card"><h2>${esc(title)}</h2><p class="asof" style="font-size:12px;color:var(--muted);margin:0 0 10px">${esc(asof)}</p>
+        <div class="empty">No dated holdings snapshot for this model. Load one with jobs/load-holdings-history.mjs and the panel fills in.</div></section>`;
+    }
+    const r = computeFactorAllocation(holdings, classOf, staged);
+    const slices = [
+      { k: 'growth', label: 'Growth', v: r.longs.growth },
+      { k: 'inflation', label: 'Inflation', v: r.longs.inflation },
+      { k: 'liquidity', label: 'Liquidity', v: r.longs.liquidity },
+      { k: 'unclassified', label: 'Unclassified', v: r.unclassified },
+    ];
+    const shorts = [['Growth', r.shorts.growth], ['Inflation', r.shorts.inflation], ['Liquidity', r.shorts.liquidity]];
+    const maxShort = Math.max(...shorts.map(x => x[1]));
+    const top = shorts.filter(x => Math.abs(x[1] - maxShort) < 1e-9 && maxShort > 0);
+    const unres = r.unresolved.slice().sort((a, b) => +b.weight - +a.weight);
+    const res = r.resolved.slice().sort((a, b) => +b.weight - +a.weight);
+    const rowFor = h => {
+      const cur = staged[h.security_id] ? staged[h.security_id].split : '';
+      return `<div class="row">
+        <div><span class="tick">${esc(h.ticker)}</span><span class="wt">${pct(+h.weight)}</span></div>
+        <select data-splitfor="${esc(h.security_id || '')}" ${h.security_id ? '' : 'disabled title="No matching security, so a split cannot be stored"'}>
+          <option value="" ${!cur ? 'selected' : ''}>Leave unclassified</option>
+          ${SPLIT_OPTIONS.map(o => `<option value="${o.key}" ${cur === o.key ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+        </select></div>`;
+    };
+    const dirty = Object.keys(repPending).length > 0;
+    return `<section class="card"><h2>${esc(title)}</h2><p class="asof" style="font-size:12px;color:var(--muted);margin:0 0 10px">${esc(asof)}</p>
+      <div class="donutwrap">${factorDonut(slices)}</div>
+      <ul class="flegend">${slices.filter(s => s.v > 0).map(s => `<li><span class="sw" style="background:${FCOLOR[s.k]}"></span><span class="nm">${s.label}</span><span class="vl">${pct(s.v)}</span></li>`).join('')}</ul>
+      <div class="shortbox"><div class="lab">Most short</div>
+        <div class="val"><span class="pct" style="color:${maxShort > 0 ? 'var(--neg)' : 'var(--muted)'}">${pct(maxShort)}</span>
+        <span class="fac">${top.length ? esc(top.map(t => t[0]).join(' and ')) : 'no short exposure'}</span></div></div>
+      <div class="unc"><h3>Unclassified positions</h3>
+        ${unres.length || res.length ? [...unres, ...res].map(rowFor).join('') : '<p style="color:var(--muted);font-size:12.5px;font-style:italic">None. Every position is classified.</p>'}
+        ${(unres.length || res.length) ? `<button class="btn" data-repupdate="1" ${dirty ? '' : 'disabled'}>${dirty ? `Update allocation (${Object.keys(repPending).length} change${Object.keys(repPending).length === 1 ? '' : 's'})` : 'Update allocation'}</button>` : ''}
+      </div></section>`;
   };
-  const modelTabs = D.models.filter(x => withHistory.includes(x.id)).map(x =>
-    `<span class="click" data-repmodel="${esc(x.id)}" style="cursor:pointer;padding:4px 10px;border-radius:6px;font-size:12px;background:${x.id === m.id ? 'var(--panel2)' : 'transparent'};color:${x.id === m.id ? 'var(--text)' : 'var(--muted)'}">${esc(x.name)}</span>`).join('');
 
-  // ---- data quality, from the integrity view ----
-  const offSum = integ.filter(i => i.weight_off);
-  const gaps = integ.filter(i => n(i.gap_days_before) !== null && +i.gap_days_before > 60);
-  const suspect = integ.filter(i => +i.n_suspect_names > 0);
-  const unmatched = integ.filter(i => +i.n_unmatched > 0);
-  const dqItems = [
-    gaps.length ? `<li><b>${gaps.map(g => `${esc(g.as_of)} (${g.gap_days_before} days since the previous snapshot)`).join(', ')}</b> — the history has a hole. Any window opening inside it falls back to the snapshot before it, and the period below says so when that happens. Periods longer than the history cannot be built at all.</li>` : '',
-    offSum.length ? `<li><b>${offSum.length} snapshot${offSum.length === 1 ? '' : 's'} do not sum to 100%</b>: ${offSum.map(o => `${esc(o.as_of)} at ${(+o.weight_total * 100).toFixed(2)}%`).join(', ')}. Loaded exactly as exported and <i>not</i> corrected — this is a discrepancy in the source records, not a rounding artefact to tidy away.</li>` : '',
-    suspect.length ? `<li><b>Editorial text in the name field</b> on ${suspect.length} snapshot${suspect.length === 1 ? '' : 's'}. At least one holding's name in the custodian export contains AI-generated commentary rather than a fund name. Names are shown verbatim below so this stays visible; other names in the same file may be affected.</li>` : '',
-    unmatched.length ? `<li><b>${unmatched.length} snapshot${unmatched.length === 1 ? '' : 's'} contain a ticker with no matching security</b>, so it carries no price and no factor exposure.</li>` : '',
-  ].filter(Boolean).join('');
-  const dqCard = `<div class="card" style="margin-bottom:14px;border-left:3px solid var(--warn)">
-    <h2>Data quality <span class="chip">${[gaps.length, offSum.length, suspect.length, unmatched.length].filter(x => x).length} issue type${[gaps.length, offSum.length, suspect.length, unmatched.length].filter(x => x).length === 1 ? '' : 's'}</span></h2>
-    ${dqItems ? `<ul style="margin:6px 0 0 18px;line-height:1.6">${dqItems}</ul>` : '<div class="empty">No integrity problems found in the loaded snapshots.</div>'}
-    <p class="note">These are reported, never silently repaired. ${integ.length} snapshots loaded${integ.length ? `, ${esc(integ[0].as_of)} to ${esc(integ.at(-1).as_of)}` : ''}.</p></div>`;
-
-  // ---- 1. model statistics ----
-  const statsCard = `<div class="card" style="margin-bottom:14px"><h2>Model statistics</h2>
-   <div style="margin-bottom:10px">${REP_PERIODS.map(tab).join('')}</div>
-   ${!stat ? '<div class="empty">No statistics computed for this period yet. Run jobs/compute-model-reporting.mjs.</div>'
-    : stat.unavailable_reason ? `<div class="empty">${esc(stat.unavailable_reason)}</div>`
-    : `<p class="sub" style="margin-top:0">${esc(stat.start_date)} to ${esc(stat.end_date)}${n(stat.min_coverage) !== null && n(stat.min_coverage) < 0.999 ? ` · computed over ${(n(stat.min_coverage) * 100).toFixed(0)}% of model weight at the thinnest point` : ''}${stat.window_starts_in_gap ? ' · <b style="color:var(--warn)">window start fell inside the history gap and was pulled back to the prior snapshot</b>' : ''}</p>
-   <div class="kpis">
-    <div class="card kpi"><span class="eyebrow">Total return</span><b>${pc(n(stat.model_return))}</b><small>${esc(repPeriod)}, gross of fees</small></div>
-    <div class="card kpi"><span class="eyebrow">Benchmark</span><b>${pc(n(stat.benchmark_return))}</b><small>${esc(m.benchmarkLabel || 'peer benchmark')}</small></div>
-    <div class="card kpi"><span class="eyebrow">Max drawdown</span><b>${pc(n(stat.max_drawdown))}</b><small>bench ${plain(n(stat.benchmark_max_drawdown), 1)}</small></div>
-    <div class="card kpi"><span class="eyebrow">Upside capture</span><b>${n(stat.upside_capture) === null ? '–' : (n(stat.upside_capture) * 100).toFixed(0) + '%'}</b><small>vs benchmark</small></div>
-    <div class="card kpi"><span class="eyebrow">Downside capture</span><b>${n(stat.downside_capture) === null ? '–' : (n(stat.downside_capture) * 100).toFixed(0) + '%'}</b><small>vs benchmark</small></div>
-    <div class="card kpi"><span class="eyebrow">Beta vs S&amp;P 500</span><b>${n(stat.beta_sp500) === null ? '–' : n(stat.beta_sp500).toFixed(2) + '×'}</b><small>R² ${n(stat.beta_r2) === null ? '–' : n(stat.beta_r2).toFixed(2)}</small></div>
-    <div class="card kpi"><span class="eyebrow">Dividend yield</span><b style="color:var(--muted)">not available</b><small>no instrument-level yield source</small></div>
-   </div>
-   <p class="note"><b>These are reconstructed, not the firm's reported figures.</b> ${esc(stat.method_note || '')} Dividend yield is blank because nothing in the data can produce it; connecting an instrument-level yield source would fill it. Confirm the return, capture and beta conventions against how the firm reports before any of this goes to a client.</p>`}
+  const allocGrid = `<div class="dashgrid" style="margin-bottom:18px">
+    ${panel('Target allocation', 'Current target weights', targetH, h => h.cls)}
+    ${panel('Actual holdings', actualH.length ? `Snapshot ${actualH[0].as_of}` : 'No snapshot loaded', actualH, h => clsOfSec(h.security_id))}
   </div>`;
 
-  // ---- 2. factor allocation, computed live so a classification answers immediately ----
-  const faCard = (() => {
-    const ovBySec = Object.fromEntries((D.factorOverrides || []).map(o => [o.security_id, o]));
-    const actualH = (D.currentHoldings || []).filter(h => h.strategy_id === m.id);
-    const targetH = (m.holdings || []).filter(h => h.security_id);
-    const clsOfSec = id => (D.markets.find(x => x.id === id) || {}).cls || null;
-    if (!actualH.length && !targetH.length) {
-      return `<div class="card" style="margin-bottom:14px"><h2>Factor allocation</h2><div class="empty">No holdings loaded for this model. Load a history with jobs/load-holdings-history.mjs.</div></div>`;
-    }
-    const A = computeFactorAllocation(actualH, h => clsOfSec(h.security_id), ovBySec);
-    const T = computeFactorAllocation(targetH, h => h.cls, ovBySec);
-    const asOf = actualH.length ? actualH[0].as_of : null;
-
-    const panel = (label, r, sub) => {
-      const parts = [
-        { label: 'Growth', v: r.longs.growth, color: 'var(--pos)' },
-        { label: 'Inflation', v: r.longs.inflation, color: 'var(--warn)' },
-        { label: 'Liquidity', v: r.longs.liquidity, color: 'var(--accent)' },
-        { label: 'Unclassified', v: r.unclassified, color: 'var(--muted)' },
-      ].filter(p => p.v > 0);
-      const shorts = [['Growth', r.shorts.growth], ['Inflation', r.shorts.inflation], ['Liquidity', r.shorts.liquidity]];
-      const maxShort = Math.max(...shorts.map(x => x[1]));
-      const top = shorts.filter(x => Math.abs(x[1] - maxShort) < 1e-9 && maxShort > 0);
-      return `<div style="flex:1;min-width:250px">
-        <div class="eyebrow">${esc(label)}${sub ? ' · ' + esc(sub) : ''}</div>
-        ${donutSvg(parts, 170)}
-        <table style="margin:8px 0 0"><tbody>
-        ${parts.map(p => `<tr><td><b style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${p.color};margin-right:7px"></b>${p.label}</td><td class="num">${pct(p.v)}</td></tr>`).join('')}
-        </tbody></table>
-        <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)">
-         <div class="eyebrow">Largest short</div>
-         ${maxShort > 0 ? `<b style="color:var(--neg);font-size:15px">${top.map(t => t[0]).join(' and ')} ${pct(maxShort)}</b>` : '<span style="color:var(--muted)">none</span>'}
-        </div>
-      </div>`;
-    };
-
-    // The classification table. Every holding with no confirmed class gets a dropdown; choosing
-    // one moves it out of the unclassified slice and into the pie at once.
-    const rows = [...A.unresolved.map(h => ({ ...h, basis: 'actual' })), ...A.resolved.map(h => ({ ...h, basis: 'actual' }))]
-      .sort((a, b) => +b.weight - +a.weight);
-    const classifyTable = !rows.length ? '<div class="empty">Every holding in the current snapshot has a confirmed asset class or an assigned split.</div>'
-      : `<table><thead><tr><th>Ticker</th><th>Name</th><th class="num">Weight</th><th>Factor split</th></tr></thead><tbody>
-      ${rows.map(h => `<tr>
-        <td><b>${esc(h.ticker)}</b></td>
-        <td style="max-width:240px;color:var(--muted)">${esc(h.name_raw || '')}</td>
-        <td class="num">${pct(+h.weight)}</td>
-        <td><select data-splitfor="${esc(h.security_id || '')}" ${h.security_id ? '' : 'disabled title="No matching security, so a split cannot be stored against it"'}
-             style="background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px">
-          <option value="" ${!h.split ? 'selected' : ''}>— unclassified —</option>
-          ${SPLIT_OPTIONS.map(o => `<option value="${o.key}" ${h.split === o.key ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
-        </select></td></tr>`).join('')}
-      </tbody></table>`;
-
-    const overriddenWeight = A.resolved.reduce((s, h) => s + +h.weight, 0);
-    return `<div class="card" style="margin-bottom:14px"><h2>Factor allocation</h2>
-     ${repSaveError ? `<div class="empty" style="border-left:3px solid var(--neg);text-align:left;padding-left:10px">${esc(repSaveError)}</div>` : ''}
-     <div style="display:flex;gap:22px;flex-wrap:wrap">${panel('actual', A, asOf)}${panel('target', T, '')}</div>
-     <h2 style="font-size:13px;margin-top:16px">Classify the unclassified</h2>
-     ${classifyTable}
-     <p class="note">A holding's weight splits evenly across the factors it is <b>long</b>, so the pie sums to 100%. Its <b>full</b> weight counts against each factor it is short, and the short tally is separate — it never sums with the pie, and only the largest short is shown. A holding with no <i>confirmed</i> asset class carries no exposure and sits in the unclassified slice; choosing a split above moves it into the pie immediately, for this model and every other one holding it. ${overriddenWeight > 0 ? `<b>${pct(overriddenWeight)} of the current snapshot is in the pie by an assigned split rather than a confirmed asset class.</b> ` : ''}An assigned split is an <b>asset-class look-through</b> — "this holding behaves like 60% equity and 40% fixed income" — so it earns both sides of the matrix: it joins the pie <i>and</i> the short tally, each weighted by its class shares. Nothing is inferred beyond the matrix itself. Cost of liquidity means exposure to higher future capital costs; fixed income is treated as long it, the single documented override to the framework chart.</p></div>`;
-  })();
-
-  // ---- 3. contribution ----
+  // ---- contribution ----
   const cRows = contrib.slice().sort((a, b) => (n(b.contribution_bps) ?? -1e9) - (n(a.contribution_bps) ?? -1e9));
   const totalBps = cRows.reduce((s, c) => s + (n(c.contribution_bps) || 0), 0);
   const unpriced = cRows.filter(c => !c.priced);
   const SUSPECT = /can be simplified to|as an AI|\*\*/i;
-  const contribCard = `<div class="card" style="margin-bottom:14px"><h2>Contribution summary <span class="chip">${esc(repPeriod)}</span></h2>
-   ${stat && stat.unavailable_reason ? `<div class="empty">${esc(stat.unavailable_reason)}</div>`
-    : !cRows.length ? '<div class="empty">No contribution rows for this period.</div>'
-    : `<table><thead><tr><th>Ticker</th><th>Name</th><th class="num">Start wt</th><th class="num">Return</th><th class="num">End wt</th><th class="num">Contribution</th><th></th></tr></thead><tbody>
-   ${cRows.map(c => `<tr>
-     <td><b>${esc(c.ticker)}</b></td>
-     <td style="max-width:260px;color:var(--muted)">${SUSPECT.test(c.name_raw || '') ? `<span style="color:var(--warn)" title="This name contains AI-generated editorial text in the source export, shown verbatim">⚠ ${esc(c.name_raw)}</span>` : esc(c.name_raw || '')}</td>
-     <td class="num">${n(c.start_weight) === null ? '–' : pct(n(c.start_weight))}</td>
-     <td class="num">${c.priced ? pc(n(c.period_return)) : '<span style="color:var(--muted)" title="No price for this holding across the window">no price</span>'}</td>
-     <td class="num">${n(c.end_weight) === null ? '–' : pct(n(c.end_weight))}</td>
-     <td class="num">${n(c.contribution_bps) === null ? '<span style="color:var(--muted)">–</span>' : `<span style="color:${n(c.contribution_bps) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${n(c.contribution_bps) >= 0 ? '+' : ''}${n(c.contribution_bps).toFixed(0)} bps</span>`}</td>
-     <td>${c.status === 'added' ? '<span class="chip long">added</span>' : c.status === 'removed' ? '<span class="chip short">removed</span>' : ''}</td></tr>`).join('')}
-   <tr style="border-top:2px solid var(--line)"><td colspan="5"><b>Total</b></td><td class="num"><b>${totalBps >= 0 ? '+' : ''}${totalBps.toFixed(0)} bps</b></td><td></td></tr>
-   </tbody></table>
-   <p class="note">Contribution = start weight × period return, in basis points, on <b>actual holdings</b>. Positions added during the period start at zero weight and contribute nothing by this measure; positions sold are shown with the weight they started at. ${unpriced.length ? `<b>${unpriced.length} holding${unpriced.length === 1 ? '' : 's'} could not be priced across this window</b> and contribute nothing here — their weight is real but their return is unknown, so the total understates. ` : ''}The total is an approximation of the period return and will drift from it over long windows, because it uses starting weights and ignores the ${'rebalancing'} in between.</p>`}
+  const contribCard = `<div class="card" style="margin-bottom:18px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Contribution summary</h2>
+      <span style="font-size:12px;color:var(--muted)">${stat && !stat.unavailable_reason ? esc(stat.start_date) + ' → ' + esc(stat.end_date) : ''}</span></div>
+    <div class="tabs">${REP_PERIODS.map(p => { const s = stats.find(r => r.period === p); const dead = !hasHistory || (s && s.unavailable_reason);
+      return `<button class="tab" data-repperiod="${p}" aria-selected="${p === repPeriod}" ${dead ? `disabled title="${esc(s && s.unavailable_reason || 'Needs a dated holdings history')}"` : ''}>${p}</button>`; }).join('')}</div>
+    ${!hasHistory ? '<div class="empty">No dated holdings history for this model.</div>'
+      : stat && stat.unavailable_reason ? `<div class="empty">${esc(stat.unavailable_reason)}</div>`
+      : !cRows.length ? '<div class="empty">No contribution rows for this period.</div>'
+      : `<table><thead><tr><th>Ticker</th><th>Name</th><th class="num">Start wt</th><th class="num">Return</th><th class="num">End wt</th><th class="num">Contribution</th></tr></thead><tbody>
+      <tr style="border-bottom:2px solid var(--line);background:var(--panel2)"><td><b>TOTAL</b></td><td></td><td class="num"><b>${pct(cRows.reduce((s, c) => s + (n(c.start_weight) || 0), 0))}</b></td><td class="num"></td><td class="num"><b>${pct(cRows.reduce((s, c) => s + (n(c.end_weight) || 0), 0))}</b></td><td class="num"><b style="color:${col(totalBps)}">${totalBps >= 0 ? '+' : ''}${totalBps.toFixed(0)} bps</b></td></tr>
+      ${cRows.map(c => `<tr><td><b>${esc(c.ticker)}</b>${c.status === 'removed' ? ' <small style="color:var(--muted);font-style:italic">no longer held</small>' : c.status === 'added' ? ' <small style="color:var(--muted);font-style:italic">added in period</small>' : ''}</td>
+        <td style="max-width:280px;color:var(--muted)">${SUSPECT.test(c.name_raw || '') ? `<span style="color:var(--warn)" title="This name contains AI-generated editorial text in the source export, shown verbatim">⚠ ${esc(c.name_raw)}</span>` : esc(c.name_raw || '')}</td>
+        <td class="num">${n(c.start_weight) === null ? '–' : pct(n(c.start_weight))}</td>
+        <td class="num">${c.priced ? `<span style="color:${col(n(c.period_return))}">${pc(n(c.period_return))}</span>` : '<span style="color:var(--muted)" title="No price for this holding across the window">no price</span>'}</td>
+        <td class="num">${n(c.end_weight) === null ? '–' : pct(n(c.end_weight))}</td>
+        <td class="num">${n(c.contribution_bps) === null ? '<span style="color:var(--muted)">—</span>' : `<span style="color:${col(n(c.contribution_bps))}">${n(c.contribution_bps) >= 0 ? '+' : ''}${n(c.contribution_bps).toFixed(0)} bps</span>`}</td></tr>`).join('')}
+      </tbody></table>
+      <p class="note">Contribution = start weight × period return, in basis points, on actual holdings. Positions added during the period start at zero weight and contribute nothing by this measure; positions sold show the weight they started at. ${unpriced.length ? `<b>${unpriced.length} holding${unpriced.length === 1 ? '' : 's'} could not be priced across this window</b>, so the total understates. ` : ''}The total approximates the period return and drifts from it over long windows, since it uses starting weights and ignores rebalancing in between.</p>`}
   </div>`;
 
-  // ---- 4. drawdown ----
+  // ---- drawdown ----
+  const ddStat = stats.find(r => r.period === repDdPeriod) || null;
   const ddCard = (() => {
-    if (!series.length) return `<div class="card"><h2>Drawdown history</h2><div class="empty">No value series. Run jobs/compute-model-reporting.mjs.</div></div>`;
-    if (stat && stat.unavailable_reason) return `<div class="card"><h2>Drawdown history <span class="chip">${esc(repPeriod)}</span></h2><div class="empty">${esc(stat.unavailable_reason)}</div></div>`;
-    const from = stat ? stat.start_date : series[0].as_of;
+    const tabs = `<div class="tabs">${REP_PERIODS.map(p => { const s = stats.find(r => r.period === p); const dead = !hasHistory || (s && s.unavailable_reason);
+      return `<button class="tab" data-repdd="${p}" aria-selected="${p === repDdPeriod}" ${dead ? `disabled title="${esc(s && s.unavailable_reason || 'Needs a dated holdings history')}"` : ''}>${p}</button>`; }).join('')}</div>`;
+    if (!hasHistory) return `<div class="card"><h2>Drawdown history</h2>${tabs}<div class="empty">No value series for this model. Drawdown is value divided by its running peak, so it needs a daily series for the model and its benchmark; load a dated holdings history and the chart fills in.</div></div>`;
+    if (ddStat && ddStat.unavailable_reason) return `<div class="card"><h2>Drawdown history</h2>${tabs}<div class="empty">${esc(ddStat.unavailable_reason)}</div></div>`;
+    const from = ddStat ? ddStat.start_date : series[0].as_of;
     const win = series.filter(p => p.as_of >= from);
-    if (win.length < 2) return `<div class="card"><h2>Drawdown history</h2><div class="empty">Not enough points inside this window to draw a line.</div></div>`;
-    const dates = win.map(p => p.as_of);
+    if (win.length < 2) return `<div class="card"><h2>Drawdown history</h2>${tabs}<div class="empty">Not enough points inside this window to draw a line.</div></div>`;
     const mdd = drawdownSeries(win, p => +p.value);
     const bdd = drawdownSeries(win, p => p.benchmark_value === null ? null : +p.benchmark_value);
-    return `<div class="card"><h2>Drawdown history <span class="chip">${esc(repPeriod)}</span></h2>
-     ${priceChartSvg(dates, [
-       { vals: mdd, color: 'var(--accent)', width: 1.75 },
-       { vals: bdd, color: 'var(--flat)', dash: '4,3', width: 1.2 },
-     ], 560, 220)}
-     <div class="legend" style="margin-top:8px"><span><b style="background:var(--accent)"></b>${esc(m.name)}</span><span><b style="background:var(--flat)"></b>Benchmark</span></div>
-     <p class="note">Drawdown is value divided by its running peak, minus one, computed <b>within the selected window</b> — so each period starts at 0% and a loss carried in from before the window is not shown. ${stat && stat.window_starts_in_gap ? '<b style="color:var(--warn)">The start of this window fell inside the history gap and was pulled back to the previous snapshot, so it covers more time than its label suggests.</b> ' : ''}Whether the peak should instead be carried in from before the window is an open decision.</p></div>`;
+    const all = [...mdd, ...bdd].filter(v => v !== null);
+    const lo = Math.min(-0.005, ...all), niceLo = Math.floor(lo * 200) / 200;
+    const W = 900, H = 260, padL = 6, padR = 58, padT = 12, padB = 22;
+    const y = v => padT + (v / niceLo) * (H - padT - padB);
+    const x = (i, len) => padL + (i / (len - 1 || 1)) * (W - padL - padR);
+    const step = Math.abs(niceLo) > 0.08 ? 0.02 : 0.005;
+    const ticks = []; for (let v = 0; v >= niceLo - 1e-9; v -= step) ticks.push(v);
+    const grid = ticks.map(t => `<line x1="${padL}" x2="${W - padR}" y1="${y(t).toFixed(1)}" y2="${y(t).toFixed(1)}" stroke="var(--line)" stroke-width="1"/><text class="ddaxis" x="${W - padR + 7}" y="${(y(t) + 3.4).toFixed(1)}">${(t * 100).toFixed(2)}%</text>`).join('');
+    const band = (vals, color) => {
+      const pts = vals.map((v, i) => ({ v, i })).filter(p => p.v !== null);
+      if (pts.length < 2) return '';
+      const line = pts.map((p, k) => `${k ? 'L' : 'M'}${x(p.i, vals.length).toFixed(1)} ${y(p.v).toFixed(1)}`).join('');
+      const fill = `${line}L${x(pts.at(-1).i, vals.length).toFixed(1)} ${y(0).toFixed(1)}L${x(pts[0].i, vals.length).toFixed(1)} ${y(0).toFixed(1)}Z`;
+      return `<path d="${fill}" fill="${color}" opacity="0.30"/><path d="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    };
+    const worst = v => { const f = v.filter(z => z !== null); return f.length ? Math.min(...f) : null; };
+    const leg = (label, vals, color) => `<span class="ddleg" style="display:flex;align-items:center;gap:7px;font-size:12.5px"><span class="sw" style="width:11px;height:11px;border-radius:3px;background:${color}"></span>${esc(label)}<b style="font-variant-numeric:tabular-nums;color:var(--muted)">${vals.at(-1) === null ? '—' : (vals.at(-1) * 100).toFixed(2) + '%'}</b></span>`;
+    return `<div class="card"><div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Drawdown history</h2><span style="font-size:12px;color:var(--muted)">${esc(win[0].as_of)} → ${esc(win.at(-1).as_of)}</span></div>
+     ${tabs}
+     <div style="display:flex;gap:16px;flex-wrap:wrap;margin:11px 0 2px">${leg(m.name, mdd, 'var(--growth)')}${leg('Benchmark', bdd, 'var(--unclass)')}</div>
+     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:auto;display:block" role="img">
+       ${grid}${band(bdd, 'var(--unclass)')}${band(mdd, 'var(--growth)')}
+       <line x1="${padL}" x2="${W - padR}" y1="${y(0)}" y2="${y(0)}" stroke="var(--muted)" stroke-width="1.5"/></svg>
+     <div class="ddworst">
+       <div>Max drawdown · ${esc(m.name)}<b>${worst(mdd) === null ? '—' : (worst(mdd) * 100).toFixed(2) + '%'}</b></div>
+       <div>Max drawdown · benchmark<b class="${worst(bdd) === null ? 'pending' : ''}">${worst(bdd) === null ? '—' : (worst(bdd) * 100).toFixed(2) + '%'}</b></div></div>
+     <p class="note">Drawdown is value divided by its running peak, minus one, computed <b>within the selected window</b> — so each period starts at 0% and a loss carried in from before the window is not shown.${ddStat && ddStat.window_starts_in_gap ? ' <b style="color:var(--warn)">The start of this window fell inside the history gap and was pulled back, so it covers more time than its label suggests.</b>' : ''} Whether the peak should instead carry in from before the window is an open decision.</p></div>`;
   })();
 
+  // ---- data quality ----
+  const offSum = integ.filter(i => i.weight_off);
+  const gaps = integ.filter(i => n(i.gap_days_before) !== null && +i.gap_days_before > 60);
+  const suspect = integ.filter(i => +i.n_suspect_names > 0);
+  const dq = [
+    gaps.length ? `<li><b>${gaps.map(g => `${esc(g.as_of)} (${g.gap_days_before} days since the previous snapshot)`).join(', ')}</b> — the history has a hole. Any window opening inside it falls back to the snapshot before it, and the period says so when that happens.</li>` : '',
+    offSum.length ? `<li><b>${offSum.length} snapshot${offSum.length === 1 ? '' : 's'} do not sum to 100%</b>: ${offSum.map(o => `${esc(o.as_of)} at ${(+o.weight_total * 100).toFixed(2)}%`).join(', ')}. Loaded exactly as exported and <i>not</i> corrected — a discrepancy in the source records, not a rounding artefact.</li>` : '',
+    suspect.length ? `<li><b>Editorial text in the name field</b> on ${suspect.length} snapshot${suspect.length === 1 ? '' : 's'}. At least one holding's name in the export contains AI-generated commentary rather than a fund name. Names render verbatim below so this stays visible.</li>` : '',
+  ].filter(Boolean).join('');
+  const dqCard = !integ.length ? '' : `<div class="card" style="margin-bottom:18px;border-left:3px solid var(--warn)">
+    <h2>Data quality</h2>${dq ? `<ul style="margin:6px 0 0 18px;line-height:1.6">${dq}</ul>` : '<div class="empty">No integrity problems found.</div>'}
+    <p class="note">Reported, never silently repaired. ${integ.length} snapshots loaded, ${esc(integ[0].as_of)} to ${esc(integ.at(-1).as_of)}.</p></div>`;
+
   return `<span class="eyebrow">Client reporting</span><h1>${esc(m.name)}</h1>
-   <p class="sub">Factor allocation, contribution and drawdown, computed from dated holdings and real prices.</p>
-   ${D.models.filter(x => withHistory.includes(x.id)).length > 1 ? `<div class="card" style="margin-bottom:14px"><h2>Model</h2><div style="display:flex;gap:6px;flex-wrap:wrap">${modelTabs}</div></div>` : ''}
-   ${dqCard}${statsCard}${faCard}${contribCard}${ddCard}`;
+   <p class="sub">Each holding's weight splits evenly across the factors it is long. Shorts are tallied separately, so they do not sum with the pie. Classify the unclassified positions and press Update to refresh.</p>
+   <div class="card" style="margin-bottom:18px"><h2>Model</h2><div class="tabs">${modelTabs}</div></div>
+   ${repSaveError ? `<div class="card" style="margin-bottom:18px;border-left:3px solid var(--neg)"><p style="margin:0">${esc(repSaveError)}</p></div>` : ''}
+   ${dqCard}${statsCard}${allocGrid}${contribCard}${ddCard}
+   <details style="margin-top:22px;font-size:13px;color:var(--muted)">
+     <summary style="cursor:pointer;color:var(--text)">The classification matrix</summary>
+     <table style="margin-top:10px"><thead><tr><th>Asset class</th><th>Growth</th><th>Inflation</th><th>Cost of liquidity</th></tr></thead><tbody>
+       <tr><td>Equities</td><td>Long</td><td>Flat</td><td>Short</td></tr>
+       <tr><td>Fixed income</td><td>Short</td><td>Short</td><td>Long <i>(override)</i></td></tr>
+       <tr><td>Cash</td><td>Flat</td><td>Short</td><td>Long</td></tr>
+       <tr><td>Commodities / real assets</td><td>Long</td><td>Long</td><td>Flat</td></tr>
+       <tr><td>Gold</td><td>Flat</td><td>Long</td><td>Long</td></tr>
+     </tbody></table>
+     <p class="note">Equities are treated as flat on inflation; the framework chart reads "flat / short". Fixed income is long the cost of liquidity, the single documented override to that chart, re-confirmed by the owner on 2026-10-13.</p>
+   </details>`;
 }
 
 // ---------- Signals: the Speed Limit lights, the ROC board, and trigger hits ----------
@@ -1685,13 +1760,17 @@ document.addEventListener('change', e => {
   const sel = e.target.closest('[data-splitfor]');
   if (!sel) return;
   repSaveError = null;
-  setHoldingSplit(sel.dataset.splitfor, sel.value || null);
+  repPending[sel.dataset.splitfor] = sel.value || null;
+  $('#app').innerHTML = reporting();   // the donut previews the staged choice before it is saved
 });
 document.addEventListener('click', e => {
   const rp = e.target.closest('[data-repperiod]'), rm = e.target.closest('[data-repmodel]');
-  if (!rp && !rm) return;
-  if (rp) repPeriod = rp.dataset.repperiod;
-  if (rm) repModelId = rm.dataset.repmodel;
+  const rd = e.target.closest('[data-repdd]'), ru = e.target.closest('[data-repupdate]');
+  if (!rp && !rm && !rd && !ru) return;
+  if (rp && !rp.disabled) repPeriod = rp.dataset.repperiod;
+  if (rd && !rd.disabled) repDdPeriod = rd.dataset.repdd;
+  if (rm) { repModelId = rm.dataset.repmodel; repPending = {}; repSaveError = null; }
+  if (ru) { commitSplits(); return; }
   $('#app').innerHTML = reporting();
 });
 document.addEventListener('click', e => {
