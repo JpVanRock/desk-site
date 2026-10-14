@@ -79,7 +79,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
@@ -115,6 +115,7 @@ async function load() {
     qSoft(sb.from('holdings_snapshot_integrity').select('strategy_id,as_of,n_holdings,weight_total,weight_off,n_unmatched,n_suspect_names,gap_days_before').order('as_of', { ascending: true }), 'holdings integrity'),
     qSoft(sb.from('current_holdings').select('strategy_id,as_of,ticker,security_id,name_raw,weight'), 'current holdings'),
     qSoft(sb.from('holding_factor_overrides').select('security_id,split,note,author,as_of'), 'factor overrides'),
+    qSoft(sb.from('lens_signal_to_noise').select('category,window_label,n_scored,n_sources,hit_rate,signal,noise,signal_to_noise,too_few_to_judge'), 'lens signal to noise'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -184,7 +185,7 @@ async function load() {
     // rather than like a bug, which is the dangerous kind.
     periodStats: newest(periodStats), contribution: newest(contribution),
     factorAlloc: newest(factorAlloc), valueSeries: valueSeries || [], snapIntegrity: snapIntegrity || [],
-    currentHoldings: currentHoldings || [], factorOverrides: factorOverrides || [] };
+    currentHoldings: currentHoldings || [], factorOverrides: factorOverrides || [], lensSnr: lensSnr || [] };
 }
 
 // ---------- Views ----------
@@ -204,7 +205,13 @@ function route() {
   closeDrawer();
   const pages = { overview, stan, markets, views: viewsPage, signals, playground, agents, decisions, briefs, inbox, status, sources };
   $('#app').innerHTML = (pages[page] || overview)();
-  if (page === 'stan' && arg) openModel(arg);
+  if (page === 'stan' && arg) {
+    // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
+    // button all close them the same way a model drawer closes.
+    if (arg === 'speed-limit') { $('#drawer').innerHTML = speedLimitDrawer(); $('#drawer').hidden = false; $('#scrim').hidden = false; }
+    else if (arg.startsWith('snr-')) { $('#drawer').innerHTML = snrDrawer(arg.slice(4)); $('#drawer').hidden = false; $('#scrim').hidden = false; }
+    else openModel(arg);
+  }
   if (page === 'markets' && arg) openChart(arg);
   if (page === 'overview' && arg) openExposureChart(arg);
   if (page === 'views' && arg) openMacroChart(arg);
@@ -232,6 +239,111 @@ function overview() {
    ${M.map(m => `<tr class="click" data-go="#overview/${esc(m.id)}"><td><b>${esc(m.name)}</b> <span class="chip">${esc(m.label)}</span></td>${netCells(m)}<td class="num">${pct(m.cov, 0)}</td></tr>`).join('')}</tbody></table>
    <p class="note">Net exposure = Σ weight × loading on each model's last recorded allocation (not drifted). Unscored holdings count as zero, so low coverage understates the figures. Click a row for its exposure history.</p></div>
   <div class="card"><h2>Needs attention</h2>${alerts.length ? alerts.map(a => `<div class="alert"><span class="dot"></span><div>${a}</div></div>`).join('') : '<div class="empty">Nothing flagged.</div>'}</div></div>`;
+}
+
+// ---------- Speed Limit and signal-to-noise: shared renderers ----------
+//
+// These are built once and used in two places: the Signals tab, and the pop-outs from Stan's
+// header boxes. One implementation rather than two copies that drift.
+const LENSES = [
+  { key: 'predictive',  label: 'Predictive',  weight: 0.60 },
+  { key: 'descriptive', label: 'Descriptive', weight: 0.20 },
+  { key: 'positioning', label: 'Positioning', weight: 0.10 },
+  { key: 'sentiment',   label: 'Sentiment',   weight: 0.10 },
+];
+const SNR_WINDOWS = ['1M', '1Q', '6M', '12M'];
+let snrWindow = 'YTD';
+
+// The master light and its lens breakdown.
+function speedLimitMasterCard() {
+  const sl = D.speedLimit || [];
+  const master = sl.find(r => r.category === 'master');
+  const cats = sl.filter(r => r.category !== 'master').sort((a, b) => (+b.weight || 0) - (+a.weight || 0));
+  if (!master) return '<div class="empty">No Speed Limit reading yet. Run jobs/compute-speed-limit.mjs.</div>';
+  return `<div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+    <div style="text-align:center">
+     ${lightDot(master.light, 46)}
+     <div style="margin-top:6px;font-size:22px;font-weight:700;color:${master.light ? LIGHT_COLOR[master.light] : 'var(--muted)'}">${esc((master.sign_label || '').replace(/^Speed Limit\s*/i, '') || '—')}</div>
+     <div style="color:var(--muted);font-size:12px">${master.light ? esc(LIGHT_MEANING[master.light]) : 'no reading'}${master.score !== null ? ` · score ${(+master.score).toFixed(2)}` : ''}</div>
+     ${master.target_beta_low !== null ? `<div style="color:var(--muted);font-size:12px">target beta ${master.target_beta_low}–${master.target_beta_high}×</div>` : ''}
+    </div>
+    <table style="flex:1;min-width:280px;margin:0"><thead><tr><th>Lens</th><th class="num">Weight</th><th class="num">Score</th><th>Light</th><th class="num">Calls</th></tr></thead><tbody>
+    ${cats.map(c => `<tr><td>${esc(c.category)}</td><td class="num">${(+c.weight * 100).toFixed(0)}%</td>
+      <td class="num">${c.score === null ? '<span style="color:var(--muted)">–</span>' : (+c.score).toFixed(2)}</td>
+      <td>${c.light ? `${lightDot(c.light, 10)} <span style="color:${LIGHT_COLOR[c.light]}">${esc(LIGHT_MEANING[c.light])}</span>` : '<span style="color:var(--muted)">no reading</span>'}</td>
+      <td class="num">${c.n_calls}${c.n_recorded > c.n_calls ? ` <span style="color:var(--muted)">of ${c.n_recorded}</span>` : ''}</td></tr>`).join('')}
+    </tbody></table></div>
+   <p class="note"><b>Draft rule.</b> The framework set the lens weights; the scoring rule was left open, so this is a proposal to argue with, not a settled measure. A lens scores the confidence-weighted mean direction of its open research calls — green above +0.33, red below −0.33 — and the master is the weighted mean over the lenses that actually have calls, so a silent lens abstains rather than counting as neutral. ${master.n_calls < 6 ? `<b>This reading rests on ${master.n_calls} scoring call${master.n_calls === 1 ? '' : 's'}</b>, far too few to lean on — read it as the machinery working, not as a signal.` : ''} Only equities, commodities and cash calls carry a sign: bond and gold calls are counted but score zero, because their risk reading is genuinely ambiguous.</p>`;
+}
+
+// Each model's beta against the band the master light calls for.
+function speedLimitModelCard() {
+  const modelSL = D.modelSpeedLimit || [];
+  if (!modelSL.length) return '';
+  const n = v => v === null || v === undefined ? null : +v;
+  return `<div class="card" style="margin-top:14px"><h2>Each model against the Speed Limit</h2>
+    <table><thead><tr><th>Model</th><th class="num">Actual beta</th><th class="num">R²</th><th class="num">Target</th><th>Light</th></tr></thead><tbody>
+    ${modelSL.map(r => {
+      const st = D.models.find(m => m.id === r.strategy_id);
+      return `<tr title="${esc(r.note || '')}"><td><b>${esc(st?.name || '—')}</b></td>
+       <td class="num">${n(r.actual_beta) === null ? '–' : n(r.actual_beta).toFixed(2) + '×'}</td>
+       <td class="num" style="color:${n(r.r_squared) !== null && n(r.r_squared) < 0.5 ? 'var(--neg)' : 'var(--text)'}">${n(r.r_squared) === null ? '–' : n(r.r_squared).toFixed(2)}</td>
+       <td class="num">${r.target_low === null ? '–' : `${r.target_low}–${r.target_high}×`}</td>
+       <td>${r.light ? `${lightDot(r.light, 10)} <span style="color:${LIGHT_COLOR[r.light]}">${esc(r.light)}</span>` : '<span class="chip">unrated</span>'}</td></tr>`;
+    }).join('')}
+    </tbody></table>
+    <p class="note">Beta is measured against each model's peer benchmark by least squares over the last year. <b>Read R² first.</b> These models hold gold, commodities and alternatives their benchmark does not, which leaves a lot unexplained and drags the slope down — below 0.5 the beta is not describing risk posture, so the model is left <b>unrated</b> rather than shown red. Where the fit holds, a model below its target band is positioned more defensively than the lights call for.</p></div>`;
+}
+
+// SNR for one lens, by source, over the selected window.
+function snrDrawer(lens) {
+  const meta = LENSES.find(l => l.key === lens) || { key: lens, label: lens, weight: 0 };
+  const rows = (D.signalToNoise || []).filter(r => r.category === lens && r.window_label === snrWindow);
+  const ranked = rows.slice().sort((a, b) => {
+    const av = a.signal_to_noise === null ? -Infinity : +a.signal_to_noise;
+    const bv = b.signal_to_noise === null ? -Infinity : +b.signal_to_noise;
+    return bv - av;
+  });
+  const lensRow = (D.lensSnr || []).find(r => r.category === lens && r.window_label === snrWindow);
+  const num = (v, d = 2) => v === null || v === undefined ? '<span style="color:var(--muted)">–</span>' : (+v).toFixed(d);
+  const pcv = v => v === null || v === undefined ? '<span style="color:var(--muted)">–</span>'
+    : `<span style="color:${+v >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(+v >= 0 ? '+' : '') + (+v * 100).toFixed(2)}%</span>`;
+  const tabs = ['YTD', ...SNR_WINDOWS].map(w => `<button class="tab" data-snrwin="${w}" aria-selected="${w === snrWindow}">${w}</button>`).join('');
+
+  return `<button class="close" data-go="#stan">Close</button>
+   <span class="eyebrow">Signal to noise · ${(meta.weight * 100).toFixed(0)}% of the master light</span>
+   <h1>${esc(meta.label)} sources</h1>
+   <p class="sub">How much of each source's directional calls was signal rather than noise, over the selected window.</p>
+   <div class="card" style="margin-bottom:14px"><h2>Lens total</h2>
+    <div class="tabs">${tabs}</div>
+    ${!lensRow || !lensRow.n_scored ? `<div class="empty">Nothing scored in this window yet. Calls settle once their horizon passes; the desk's first were logged 2026-09-24 and settle from December 2026.</div>`
+     : `<div class="kpis">
+      <div class="card kpi"><span class="eyebrow">Signal / noise</span><b>${num(lensRow.signal_to_noise)}</b><small>${lensRow.too_few_to_judge ? 'too few to judge' : 'pooled across sources'}</small></div>
+      <div class="card kpi"><span class="eyebrow">Signal</span><b>${pcv(lensRow.signal)}</b><small>mean return in the call's direction</small></div>
+      <div class="card kpi"><span class="eyebrow">Noise</span><b>${num(lensRow.noise === null ? null : +lensRow.noise * 100, 2)}%</b><small>standard deviation of those returns</small></div>
+      <div class="card kpi"><span class="eyebrow">Calls scored</span><b>${lensRow.n_scored}</b><small>${lensRow.n_sources} source${lensRow.n_sources === 1 ? '' : 's'}</small></div>
+     </div>`}
+   </div>
+   <div class="card"><h2>By source${snrWindow === 'YTD' ? ', ranked year to date' : ', ranked'}</h2>
+    ${!ranked.length ? '<div class="empty">No scored calls from this lens in the selected window.</div>'
+     : `<table><thead><tr><th>Source</th><th class="num">Signal / noise</th><th class="num">Signal</th><th class="num">Noise</th><th class="num">Hit rate</th><th class="num">Calls</th></tr></thead><tbody>
+    ${ranked.map(r => `<tr${r.too_few_to_judge ? ' style="opacity:.55"' : ''}>
+      <td><b>${esc(r.source)}</b>${r.too_few_to_judge ? ' <span class="chip">too few</span>' : ''}</td>
+      <td class="num" style="color:${r.signal_to_noise === null ? 'var(--muted)' : +r.signal_to_noise > 0 ? 'var(--pos)' : 'var(--neg)'}"><b>${num(r.signal_to_noise)}</b></td>
+      <td class="num">${pcv(r.signal)}</td>
+      <td class="num">${r.noise === null ? '<span style="color:var(--muted)">–</span>' : (+r.noise * 100).toFixed(2) + '%'}</td>
+      <td class="num">${r.hit_rate === null ? '–' : (+r.hit_rate * 100).toFixed(0) + '%'}</td>
+      <td class="num">${r.n_scored}</td></tr>`).join('')}
+    </tbody></table>`}
+    <p class="note">Signal is the mean return in the <b>direction</b> of the call; noise is the standard deviation of those same returns; the ratio is the two divided — the trading proxy named in the reference the owner supplied, as a plain ratio with no decibel conversion. A source right by a hair every time scores below one right by a lot, and a scattered source below a consistent one at the same hit rate. Windows are anchored on when a call was <b>made</b>, not when it settled. <b>No threshold is drawn</b>, deliberately: the reference is explicit that there is no universal number for a good SNR, so any green or red line here would be the desk's judgment wearing the article's clothes. Rows under ten scored calls are faded and marked.</p></div>`;
+}
+
+function speedLimitDrawer() {
+  return `<button class="close" data-go="#stan">Close</button>
+   <span class="eyebrow">Gigantic Rocks</span><h1>Master Speed Limit</h1>
+   <p class="sub">What the research lenses say about risk, and how each model sits against the band it calls for.</p>
+   <div class="card"><h2>Master Speed Limit <span class="chip draft">draft scoring rule</span></h2>${speedLimitMasterCard()}</div>
+   ${speedLimitModelCard()}`;
 }
 
 // ---------- Stan: risk across the models ----------
@@ -319,11 +431,19 @@ function stan() {
 
   return `<span class="eyebrow">Risk</span><h1>Stan</h1>
    <p class="sub">Where the risk sits across the eight models, what is flagged, and Stan's own read.</p>
-   <div class="kpis">
-    <div class="card kpi"><span class="eyebrow">Models</span><b>${D.models.length}</b><small>monitored</small></div>
-    <div class="card kpi"><span class="eyebrow">Positions flagged</span><b class="${flagged ? 'stale' : ''}">${flagged}</b><small>across all models</small></div>
-    <div class="card kpi"><span class="eyebrow">Outside their band</span><b>${offBand}</b><small>${unrated} unrated on fit</small></div>
-    <div class="card kpi"><span class="eyebrow">Speed Limit</span><b style="font-size:16px;color:${master && master.light ? LIGHT_COLOR[master.light] : 'var(--muted)'}">${master && master.light ? esc(master.sign_label || master.light) : 'no reading'}</b><small>${master && master.n_calls ? `on ${master.n_calls} scoring call${master.n_calls === 1 ? '' : 's'}` : 'draft rule'}</small></div>
+   <div class="kpis" style="grid-template-columns:repeat(5,1fr)">
+    <div class="card kpi click" data-go="#stan/speed-limit" style="cursor:pointer" title="Open the master Speed Limit and how each model sits against it">
+      <span class="eyebrow">Speed Limit</span>
+      <b style="font-size:26px;color:${master && master.light ? LIGHT_COLOR[master.light] : 'var(--muted)'}">${master && master.sign_label ? esc(master.sign_label.replace(/^Speed Limit\s*/i, '')) : '—'}</b>
+      <small>${master && master.light ? esc(LIGHT_MEANING[master.light]) : 'no reading'}${master && master.n_calls ? ` · ${master.n_calls} call${master.n_calls === 1 ? '' : 's'}` : ''}</small></div>
+    ${LENSES.map(l => {
+      const r = (D.lensSnr || []).find(x => x.category === l.key && x.window_label === 'YTD');
+      const v = r && r.signal_to_noise !== null ? +r.signal_to_noise : null;
+      return `<div class="card kpi click" data-go="#stan/snr-${l.key}" style="cursor:pointer" title="Signal-to-noise for ${l.label.toLowerCase()} sources — click for the breakdown by source">
+        <span class="eyebrow">${esc(l.label)} SNR</span>
+        <b style="font-size:26px;color:${v === null ? 'var(--muted)' : v > 0 ? 'var(--pos)' : 'var(--neg)'}">${v === null ? '—' : v.toFixed(2)}</b>
+        <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
+    }).join('')}
    </div>
    ${riskTable}${flagsCard}${docsCard}`;
 }
@@ -935,37 +1055,8 @@ function signals() {
   const pc = (v, d = 1) => v === null || v === undefined ? '<span style="color:var(--muted)">–</span>'
     : `<span style="color:${v >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(v >= 0 ? '+' : '') + (+v * 100).toFixed(d)}%</span>`;
 
-  const masterCard = !master ? '<div class="empty">No Speed Limit reading yet. Run jobs/compute-speed-limit.mjs.</div>' : `
-   <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
-    <div style="text-align:center">
-     ${lightDot(master.light, 46)}
-     <div style="margin-top:6px;font-size:22px;font-weight:700;color:${master.light ? LIGHT_COLOR[master.light] : 'var(--muted)'}">${esc(master.sign_label || '—')}</div>
-     <div style="color:var(--muted);font-size:12px">${master.light ? esc(LIGHT_MEANING[master.light]) : 'no reading'}${master.score !== null ? ` · score ${(+master.score).toFixed(2)}` : ''}</div>
-     ${master.target_beta_low !== null ? `<div style="color:var(--muted);font-size:12px">target beta ${master.target_beta_low}–${master.target_beta_high}×</div>` : ''}
-    </div>
-    <table style="flex:1;min-width:280px;margin:0"><thead><tr><th>Lens</th><th class="num">Weight</th><th class="num">Score</th><th>Light</th><th class="num">Calls</th></tr></thead><tbody>
-    ${cats.map(c => `<tr><td>${esc(c.category)}</td><td class="num">${(+c.weight * 100).toFixed(0)}%</td>
-      <td class="num">${c.score === null ? '<span style="color:var(--muted)">–</span>' : (+c.score).toFixed(2)}</td>
-      <td>${c.light ? `${lightDot(c.light, 10)} <span style="color:${LIGHT_COLOR[c.light]}">${esc(LIGHT_MEANING[c.light])}</span>` : '<span style="color:var(--muted)">no reading</span>'}</td>
-      <td class="num">${c.n_calls}${c.n_recorded > c.n_calls ? ` <span style="color:var(--muted)">of ${c.n_recorded}</span>` : ''}</td></tr>`).join('')}
-    </tbody></table>
-   </div>
-   <p class="note"><b>Draft rule.</b> The framework set the lens weights; the scoring rule was left open, so this is a proposal to argue with, not a settled measure. A lens scores the confidence-weighted mean direction of its open research calls — green above +0.33, red below −0.33 — and the master is the weighted mean over the lenses that actually have calls, so a silent lens abstains rather than counting as neutral. ${master && master.n_calls < 6 ? `<b>This reading rests on ${master.n_calls} scoring call${master.n_calls === 1 ? '' : 's'}</b>, which is far too few to lean on — treat it as the machinery working, not as a signal.` : ''} Only equities and commodities calls carry a sign: cash, gold and bond calls are counted but score zero, because bearish bonds can mean growth or inflation and the call itself does not say which.</p>`;
-
-  const modelCard = !modelSL.length ? '' : `
-   <div class="card" style="margin-bottom:14px"><h2>Each model against the Speed Limit</h2>
-    <table><thead><tr><th>Model</th><th class="num">Actual beta</th><th class="num">R²</th><th class="num">Target</th><th>Light</th></tr></thead><tbody>
-    ${modelSL.map(r => {
-      const st = D.models.find(m => m.id === r.strategy_id);
-      return `<tr title="${esc(r.note || '')}"><td><b>${esc(st?.name || '—')}</b></td>
-       <td class="num">${r.actual_beta === null ? '–' : (+r.actual_beta).toFixed(2) + '×'}</td>
-       <td class="num" style="color:${r.r_squared !== null && +r.r_squared < 0.5 ? 'var(--neg)' : 'var(--text)'}">${r.r_squared === null ? '–' : (+r.r_squared).toFixed(2)}</td>
-       <td class="num">${r.target_low === null ? '–' : `${r.target_low}–${r.target_high}×`}</td>
-       <td>${r.light ? `${lightDot(r.light, 10)} <span style="color:${LIGHT_COLOR[r.light]}">${esc(r.light)}</span>` : '<span class="chip">unrated</span>'}</td></tr>`;
-    }).join('')}
-    </tbody></table>
-    <p class="note">Beta is measured against each model's peer benchmark by least squares over the last year. <b>Read R² first.</b> These models hold gold, commodities and alternatives their benchmark does not, which leaves a lot unexplained and drags the slope down — below 0.5 the beta is not describing risk posture, so the model is left <b>unrated</b> rather than shown red. Where the fit does hold, a model below its target band is positioned more defensively than the lights call for. Hover a row for the full reading.</p>
-   </div>`;
+  const masterCard = speedLimitMasterCard();
+  const modelCard = speedLimitModelCard();
 
   const boardCard = !board.length ? '' : `
    <div class="card" style="margin-bottom:14px"><h2>Rate of change · major markets</h2>
