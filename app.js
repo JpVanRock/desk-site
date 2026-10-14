@@ -198,9 +198,9 @@ function route() {
   const [page, arg] = (location.hash || '#overview').slice(1).split('/');
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
-  const pages = { overview, models, markets, views: viewsPage, signals, reporting, playground, agents, decisions, briefs, inbox, status, sources };
+  const pages = { overview, stan, markets, views: viewsPage, signals, reporting, playground, agents, decisions, briefs, inbox, status, sources };
   $('#app').innerHTML = (pages[page] || overview)();
-  if (page === 'models' && arg) openModel(arg);
+  if (page === 'stan' && arg) openModel(arg);
   if (page === 'markets' && arg) openChart(arg);
   if (page === 'overview' && arg) openExposureChart(arg);
   if (page === 'views' && arg) openMacroChart(arg);
@@ -230,11 +230,98 @@ function overview() {
   <div class="card"><h2>Needs attention</h2>${alerts.length ? alerts.map(a => `<div class="alert"><span class="dot"></span><div>${a}</div></div>`).join('') : '<div class="empty">Nothing flagged.</div>'}</div></div>`;
 }
 
-function models() {
-  return `<span class="eyebrow">Allocation model</span><h1>Models</h1><p class="sub">Click a model for its allocation and exposure profile.</p>
-  <div class="card"><table><thead><tr><th>Model</th><th>Last allocation</th><th class="num">Holdings</th><th class="num">Cash</th>${factorHeads()}<th>Scored</th></tr></thead><tbody>
-  ${D.models.map(m => `<tr class="click" data-go="#models/${esc(m.id)}"><td><b>${esc(m.name)}</b> <span class="chip">${esc(m.label)}</span></td><td>${esc(m.last || '—')}</td><td class="num">${m.holdings.length}</td>
-   <td class="num">${pct((m.byClass.find(c => c[0] === 'cash') || [0, 0])[1])}</td>${netCells(m)}<td><div class="bar"><i style="width:${m.cov * 100}%"></i></div></td></tr>`).join('')}</tbody></table></div>`;
+// ---------- Stan: risk across the models ----------
+//
+// Stan's standing job is a dashboard per strategy. This leads with risk rather than with the
+// allocation table it replaced: where each model's risk actually sits, which positions carry more
+// of it than their weight, and how each one scores against the desk's own stress scenarios.
+// Everything here is already computed by the nightly jobs — nothing is derived in the browser.
+function stan() {
+  const n = v => v === null || v === undefined ? null : +v;
+  const pc = (v, d = 1) => v === null ? '<span style="color:var(--muted)">–</span>'
+    : `<span style="color:${v >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(v >= 0 ? '+' : '') + (v * 100).toFixed(d)}%</span>`;
+  const sl = D.modelSpeedLimit || [];
+  const master = (D.speedLimit || []).find(r => r.category === 'master');
+  const scenById = Object.fromEntries((D.scenarios || []).map(s => [s.id, s]));
+
+  // Per-model risk, assembled from what the jobs already wrote.
+  const rows = D.models.map(m => {
+    const contrib = (D.contribByStrategy?.[m.id] || []).filter(c => c.risk_share !== null);
+    const ranked = contrib.slice().sort((a, b) => +b.risk_share - +a.risk_share);
+    const top3 = ranked.slice(0, 3);
+    const top3Risk = top3.reduce((s, r) => s + +r.risk_share, 0);
+    const top3Wt = top3.reduce((s, r) => s + +r.weight, 0);
+    const review = (D.contribByStrategy?.[m.id] || []).filter(c => c.verdict === 'review' || c.verdict === 'redundant');
+    const stress = (D.stressByStrategy?.[m.id] || []).filter(s => s.factor_score !== null);
+    const worst = stress.slice().sort((a, b) => +a.factor_score - +b.factor_score)[0] || null;
+    const beta = sl.find(s => s.strategy_id === m.id) || null;
+    const perf = (D.periodStats || []).find(p => p.strategy_id === m.id && p.period === '1YR' && !p.unavailable_reason) || null;
+    return { m, top3, top3Risk, top3Wt, review, worst, beta, perf, measured: ranked.length };
+  });
+
+  const flagged = rows.reduce((s, r) => s + r.review.length, 0);
+  const offBand = rows.filter(r => r.beta && r.beta.light && r.beta.light !== 'green').length;
+  const unrated = rows.filter(r => r.beta && !r.beta.light).length;
+
+  const lightCell = b => {
+    if (!b) return '<span style="color:var(--muted)">–</span>';
+    if (!b.light) return `<span class="chip" title="${esc(b.note || '')}">unrated</span>`;
+    return `<span title="${esc(b.note || '')}">${lightDot(b.light, 9)} <span style="color:${LIGHT_COLOR[b.light]}">${n(b.actual_beta) === null ? '–' : n(b.actual_beta).toFixed(2) + '×'}</span></span>`;
+  };
+
+  const riskTable = `<div class="card" style="margin-bottom:14px"><h2>Risk by model</h2>
+   <table><thead><tr><th>Model</th><th>Beta vs band</th><th class="num">Top-3 risk</th><th class="num">on weight</th><th class="num">Flagged</th><th>Worst scenario</th>${factorHeads()}<th class="num">1Y drawdown</th></tr></thead><tbody>
+   ${rows.map(r => `<tr class="click" data-go="#stan/${esc(r.m.id)}">
+     <td><b>${esc(r.m.name)}</b> <span class="chip">${esc(r.m.label)}</span></td>
+     <td>${lightCell(r.beta)}</td>
+     <td class="num"><b>${r.measured ? (r.top3Risk * 100).toFixed(0) + '%' : '–'}</b></td>
+     <td class="num" style="color:var(--muted)">${r.measured ? (r.top3Wt * 100).toFixed(0) + '%' : '–'}</td>
+     <td class="num">${r.review.length ? `<span style="color:var(--warn)">${r.review.length}</span>` : '<span style="color:var(--muted)">0</span>'}</td>
+     <td>${r.worst ? `<span title="${esc(scenById[r.worst.scenario_id]?.description || '')}">${esc(scenById[r.worst.scenario_id]?.name || '—')} <span style="color:var(--neg)">${sgn(+r.worst.factor_score)}</span></span>` : '<span style="color:var(--muted)">–</span>'}</td>
+     ${netCells(r.m)}
+     <td class="num">${r.perf ? pc(n(r.perf.max_drawdown)) : '<span style="color:var(--muted)" title="Needs a dated holdings history for this model">–</span>'}</td></tr>`).join('')}
+   </tbody></table>
+   <p class="note"><b>Top-3 risk</b> is the share of each model's volatility carried by its three largest risk contributors, against the share of weight those same three hold — the gap is the concentration. <b>Flagged</b> counts positions taking 2× or more of their weight in risk, or duplicating a larger holding. <b>Worst scenario</b> is the lowest factor score across the desk's four stress scenarios; it is a directional score, not a predicted return. <b>Beta</b> is measured against each model's peer benchmark and compared to the band the master Speed Limit calls for — read "unrated" as the regression fitting too poorly for the beta to describe risk posture, not as missing data. 1Y drawdown needs a dated holdings history, which only Balanced Core has so far.</p></div>`;
+
+  // Every position any model has flagged, gathered in one place so a name appearing in several
+  // models is obvious — that is the concentration that matters at desk level, not model level.
+  const allFlags = [];
+  for (const r of rows) for (const c of r.review) allFlags.push({ ...c, model: r.m.name });
+  const byTicker = {};
+  for (const f of allFlags) (byTicker[f.ticker] ||= []).push(f);
+  const flagRows = Object.entries(byTicker).sort((a, b) => b[1].length - a[1].length || (+b[1][0].risk_ratio || 0) - (+a[1][0].risk_ratio || 0));
+  const flagsCard = `<div class="card" style="margin-bottom:14px"><h2>Positions on review <span class="chip">${allFlags.length}</span></h2>
+   ${!flagRows.length ? '<div class="empty">Nothing flagged. No position is taking 2× or more of its weight in risk, and nothing duplicates a larger holding.</div>'
+    : `<table><thead><tr><th>Ticker</th><th class="num">Models</th><th class="num">Worst ratio</th><th>Why</th></tr></thead><tbody>
+   ${flagRows.map(([tk, fs]) => {
+     const worst = fs.slice().sort((a, b) => (+b.risk_ratio || 0) - (+a.risk_ratio || 0))[0];
+     return `<tr><td><b>${esc(tk)}</b></td>
+      <td class="num">${fs.length}</td>
+      <td class="num" style="color:var(--neg)">${n(worst.risk_ratio) === null ? '–' : n(worst.risk_ratio).toFixed(2) + '×'}</td>
+      <td style="max-width:420px;color:var(--muted)">${esc(worst.rationale || '')}</td></tr>`;
+   }).join('')}
+   </tbody></table>
+   <p class="note">A high ratio is not by itself a criticism — equity risk in a growth model <i>should</i> outrun its weight. It is the prompt to say out loud what the position is for. A name appearing across several models is where the desk's risk is genuinely concentrated.</p>`}
+  </div>`;
+
+  // Stan's own written work, from the workspace.
+  const docs = (D.outputs || []).filter(o => o.agent === 'stan').sort((a, b) => b.as_of.localeCompare(a.as_of));
+  const docsCard = `<div class="card"><h2>Stan's notes</h2>
+   ${!docs.length ? '<div class="empty">No written output yet. Run Stan, then jobs/sync-agent-outputs.mjs.</div>'
+    : docs.map((o, i) => `<details ${i === 0 ? 'open' : ''} style="margin-bottom:8px">
+        <summary style="cursor:pointer;padding:6px 0"><b>${esc(o.title)}</b> <span class="chip">${esc(o.as_of)}</span></summary>
+        <div style="padding-top:6px">${md(o.body_md)}</div></details>`).join('')}
+   <p class="note">Written by the Stan agent from the desk workspace. Dated: check the as-of before relying on a number, since these refresh on their own schedule rather than with the nightly data.</p></div>`;
+
+  return `<span class="eyebrow">Risk</span><h1>Stan</h1>
+   <p class="sub">Where the risk sits across the eight models, what is flagged, and Stan's own read.</p>
+   <div class="kpis">
+    <div class="card kpi"><span class="eyebrow">Models</span><b>${D.models.length}</b><small>monitored</small></div>
+    <div class="card kpi"><span class="eyebrow">Positions flagged</span><b class="${flagged ? 'stale' : ''}">${flagged}</b><small>across all models</small></div>
+    <div class="card kpi"><span class="eyebrow">Outside their band</span><b>${offBand}</b><small>${unrated} unrated on fit</small></div>
+    <div class="card kpi"><span class="eyebrow">Speed Limit</span><b style="font-size:16px;color:${master && master.light ? LIGHT_COLOR[master.light] : 'var(--muted)'}">${master && master.light ? esc(master.sign_label || master.light) : 'no reading'}</b><small>${master && master.n_calls ? `on ${master.n_calls} scoring call${master.n_calls === 1 ? '' : 's'}` : 'draft rule'}</small></div>
+   </div>
+   ${riskTable}${flagsCard}${docsCard}`;
 }
 
 function markets() {
@@ -1049,7 +1136,7 @@ function openModel(id) {
   const m = D.models.find(x => x.id === id); if (!m) return;
   const stack = m.byClass.map(([k, v]) => `<i title="${esc(D.classNames[k])} ${pct(v)}" style="width:${(v / m.total) * 100}%;background:${CLASS_COLORS[k] || '#888'}"></i>`).join('');
   const legend = m.byClass.map(([k, v]) => `<span><b style="background:${CLASS_COLORS[k] || '#888'}"></b>${esc(D.classNames[k])} ${pct(v)}</span>`).join('');
-  $('#drawer').innerHTML = `<button class="close" data-go="#models">Close</button>
+  $('#drawer').innerHTML = `<button class="close" data-go="#stan">Close</button>
    <span class="eyebrow">Model · ${esc(m.label)}</span><h1>${esc(m.name)}</h1>
    <p class="sub">Last allocation ${esc(m.last || '—')} · weights sum to ${pct(m.total)}</p>
    <div class="kpis">${D.factors.map((f, i) => `<div class="card kpi"><span class="eyebrow">${esc(fname(f))}</span><b style="color:${m.net[i] >= 0 ? 'var(--pos)' : 'var(--neg)'}">${sgn(m.net[i])}</b><small>net exposure</small></div>`).join('')}</div>
