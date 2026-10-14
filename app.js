@@ -79,7 +79,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
@@ -121,6 +121,10 @@ async function load() {
     qSoft(sb.from('model_style_exposure').select('strategy_id,lens,as_of,bucket,label,sort_order,kind,model_weight,benchmark_weight').order('sort_order'), 'style exposure'),
     qSoft(sb.from('model_style_coverage').select('strategy_id,lens,as_of,basis,window_start,window_end,model_equity_weight,model_resolved,benchmark_resolved,unresolved'), 'style coverage'),
     qSoft(sb.from('model_monthly_returns').select('strategy_id,as_of,year,month,model_return,benchmark_return,excess_return,coverage,is_partial,in_gap,basis,unavailable_reason'), 'monthly returns'),
+    qSoft(sb.from('model_trades').select('strategy_id,as_of,ticker,entry_date,exit_date,avg_weight,entry_weight,exit_weight,total_return,contribution_bps,excess_bps,status,sizing_verdict,starts_in_gap,pre_existing,unavailable_reason'), 'trade ledger'),
+    qSoft(sb.from('position_decision_scores').select('strategy_id,as_of,ticker,window_key,sort_order,start_date,end_date,weight,position_return,benchmark_return,decision_bps,is_partial,starts_in_gap,unavailable_reason').order('sort_order'), 'position decision scores'),
+    qSoft(sb.from('model_decision_stats').select('strategy_id,as_of,n_closed,n_open,n_wins,n_losses,batting_average,slugging_bps,win_bps,loss_bps,median_weight,n_unpriced,first_snapshot,last_snapshot,gap_days'), 'decision stats'),
+    qSoft(sb.from('annie_assessments').select('as_of,kind,strategy_id,ticker,headline,body_md,score,score_scale,confidence,sources,author').order('as_of', { ascending: false }), 'Annie assessments'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -191,7 +195,12 @@ async function load() {
     periodStats: newest(periodStats), contribution: newest(contribution),
     factorAlloc: newest(factorAlloc), valueSeries: valueSeries || [], snapIntegrity: snapIntegrity || [],
     currentHoldings: currentHoldings || [], factorOverrides: factorOverrides || [], lensSnr: lensSnr || [], holdingRR: newest(holdingRR), trailing: newest(trailing),
-    styleExposure: newest(styleExposure), styleCoverage: newest(styleCoverage), monthly: newest(monthly) };
+    styleExposure: newest(styleExposure), styleCoverage: newest(styleCoverage), monthly: newest(monthly),
+    trades: newest(trades), positionScores: newest(positionScores), decisionStats: newest(decisionStats),
+    // Assessments are NOT filtered to the newest date: Annie's view in October and her view in
+    // March are both worth keeping, and comparing a judgment with what happened afterwards is the
+    // whole point of the page.
+    assessments: assessments || [] };
 }
 
 // ---------- Views ----------
@@ -845,20 +854,198 @@ function outputsFor(agent, kinds) {
   return (D.outputs || []).filter(o => o.agent === agent && (!kinds || kinds.includes(o.kind)));
 }
 
+// ---------- Annie: the decision coach ----------
+//
+// Two kinds of thing live on this page and they must never be made to look alike. The scorecard,
+// the position scores and the trade journal are ARITHMETIC, computed from dated snapshots and
+// adjusted prices by jobs/compute-decision-ledger.mjs. The reflexivity, bias, steel-man, Kahneman
+// and Monday-morning sections are JUDGMENT, written by the Annie agent after reading something.
+// The second kind carries its sources and the date it was formed; the first carries its flags.
+let annieWindow = 'ITD';
+
 function annie() {
-  const journal = outputsFor('annie', ['decision_journal']);
-  const open = outputsFor('annie', ['open_decisions']);
-  const stats = outputsFor('annie', ['decision_stats']);
-  const sec = (title, list, emptyMsg) => `
-   <div class="card" style="margin-bottom:14px"><h2>${esc(title)}</h2>
+  // Same two helpers the other pages declare locally; keep them in step if they ever move to
+  // module scope.
+  const n = v => v === null || v === undefined ? null : +v;
+  const col = v => v === null ? 'var(--muted)' : v >= 0 ? 'var(--pos)' : 'var(--neg)';
+  const stats = D.decisionStats || [];
+  const trades = D.trades || [];
+  const scores = D.positionScores || [];
+  const assess = D.assessments || [];
+  const modelName = id => (D.models.find(m => m.id === id) || {}).name || '—';
+  const bare = s => String(s || '').replace(/\s*\([^)]*\)/g, '');
+
+  // ---- scorecard, one row per model that has a ledger at all ----
+  const scorecard = (() => {
+    if (!stats.length) {
+      return `<div class="card" style="margin-bottom:14px"><h2>Scorecard</h2>
+        <div class="empty">No model has a dated holdings history loaded, so there are no trades to grade. Load one with jobs/load-holdings-history.mjs and run jobs/compute-decision-ledger.mjs.</div></div>`;
+    }
+    const missing = (D.models || []).filter(m => !stats.some(s => s.strategy_id === m.id));
+    const kpi = (lab, val, sub, title) => `<div class="card kpi" title="${esc(title)}">
+      <span class="eyebrow">${esc(lab)}</span><b style="font-size:26px">${val}</b><small>${esc(sub)}</small></div>`;
+    return stats.map(s => {
+      const ba = n(s.batting_average), sl = n(s.slugging_bps);
+      const w = n(s.win_bps) || 0, l = n(s.loss_bps) || 0;
+      return `<div class="card" style="margin-bottom:14px">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+          <h2 style="margin:0">${esc(bare(modelName(s.strategy_id)))} — scorecard</h2>
+          <span style="font-size:12px;color:var(--muted)">${esc(s.first_snapshot)} to ${esc(s.last_snapshot)} · ${s.n_closed} completed, ${s.n_open} open</span></div>
+        <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-top:12px">
+          ${kpi('Batting average', ba === null ? '—' : ba.toFixed(3).replace(/^0/, ''),
+                `${s.n_wins} of ${s.n_closed} exited profitable`,
+                'Share of completed trades that exited with a positive return. Ted Williams by way of Buffett: it counts hits, not distance.')}
+          ${kpi('Slugging', sl === null ? '—' : `${sl >= 0 ? '+' : ''}${sl.toFixed(0)}`,
+                'bps added per completed trade',
+                'Average contribution to model return per completed trade, in basis points. The distance on the hits — a model can bat .700 and still lose money by sizing its winners small.')}
+          ${kpi('Wins vs losses', `<span style="color:var(--pos)">${s.n_wins}</span><span style="color:var(--muted)">/</span><span style="color:var(--neg)">${s.n_losses}</span>`,
+                `+${w.toFixed(0)} bps won, ${l.toFixed(0)} bps lost`,
+                'Completed trades split by whether they exited profitable, with the basis points each side contributed.')}
+          ${kpi('Median position', s.median_weight === null ? '—' : pct(+s.median_weight),
+                'the size a verdict is judged against',
+                'The median weight this model gives a position. The sizing verdict on each trade is read against it.')}
+        </div>
+        <p class="note">${s.n_unpriced ? `<b>${s.n_unpriced} position${s.n_unpriced === 1 ? '' : 's'} could not be priced</b> and ${s.n_unpriced === 1 ? 'is' : 'are'} excluded from every figure here. ` : ''}${s.gap_days ? `The history has a ${s.gap_days}-day hole, and a round trip that opened and closed inside it is invisible — not counted as a win or a loss, simply absent. ` : ''}Trades are derived from the dated snapshots, not from a broker file: a ticker present in one snapshot and absent from the one before was bought, present and then absent was sold. A round trip that opened and closed between two snapshots cannot be seen at all.</p></div>`;
+    }).join('') + (!missing.length ? '' : `<div class="card" style="margin-bottom:14px"><h2>Not yet gradeable</h2>
+      <div class="empty">${missing.map(m => esc(bare(m.name))).join(', ')} — these models have target weights but no dated holdings history, so there is nothing to compare over time and no trades to grade.</div></div>`);
+  })();
+
+  // ---- decision score per open position, across the owner's windows ----
+  const positions = (() => {
+    if (!scores.length) {
+      return `<div class="card" style="margin-bottom:14px"><h2>Current positions</h2>
+        <div class="empty">No open positions scored yet. Run jobs/compute-decision-ledger.mjs.</div></div>`;
+    }
+    const WINS = [['ITD', 'Inception to date'], ['1W', '1 week'], ['1M', '1 month'], ['6M', '6 months'], ['12M', '12 months']];
+    const rows = scores.filter(r => r.window_key === annieWindow)
+      .sort((a, b) => (n(b.decision_bps) ?? -1e9) - (n(a.decision_bps) ?? -1e9));
+    const tabs = `<div class="tabs" style="margin:0">${WINS.map(([k, lbl]) =>
+      `<button class="tab" data-anniewin="${k}" aria-selected="${k === annieWindow}" title="${esc(lbl)}">${k}</button>`).join('')}</div>`;
+    const total = rows.reduce((s, r) => s + (n(r.decision_bps) || 0), 0);
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Current positions — decision score</h2>${tabs}</div>
+      <div style="overflow-x:auto;margin-top:12px"><table style="min-width:720px"><thead><tr>
+        <th>Position</th><th>Model</th><th class="num">Weight</th><th class="num">Position</th>
+        <th class="num">Benchmark</th><th class="num">Decision score</th></tr></thead><tbody>
+      <tr style="border-bottom:2px solid var(--line);background:var(--panel2)">
+        <td><b>ALL POSITIONS</b></td><td></td><td class="num"></td><td class="num"></td><td class="num"></td>
+        <td class="num"><b style="color:${col(total)}">${total >= 0 ? '+' : ''}${total.toFixed(0)} bps</b></td></tr>
+      ${rows.map(r => {
+        const d = n(r.decision_bps);
+        const flags = [
+          r.is_partial ? 'Younger than this window, so the score covers the position\'s life rather than the named period.' : '',
+          r.starts_in_gap ? 'First appears at the snapshot after the hole in the history, so it may have been bought anywhere inside it.' : '',
+        ].filter(Boolean).join(' ');
+        return `<tr><td><b>${esc(r.ticker)}</b>${r.is_partial ? '<sup style="color:var(--warn)" title="partial window">·</sup>' : ''}</td>
+          <td style="color:var(--muted)">${esc(bare(modelName(r.strategy_id)))}</td>
+          <td class="num">${pct(+r.weight)}</td>
+          <td class="num">${r.position_return === null ? '<span style="color:var(--muted)">–</span>' : `<span style="color:${col(+r.position_return)}">${(+r.position_return * 100).toFixed(1)}%</span>`}</td>
+          <td class="num">${r.benchmark_return === null ? '<span style="color:var(--muted)">–</span>' : `<span style="color:var(--muted)">${(+r.benchmark_return * 100).toFixed(1)}%</span>`}</td>
+          <td class="num"${flags ? ` title="${esc(flags)}"` : ''}>${d === null
+            ? `<span style="color:var(--muted)" title="${esc(r.unavailable_reason || '')}">–</span>`
+            : `<b style="color:${col(d)}">${d >= 0 ? '+' : ''}${d.toFixed(0)}</b>`}</td></tr>`;
+      }).join('')}
+      </tbody></table></div>
+      <p class="note">The decision score is <b>weight × (what the position did − what the benchmark did)</b>, in basis points: what holding this rather than the index was worth to the model. It scores the decision, not the weather — a position up 8% while the index was up 10% cost the model, and a plain return column would call that a good quarter. Positions marked <sup style="color:var(--warn)">·</sup> are younger than the window, so their score covers the position's life instead; hover for the dates.</p></div>`;
+  })();
+
+  // ---- the journal: completed trades, graded ----
+  const journal = (() => {
+    const closed = trades.filter(t => t.status === 'closed').slice()
+      .sort((a, b) => String(b.exit_date).localeCompare(String(a.exit_date)));
+    if (!closed.length) {
+      return `<div class="card" style="margin-bottom:14px"><h2>Trade journal</h2>
+        <div class="empty">No completed trades recovered. Run jobs/compute-decision-ledger.mjs.</div></div>`;
+    }
+    const VERDICT = {
+      too_small:   ['Too small', 'var(--warn)', 'It won, and the model held less of it than it usually holds of anything.'],
+      too_large:   ['Too large', 'var(--neg)', 'It lost, and the model held more of it than it usually holds of anything.'],
+      well_sized:  ['Well sized', 'var(--pos)', 'Size and outcome pulled the same way: a winner held big, or a loser held small.'],
+      about_right: ['About right', 'var(--muted)', 'Within a quarter of the model\'s median position size.'],
+    };
+    const divergent = closed.filter(t => t.total_return !== null && t.contribution_bps !== null
+      && Math.sign(+t.total_return) !== Math.sign(+t.contribution_bps) && +t.contribution_bps !== 0);
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Trade journal</h2>
+        <span style="font-size:12px;color:var(--muted)">${closed.length} completed, newest first</span></div>
+      <div style="overflow-x:auto;margin-top:10px"><table style="min-width:860px"><thead><tr>
+        <th>Position</th><th>Model</th><th>Held</th><th class="num">Avg size</th>
+        <th class="num">Exit return</th><th class="num">Contribution</th><th class="num">Vs benchmark</th><th>Sizing</th>
+      </tr></thead><tbody>
+      ${closed.map(t => {
+        const v = VERDICT[t.sizing_verdict] || null;
+        const marks = [
+          t.pre_existing ? 'Already held when the records begin, so nobody bought it on that date and this return is not evidence about a decision.' : '',
+          t.starts_in_gap ? 'First appears at the snapshot after the hole in the history; it may have been bought anywhere inside it.' : '',
+        ].filter(Boolean).join(' ');
+        return `<tr${t.pre_existing ? ' style="opacity:.72"' : ''}>
+          <td><b>${esc(t.ticker)}</b>${marks ? `<sup style="color:var(--warn)" title="${esc(marks)}">·</sup>` : ''}</td>
+          <td style="color:var(--muted)">${esc(bare(modelName(t.strategy_id)))}</td>
+          <td style="color:var(--muted);white-space:nowrap">${esc(t.entry_date)} → ${esc(t.exit_date)}</td>
+          <td class="num">${pct(+t.avg_weight)}</td>
+          <td class="num">${t.total_return === null ? '<span style="color:var(--muted)">–</span>' : `<span style="color:${col(+t.total_return)}">${(+t.total_return * 100).toFixed(1)}%</span>`}</td>
+          <td class="num">${t.contribution_bps === null ? '<span style="color:var(--muted)">–</span>' : `<b style="color:${col(+t.contribution_bps)}">${+t.contribution_bps >= 0 ? '+' : ''}${(+t.contribution_bps).toFixed(0)}</b>`}</td>
+          <td class="num">${t.excess_bps === null ? '<span style="color:var(--muted)">–</span>' : `<span style="color:${col(+t.excess_bps)}">${+t.excess_bps >= 0 ? '+' : ''}${(+t.excess_bps).toFixed(0)}</span>`}</td>
+          <td>${v ? `<span style="color:${v[1]}" title="${esc(v[2])}">${v[0]}</span>` : '<span style="color:var(--muted)">–</span>'}</td></tr>`;
+      }).join('')}
+      </tbody></table></div>
+      <p class="note">Contribution is accumulated at the weight actually held in each stretch, not average size times the whole-period return, because a position trimmed before a fall contributed less than its full-size return implies — and that gap is the entire sizing question.${divergent.length ? ` <b>${divergent.length} trade${divergent.length === 1 ? '' : 's'} here exited profitable but contributed negatively, or the reverse</b> (${divergent.slice(0, 4).map(t => esc(t.ticker)).join(', ')}${divergent.length > 4 ? '…' : ''}); when those two disagree the path is the story, not the entry and exit.` : ''} Faded rows were already held on the first day of the records, so their return is measured from where the file starts rather than from a decision. Exits are dated at the snapshot where the position was first absent, which is on or after the day it was sold.</p></div>`;
+  })();
+
+  // ---- the written sections ----
+  const KINDS = [
+    ['reflexivity', 'Reflexivity', 'Soros\'s two-way feedback: does the price move the fundamentals here, or only reflect them? A position where belief changes the thing being believed in behaves differently from one where it does not.',
+     'Nothing scored yet. Annie writes these after reading the research in the inbox and what is being said publicly about the name, then loads them with jobs/load-annie-assessments.mjs. Run the Annie agent to fill this in.'],
+    ['confirmation_bias', 'Confirmation bias', 'The three biases most likely at work entering a position, drawn from what the desk was reading at the time.',
+     'Nothing written yet. Annie derives these from the research pieces actually in the inbox, so there is something to point at rather than a generic list of biases.'],
+    ['steel_man', 'The steel man', 'The strongest honest case against each position — not the weak version that is easy to dismiss.',
+     'Nothing written yet. A steel man is only worth reading if it was built from real opposing evidence, so this fills in once Annie has sources to build it from.'],
+    ['kahneman', 'Thinking fast and slow', 'Where a decision looks like system one: anchoring, availability, loss aversion, substituting an easy question for a hard one.',
+     'Nothing written yet. Annie reads this page\'s own ledger alongside the decision journal to spot the pattern, which needs both to exist first.'],
+    ['monday_qb', 'Monday morning QB', 'What the desk would do differently, written after the outcome is known and graded on the reasoning rather than the result.',
+     'Nothing written yet. This one is deliberately retrospective — it needs completed trades with an outcome and a recorded rationale to compare.'],
+    ['sizing_recommendation', 'Position sizing', 'What the ledger implies about size on the next one, from how this model\'s own winners and losers were actually sized.',
+     'Nothing written yet. The arithmetic above is the input: the sizing verdicts and the median position weight are what a recommendation has to argue from.'],
+  ];
+  const written = KINDS.map(([kind, title, blurb, empty]) => {
+    const rows = assess.filter(a => a.kind === kind)
+      .sort((a, b) => String(b.as_of).localeCompare(String(a.as_of)) || (n(b.score) ?? -1e9) - (n(a.score) ?? -1e9));
+    return `<div class="card" style="margin-bottom:14px"><h2>${esc(title)}</h2>
+      <p class="note" style="margin:0 0 10px">${blurb}</p>
+      ${!rows.length ? `<div class="empty">${esc(empty)}</div>` : rows.map(a => {
+        const src = Array.isArray(a.sources) ? a.sources : [];
+        return `<details style="margin-bottom:8px"${rows.indexOf(a) === 0 ? ' open' : ''}>
+          <summary style="cursor:pointer;padding:6px 0">
+            ${a.ticker ? `<b>${esc(a.ticker)}</b> ` : a.strategy_id ? `<b>${esc(bare(modelName(a.strategy_id)))}</b> ` : '<b>Desk</b> '}
+            ${esc(a.headline)}
+            ${a.score !== null && a.score !== undefined ? `<span class="chip" title="${esc(a.score_scale || 'No scale recorded for this score')}">${(+a.score).toFixed(1)}</span>` : ''}
+            <span class="chip">${esc(a.as_of)}</span>
+            ${a.confidence ? `<span class="chip">${esc(a.confidence)} confidence</span>` : ''}</summary>
+          <div style="padding-top:6px">${md(a.body_md)}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:6px">${src.length
+            ? 'Read: ' + src.map(s => s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title || s.url)}</a>` : esc(s.title || '')).join(' · ')
+            : '<b>No sources recorded.</b> Treat this as an opinion rather than a finding.'}</div></details>`;
+      }).join('')}</div>`;
+  }).join('');
+
+  // ---- Annie's own written output, from the workspace ----
+  const outs = (kinds) => (D.outputs || []).filter(o => o.agent === 'annie' && kinds.includes(o.kind))
+    .slice().sort((a, b) => b.as_of.localeCompare(a.as_of));
+  const open = outs(['open_decisions']);
+  const note = (title, list, emptyMsg) => `<div class="card" style="margin-bottom:14px"><h2>${esc(title)}</h2>
     ${list.length ? list.map(o => `<div style="margin-bottom:10px"><div class="eyebrow">as of ${esc(o.as_of)}</div>${md(o.body_md)}</div>`).join('')
                   : `<div class="empty">${esc(emptyMsg)}</div>`}</div>`;
-  return `<span class="eyebrow">Decision quality</span><h1>Annie</h1>
-   <p class="sub">Annie's journal, the decisions still open, and how the desk's calls have actually turned out.</p>
-   ${sec('Open decisions', open, 'Nothing open. Annie records a decision before it is made, not after.')}
-   ${sec('Decision journal', journal, 'No entries yet. The journal is append-only and is written at the time of a decision, with the dashboard snapshot that informed it.')}
-   ${sec('Decision statistics', stats, 'No statistics yet — these need a run of decisions with outcomes recorded before they mean anything.')}
-   <p class="note">The journal exists to separate a good decision from a good outcome: an entry records the thesis, the probabilities assigned at the time, the kill criteria and the review date, and only later the result and a process grade. A decision can be right and lose money, and the grade is for the reasoning.</p>`;
+
+  return `<span class="eyebrow">Annie</span><h1>Decision Coach</h1>
+   <p class="sub">OODA — Observe, Orient, Decide, Assess.</p>
+   ${scorecard}
+   ${positions}
+   ${journal}
+   ${note('Open decisions', open, 'Nothing open. Annie records a decision before it is made, not after.')}
+   ${written}
+   <p class="note">Everything above the written sections is arithmetic: the trades come from dated holdings snapshots and the returns from adjusted closing prices, computed by <code>jobs/compute-decision-ledger.mjs</code>. Everything in the written sections is judgment formed by reading something, and each one carries the date it was formed and what it was formed from. The two are kept apart on purpose — a batting average and a steel man are not the same kind of claim, and a page that styles them alike invites them to be trusted alike.</p>`;
 }
 
 function briefs() {
@@ -2111,6 +2298,13 @@ document.addEventListener('click', e => {
   monthlyTab = t.dataset.monthtab;
   const arg = (location.hash.split('/')[1] || '');
   if (arg) openModel(arg);
+});
+// Decision-score window tabs on Annie's page.
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-anniewin]');
+  if (!t) return;
+  annieWindow = t.dataset.anniewin;
+  $('#app').innerHTML = annie();
 });
 // Sector / equity-factor toggle inside the model drawer.
 document.addEventListener('click', e => {
