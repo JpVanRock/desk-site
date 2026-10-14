@@ -1,6 +1,6 @@
 :root{
   --bg:#0e1116; --panel:#151a22; --panel2:#1b2130; --line:#252d3b; --text:#e6e9ef; --muted:#8b95a7;
-  --accent:#7aa2f7; --pos:#3fb27f; --neg:#e0605e; --flat:#d6a93b; --warn:#e0a23b; --bench:#5b6577;
+  --accent:#7aa2f7; --pos:#3fb27f; --neg:#e0605e; --flat:#d6a93b; --warn:#e0a23b; --bench:#5b6577; --winbg:rgba(63,178,127,.34); --losebg:rgba(224,96,94,.38);
   --shadow:0 8px 30px rgba(0,0,0,.35);
   /* Factor colours, from the owner's dashboard reference. Deliberately distinct from the
      pos/neg/warn tokens: a factor is not good or bad, it is a category, and reusing the
@@ -9,7 +9,7 @@
 }
 :root[data-theme="light"]{
   --bg:#f5f6f8; --panel:#ffffff; --panel2:#f0f2f6; --line:#dfe3ea; --text:#1b2230; --muted:#667085;
-  --accent:#3b62d6; --pos:#1f8f5f; --neg:#c8443f; --flat:#b98a14; --warn:#b7791f; --shadow:0 8px 30px rgba(20,30,50,.12); --bench:#9aa4b2;
+  --accent:#3b62d6; --pos:#1f8f5f; --neg:#c8443f; --flat:#b98a14; --warn:#b7791f; --shadow:0 8px 30px rgba(20,30,50,.12); --bench:#9aa4b2; --winbg:rgba(31,143,95,.24); --losebg:rgba(200,68,63,.26);
   --growth:#2a78d6; --inflation:#eb6834; --liquidity:#1baf7a; --unclass:#c3c2b7;
 }
 *{box-sizing:border-box} html{background:var(--bg)}
@@ -34,6 +34,11 @@ td{padding:10px;border-bottom:1px solid var(--line);vertical-align:middle}tr:las
 tbody tr.click{cursor:pointer}tbody tr.click:hover{background:var(--panel2)}
 .num{text-align:right;font-variant-numeric:tabular-nums}
 .cell{display:inline-block;min-width:64px;text-align:center;padding:6px 8px;border-radius:6px;font-variant-numeric:tabular-nums;font-weight:600}
+/* Thirteen numeric columns do not fit at the table's normal rhythm, and a grid that scrolls
+   sideways hides December — the month a reader looks for first. */
+.monthgrid{font-size:12px}
+.monthgrid th,.monthgrid td{padding:5px 6px}
+.monthgrid td:first-child,.monthgrid th:first-child{padding-left:10px}
 .bar{height:6px;background:var(--panel2);border-radius:99px;overflow:hidden;min-width:70px}.bar i{display:block;height:100%;background:var(--accent)}
 .chip{font:600 10px/1 ui-monospace,Menlo,monospace;letter-spacing:.6px;padding:4px 7px;border-radius:5px;text-transform:uppercase;border:1px solid var(--line);color:var(--muted)}
 .chip.long{color:var(--pos);border-color:color-mix(in srgb,var(--pos) 40%,transparent)}.chip.short{color:var(--neg);border-color:color-mix(in srgb,var(--neg) 40%,transparent)}

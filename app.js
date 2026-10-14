@@ -79,7 +79,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
@@ -120,6 +120,7 @@ async function load() {
     qSoft(sb.from('model_trailing_returns').select('strategy_id,period,as_of,sort_order,start_date,end_date,model_return,benchmark_return,excess_return,is_cagr,basis,unavailable_reason').order('sort_order'), 'trailing returns'),
     qSoft(sb.from('model_style_exposure').select('strategy_id,lens,as_of,bucket,label,sort_order,kind,model_weight,benchmark_weight').order('sort_order'), 'style exposure'),
     qSoft(sb.from('model_style_coverage').select('strategy_id,lens,as_of,basis,window_start,window_end,model_equity_weight,model_resolved,benchmark_resolved,unresolved'), 'style coverage'),
+    qSoft(sb.from('model_monthly_returns').select('strategy_id,as_of,year,month,model_return,benchmark_return,excess_return,coverage,is_partial,in_gap,basis,unavailable_reason'), 'monthly returns'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -190,7 +191,7 @@ async function load() {
     periodStats: newest(periodStats), contribution: newest(contribution),
     factorAlloc: newest(factorAlloc), valueSeries: valueSeries || [], snapIntegrity: snapIntegrity || [],
     currentHoldings: currentHoldings || [], factorOverrides: factorOverrides || [], lensSnr: lensSnr || [], holdingRR: newest(holdingRR), trailing: newest(trailing),
-    styleExposure: newest(styleExposure), styleCoverage: newest(styleCoverage) };
+    styleExposure: newest(styleExposure), styleCoverage: newest(styleCoverage), monthly: newest(monthly) };
 }
 
 // ---------- Views ----------
@@ -396,6 +397,8 @@ let scatterPeriod = 'YTD';
 // Which lens the model drawer's portfolio breakdown is showing. Module scope so it survives the
 // drawer re-render the toggle triggers.
 let breakdownLens = 'sector';
+// Which column the monthly grid is showing. Module scope for the same reason as breakdownLens.
+let monthlyTab = 'portfolio';
 const SCATTER_PERIODS = ['YTD', '1Y', '3Y', '5Y'];
 
 function positionScatter() {
@@ -551,7 +554,9 @@ function stan() {
        <td class="num">${pct(cash)}</td>
        <td>${!b ? '<span style="color:var(--muted)">–</span>'
           : !b.light ? `<span class="chip" title="${esc(b.note || '')}">unrated</span>`
-          : `<span title="${esc(b.note || '')}">${lightDot(b.light, 9)} <span style="color:${LIGHT_COLOR[b.light]}">${bandState || b.light}</span></span>`}</td>
+          : `<span title="${esc([b.note, b.target_low === null ? '' : `Band ${(+b.target_low).toFixed(2)}×–${(+b.target_high).toFixed(2)}×`].filter(Boolean).join(' · '))}">
+              <b style="font-variant-numeric:tabular-nums;color:${LIGHT_COLOR[b.light]}">${b.actual_beta === null ? '–' : (+b.actual_beta).toFixed(2) + '×'}</b>
+              <br><small>${lightDot(b.light, 8)} <span style="color:${LIGHT_COLOR[b.light]}">${bandState || b.light}</span>${b.target_low === null ? '' : `<span style="color:var(--muted)"> of ${(+b.target_low).toFixed(2)}–${(+b.target_high).toFixed(2)}</span>`}</small></span>`}</td>
        <td class="num" title="${b && b.note ? esc(b.note) : 'Least-squares beta against the benchmark chosen for this model'}">${b && b.actual_beta !== null ? (+b.actual_beta).toFixed(2) + '×' : '<span style="color:var(--muted)">–</span>'}${b && b.r_squared !== null ? `<br><small style="color:${+b.r_squared < 0.5 ? 'var(--neg)' : 'var(--muted)'}">R² ${(+b.r_squared).toFixed(2)}</small>` : ''}</td>
        <td class="num">${r.measured ? `<span class="click" data-go="#stan/top3-${esc(r.m.id)}" style="cursor:pointer;text-decoration:underline dotted" title="Show the three largest risk contributors"><b>${(r.top3Risk * 100).toFixed(0)}%</b></span><br><small style="color:var(--muted)">on ${(r.top3Wt * 100).toFixed(0)}% wt</small>` : '<span style="color:var(--muted)">–</span>'}</td>
        ${perfCell(mr, 'Year-to-date return in USD, target weights')}
@@ -563,7 +568,7 @@ function stan() {
      </tr>`;
    }).join('')}
    </tbody></table></div>
-   <p class="note"><b>Beta vs band</b> says whether the model sits inside, below or above the band the master Speed Limit calls for; <b>beta vs bench</b> is the figure itself, against that model's own benchmark — read R² first, since below 0.5 the regression is not describing risk posture and the band cell shows "unrated" instead. <b>Top-3 risk</b> is the share of model volatility carried by its three largest contributors, against the weight those same three hold; click it for the names. Performance is year-to-date on target weights, gross of fees. <b>vs Gold</b> and <b>vs BTC</b> restate the model in that numeraire — (1+model)÷(1+numeraire)−1 — using GLD for gold and Tiingo spot for bitcoin, so green means the model held its value against that yardstick rather than merely rose. <b>Expense</b> is withheld unless every holding has a ratio: there is no connected source for them, a partial average would understate what a model costs, and estimating one would flow straight into a net-of-fee conversation.</p></div>`;
+   <p class="note"><b>Beta vs band</b> says whether the model sits inside, below or above the band the master Speed Limit calls for; <b>beta vs bench</b> is the figure itself, against that model's own benchmark — read R² first, since below 0.5 the regression is not describing risk posture and the band cell shows "unrated" instead. <b>Top-3 risk</b> is the share of model volatility carried by its three largest contributors, against the weight those same three hold; click it for the names. Performance is year-to-date on <b>target weights for every model</b>, gross of fees, so the eight are comparable with each other. That is not the same number a model's own drawer shows: where a model has a dated holdings history its drawer measures what it actually held, and the two will differ — for Balanced Core by several points. Cash is priced as BIL rather than dropped, which it used to be. <b>vs Gold</b> and <b>vs BTC</b> restate the model in that numeraire — (1+model)÷(1+numeraire)−1 — using GLD for gold and Tiingo spot for bitcoin, so green means the model held its value against that yardstick rather than merely rose. <b>Expense</b> is withheld unless every holding has a ratio: there is no connected source for them, a partial average would understate what a model costs, and estimating one would flow straight into a net-of-fee conversation.</p></div>`;
 
   // Every position any model has flagged, gathered in one place so a name appearing in several
   // models is obvious — that is the concentration that matters at desk level, not model level.
@@ -1194,6 +1199,61 @@ function modelDashboard(m) {
     const integ = (D.snapIntegrity || []).filter(i => i.strategy_id === m.id);
     const gap = integ.find(i => i.gap_days_before && +i.gap_days_before > 60);
     const spansGap = gap && rows.some(r => r.start_date && r.start_date < gap.as_of);
+
+    // ---- Monthly returns grid, under the trailing table on the same card ----
+    //
+    // Colour is the OWNER'S rule, not the sign of the number: green where the model beat its
+    // benchmark that month, red where it did not. That is deliberately different from the
+    // reference screen, which colours by whether the month was positive — a model can lose money
+    // in a month it won, and the question this grid is here to answer is the second one. The
+    // colour therefore means the same thing on all three tabs, so switching to Benchmark still
+    // shows which months the model took.
+    const monthlyBlock = (() => {
+      const all = (D.monthly || []).filter(r => r.strategy_id === m.id);
+      if (!all.length) return '';
+      const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'June', 'July', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const key = { portfolio: 'model_return', benchmark: 'benchmark_return', excess: 'excess_return' }[monthlyTab];
+      const at = (y, mo) => all.find(r => r.year === y && r.month === mo) || null;
+      // A year with nothing in it is a year of blanks, which teaches a reader nothing and pushes
+      // the years that do have figures off the screen.
+      const years = [...new Set(all.map(r => r.year))].sort()
+        .filter(y => all.some(r => r.year === y && r.month > 0 && r.model_return !== null));
+      if (!years.length) return '';
+
+      const cell = (r, isAnnual) => {
+        if (!r || r[key] === null || r[key] === undefined) {
+          const why = r?.unavailable_reason;
+          return `<td class="num" style="color:var(--muted)"${why ? ` title="${esc(why)}"` : ''}>–</td>`;
+        }
+        const v = +r[key];
+        // No excess means no verdict, so no colour — an uncoloured cell is a figure without a
+        // benchmark behind it, not a flat month.
+        const ex = r.excess_return === null || r.excess_return === undefined ? null : +r.excess_return;
+        const bg = ex === null ? 'transparent' : ex >= 0 ? 'var(--winbg)' : 'var(--losebg)';
+        const tips = [
+          r.is_partial ? 'Part of a month only — the series begins or ends inside it.' : '',
+          r.in_gap ? 'Inside the stretch with no holdings snapshot: the weights were carried forward unchanged through this month.' : '',
+          ex === null ? 'No benchmark figure for this month, so there is no verdict to colour.' : `${ex >= 0 ? 'Ahead of' : 'Behind'} the benchmark by ${Math.abs(ex * 100).toFixed(2)}%.`,
+        ].filter(Boolean).join(' ');
+        return `<td class="num" style="background:${bg};${isAnnual ? 'font-weight:600;' : ''}${r.is_partial ? 'font-style:italic;' : ''}" title="${esc(tips)}">${(v * 100).toFixed(2)}%${r.in_gap ? '<sup style="color:var(--warn)">·</sup>' : ''}</td>`;
+      };
+
+      const tabs = `<div class="tabs" style="margin:0">${[['portfolio', 'Portfolio'], ['benchmark', 'Benchmark'], ['excess', 'Vs. Benchmark']]
+        .map(([k, lbl]) => `<button class="tab" data-monthtab="${k}" aria-selected="${k === monthlyTab}">${lbl}</button>`).join('')}</div>`;
+
+      const anyGap = all.some(r => r.in_gap && r.month > 0);
+      const anyPartial = all.some(r => r.is_partial && r.month > 0);
+
+      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-top:26px">
+          <h2 style="margin:0">Monthly returns</h2>${tabs}</div>
+        <div style="overflow-x:auto;margin-top:10px"><table class="monthgrid" style="min-width:760px"><thead><tr>
+          <th>Year</th><th class="num">Annual</th>${MON.map(x => `<th class="num">${x}</th>`).join('')}
+        </tr></thead><tbody>
+        ${years.map(y => `<tr><td><b>${y}</b></td>${cell(at(y, 0), true)}${MON.map((_, i) => cell(at(y, i + 1), false)).join('')}</tr>`).join('')}
+        </tbody></table></div>
+        <p class="note"><b>Green is a month the model beat ${esc(benchLabel)}; red is a month it did not</b> — not whether the month made money, which is a different question and the one a reader usually assumes. The colour means the same thing on all three tabs, so the Benchmark tab still shows which months the model took. Annual is that year's own months compounded, and a year missing any month is withheld rather than compounded over the hole.${anyPartial ? ' Italic figures are part-months, where the series begins or ends inside them.' : ''}${anyGap ? ` Months marked <sup style="color:var(--warn)">·</sup> fell inside the stretch with no holdings snapshot — the prices are real, but the weights were carried forward unchanged, so a run of green there is a book nobody rebalanced rather than a decision that worked.` : ''} Hover any cell for its margin over the benchmark.</p>`;
+    })();
+
     return `<div class="card" style="margin-top:18px">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
         <h2 style="margin:0">Trailing returns</h2>
@@ -1206,7 +1266,8 @@ function modelDashboard(m) {
       <p class="note">${basis === 'holdings'
         ? 'Computed from the dated holdings history, so it follows what the model actually held.'
         : '<b>Computed from current target weights held fixed back through each window</b>, because this model has no dated holdings history loaded. It answers how today’s allocation would have done, not what the model did — load a history and this switches to the real thing.'}
-      Returns are gross of fees. The three annualised columns are CAGR rather than cumulative and are withheld entirely where the price history does not reach back that far, or where the window would start inside a gap in the holdings history — annualising over a span that does not match the label is wrong rather than approximate, so a dash there is deliberate. Hover a dash for the reason.${spansGap ? ` <b>Windows reaching before ${esc(gap.as_of)} include the ${gap.gap_days_before}-day stretch where the holdings were carried forward unchanged</b>, so the longer periods reflect a book that was not rebalanced through it.` : ''}</p></div>`;
+      Returns are gross of fees. The three annualised columns are CAGR rather than cumulative and are withheld entirely where the price history does not reach back that far, or where the window would start inside a gap in the holdings history — annualising over a span that does not match the label is wrong rather than approximate, so a dash there is deliberate. Hover a dash for the reason.${spansGap ? ` <b>Windows reaching before ${esc(gap.as_of)} include the ${gap.gap_days_before}-day stretch where the holdings were carried forward unchanged</b>, so the longer periods reflect a book that was not rebalanced through it.` : ''}</p>
+      ${monthlyBlock}</div>`;
   })();
 
   // ---- Portfolio breakdown: sector / equity-factor mix against the benchmark ----
@@ -1970,6 +2031,14 @@ document.addEventListener('click', e => {
   if (!t || t.disabled) return;
   scatterPeriod = t.dataset.scatter;
   $('#app').innerHTML = stan();
+});
+// Portfolio / Benchmark / Vs. Benchmark tabs on the monthly returns grid.
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-monthtab]');
+  if (!t) return;
+  monthlyTab = t.dataset.monthtab;
+  const arg = (location.hash.split('/')[1] || '');
+  if (arg) openModel(arg);
 });
 // Sector / equity-factor toggle inside the model drawer.
 document.addEventListener('click', e => {
