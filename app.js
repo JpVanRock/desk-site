@@ -79,7 +79,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
@@ -116,6 +116,7 @@ async function load() {
     qSoft(sb.from('current_holdings').select('strategy_id,as_of,ticker,security_id,name_raw,weight'), 'current holdings'),
     qSoft(sb.from('holding_factor_overrides').select('security_id,split,note,author,as_of'), 'factor overrides'),
     qSoft(sb.from('lens_signal_to_noise').select('category,window_label,n_scored,n_sources,hit_rate,signal,noise,signal_to_noise,too_few_to_judge'), 'lens signal to noise'),
+    qSoft(sb.from('holding_risk_return').select('security_id,period,as_of,start_date,end_date,total_return,sharpe,vol_ann,n_obs'), 'holding risk/return'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -185,7 +186,7 @@ async function load() {
     // rather than like a bug, which is the dangerous kind.
     periodStats: newest(periodStats), contribution: newest(contribution),
     factorAlloc: newest(factorAlloc), valueSeries: valueSeries || [], snapIntegrity: snapIntegrity || [],
-    currentHoldings: currentHoldings || [], factorOverrides: factorOverrides || [], lensSnr: lensSnr || [] };
+    currentHoldings: currentHoldings || [], factorOverrides: factorOverrides || [], lensSnr: lensSnr || [], holdingRR: newest(holdingRR) };
 }
 
 // ---------- Views ----------
@@ -383,6 +384,91 @@ function top3Drawer(strategyId) {
       <p class="note">Risk share is each holding's marginal contribution to model volatility; the shares sum to 100%, so they compare directly against weight. A ratio above 1 is not a criticism — equity risk in a growth model <i>should</i> outrun its weight — it is the prompt to say what the position is for. Measured on volatility and correlation only, so it is silent on drawdown shape, tails, liquidity and tax.</p></div>`}`;
 }
 
+// ---------- Position scatter: Sharpe against total return ----------
+//
+// One point per security currently held anywhere in the book. Sharpe is excess of the desk's cash
+// proxy rather than of zero, so a cash-like fund does not get credit for the risk-free rate.
+let scatterPeriod = 'YTD';
+const SCATTER_PERIODS = ['YTD', '1Y', '3Y', '5Y'];
+
+function positionScatter() {
+  const rows = (D.holdingRR || []).filter(r => r.period === scatterPeriod && r.sharpe !== null);
+  const tick = id => (D.markets.find(m => m.id === id) || {}).ticker || '?';
+  const tabs = `<div class="tabs">${SCATTER_PERIODS.map(p => {
+    const any = (D.holdingRR || []).some(r => r.period === p && r.sharpe !== null);
+    return `<button class="tab" data-scatter="${p}" aria-selected="${p === scatterPeriod}" ${any ? '' : 'disabled title="No holding has enough history for this window"'}>${p}</button>`;
+  }).join('')}</div>`;
+
+  if (!rows.length) {
+    return `<div class="card" style="margin-top:14px"><h2>Position scatter plot</h2>${tabs}
+      <div class="empty">No holding has both a return and a Sharpe for this window. Run jobs/compute-holding-risk-return.mjs.</div></div>`;
+  }
+
+  const pts = rows.map(r => ({ x: +r.total_return, y: +r.sharpe, t: tick(r.security_id), vol: +r.vol_ann, n: r.n_obs }));
+  const W = 900, Hh = 560, pad = { l: 64, r: 26, t: 34, b: 52 };
+  // Axis bounds padded outward to a round step, and always including zero so the quadrant lines
+  // mean something.
+  const nice = (lo, hi, step) => [Math.floor(Math.min(lo, 0) / step) * step, Math.ceil(Math.max(hi, 0) / step) * step];
+  const [x0, x1] = nice(Math.min(...pts.map(p => p.x)), Math.max(...pts.map(p => p.x)), 0.05);
+  const [y0, y1] = nice(Math.min(...pts.map(p => p.y)), Math.max(...pts.map(p => p.y)), 0.5);
+  const X = v => pad.l + ((v - x0) / ((x1 - x0) || 1)) * (W - pad.l - pad.r);
+  const Y = v => Hh - pad.b - ((v - y0) / ((y1 - y0) || 1)) * (Hh - pad.t - pad.b);
+
+  const xTicks = [], yTicks = [];
+  for (let v = x0; v <= x1 + 1e-9; v += 0.05) xTicks.push(+v.toFixed(4));
+  const yStep = (y1 - y0) > 6 ? 1 : 0.5;
+  for (let v = y0; v <= y1 + 1e-9; v += yStep) yTicks.push(+v.toFixed(3));
+
+  const grid = [
+    ...xTicks.map(v => `<line x1="${X(v).toFixed(1)}" x2="${X(v).toFixed(1)}" y1="${pad.t}" y2="${Hh - pad.b}" stroke="var(--line)" stroke-width="1"/>
+      <text x="${X(v).toFixed(1)}" y="${Hh - pad.b + 16}" font-size="10" fill="var(--muted)" text-anchor="middle">${(v * 100).toFixed(0)}%</text>`),
+    ...yTicks.map(v => `<line x1="${pad.l}" x2="${W - pad.r}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="var(--line)" stroke-width="1"/>
+      <text x="${pad.l - 8}" y="${(Y(v) + 3.5).toFixed(1)}" font-size="10" fill="var(--muted)" text-anchor="end">${v.toFixed(2)}</text>`),
+  ].join('');
+
+  // The quadrant lines: zero return and zero Sharpe. Below the Sharpe line a holding did not beat
+  // cash after allowing for its own volatility, which is the division that matters most here.
+  const zero = `<line x1="${X(0).toFixed(1)}" x2="${X(0).toFixed(1)}" y1="${pad.t}" y2="${Hh - pad.b}" stroke="var(--muted)" stroke-width="1.5"/>
+    <line x1="${pad.l}" x2="${W - pad.r}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="var(--muted)" stroke-width="1.5"/>`;
+
+  // Labels alternate above and below the dot when two points are close, so a cluster stays legible.
+  const sorted = pts.slice().sort((a, b) => X(a.x) - X(b.x));
+  const placed = [];
+  const marks = sorted.map(p => {
+    const cx = X(p.x), cy = Y(p.y);
+    const clash = placed.some(q => Math.abs(q.cx - cx) < 42 && Math.abs(q.cy - cy) < 26);
+    const below = !clash;
+    placed.push({ cx, cy });
+    return `<g><circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="5" fill="var(--growth)">
+        <title>${esc(p.t)} · return ${(p.x * 100).toFixed(1)}% · Sharpe ${p.y.toFixed(2)} · vol ${(p.vol * 100).toFixed(0)}% · ${p.n} days</title></circle>
+      <text x="${cx.toFixed(1)}" y="${(cy + (below ? 17 : -10)).toFixed(1)}" font-size="10" fill="var(--growth)" text-anchor="middle">${esc(p.t)}</text></g>`;
+  }).join('');
+
+  const r0 = rows[0];
+  const omitted = (D.markets || []).length ? null : null;
+  const best = pts.slice().sort((a, b) => b.y - a.y)[0];
+  const worst = pts.slice().sort((a, b) => a.y - b.y)[0];
+
+  return `<div class="card" style="margin-top:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Position scatter plot</h2>
+      <span style="font-size:12px;color:var(--muted)">${esc(r0.start_date)} → ${esc(r0.end_date)} · ${pts.length} positions</span></div>
+    ${tabs}
+    <div style="overflow-x:auto"><svg viewBox="0 0 ${W} ${Hh}" style="width:100%;min-width:620px;height:auto;display:block" role="img"
+      aria-label="Sharpe ratio against total return for every position held across the models">
+      ${grid}${zero}${marks}
+      <text x="${pad.l}" y="${pad.t - 14}" font-size="12" fill="var(--text)" font-weight="600">Sharpe ratio (${esc(scatterPeriod)})</text>
+      <text x="${W - pad.r}" y="${Hh - 10}" font-size="12" fill="var(--text)" font-weight="600" text-anchor="end">Total return % (${esc(scatterPeriod)})</text>
+    </svg></div>
+    <div class="kpis" style="margin-top:10px">
+      <div class="card kpi"><span class="eyebrow">Best risk-adjusted</span><b>${esc(best.t)}</b><small>Sharpe ${best.y.toFixed(2)} on ${(best.x * 100).toFixed(1)}%</small></div>
+      <div class="card kpi"><span class="eyebrow">Worst risk-adjusted</span><b>${esc(worst.t)}</b><small>Sharpe ${worst.y.toFixed(2)} on ${(worst.x * 100).toFixed(1)}%</small></div>
+      <div class="card kpi"><span class="eyebrow">Below cash</span><b>${pts.filter(p => p.y < 0).length}</b><small>negative Sharpe</small></div>
+      <div class="card kpi"><span class="eyebrow">Positions plotted</span><b>${pts.length}</b><small>held across all models</small></div>
+    </div>
+    <p class="note">Every security currently held anywhere in the book, plotted by its total return against its Sharpe ratio over the window. <b>Sharpe is excess of BIL</b>, the desk's cash proxy, not of zero — across a period when cash paid 4–5% that distinction decides whether a low-volatility fund looks good or merely looks calm. Anything below the horizontal line failed to beat cash once its own volatility is allowed for, whatever its return did. A holding without enough price history for a window is not plotted rather than shown on a short sample; hover any point for its volatility and the number of days behind it.</p></div>`;
+}
+
 // ---------- Stan: risk across the models ----------
 //
 // Stan's standing job is a dashboard per strategy. This leads with risk rather than with the
@@ -518,7 +604,7 @@ function stan() {
         <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
     }).join('')}
    </div>
-   ${riskTable}${flagsCard}${docsCard}`;
+   ${riskTable}${flagsCard}${positionScatter()}${docsCard}`;
 }
 
 function markets() {
@@ -1736,6 +1822,21 @@ function status() {
 // ---------- Wiring ----------
 document.addEventListener('click', e => { const t = e.target.closest('[data-go]'); if (t) location.hash = t.dataset.go; });
 // Chart layer toggles re-render from the already-fetched history — no refetch, no hash change.
+// Scatter period tabs, on the Stan page.
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-scatter]');
+  if (!t || t.disabled) return;
+  scatterPeriod = t.dataset.scatter;
+  $('#app').innerHTML = stan();
+});
+// SNR window tabs, inside the signal-to-noise drawer.
+document.addEventListener('click', e => {
+  const w = e.target.closest('[data-snrwin]');
+  if (!w) return;
+  snrWindow = w.dataset.snrwin;
+  const arg = (location.hash.split('/')[1] || '');
+  if (arg.startsWith('snr-')) $('#drawer').innerHTML = snrDrawer(arg.slice(4));
+});
 // Donut and period toggles re-render the model drawer from data already loaded.
 // Playground controls: all client-side, nothing saved.
 // Reporting page controls. The split dropdown is a change event, not a click.
