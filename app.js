@@ -100,7 +100,7 @@ async function load() {
     qSoft(sb.from('holding_contributions').select('strategy_id,security_id,as_of,weight,risk_share,risk_ratio,corr_to_rest,max_corr,closest_peer_id,verdict,rationale').order('as_of', { ascending: false }), 'holding contributions'),
     qSoft(sb.from('stress_scenarios').select('id,slug,name,description,shocks').order('sort_order'), 'stress scenarios'),
     qSoft(sb.from('strategy_stress_results').select('strategy_id,scenario_id,as_of,factor_score,coverage,n_windows,mean_return,worst_return,best_return,replay_coverage,windows').order('as_of', { ascending: false }), 'stress results'),
-    qSoft(sb.from('strategy_performance').select('strategy_id,period,as_of,start_date,end_date,portfolio_return,peer_benchmark_return,policy_benchmark_return,coverage,max_drawdown,peer_max_drawdown').order('as_of', { ascending: false }), 'performance'),
+    qSoft(sb.from('strategy_performance').select('strategy_id,period,as_of,start_date,end_date,portfolio_return,peer_benchmark_return,policy_benchmark_return,coverage,max_drawdown,peer_max_drawdown,gold_return,btc_return,weighted_expense_ratio,expense_coverage').order('as_of', { ascending: false }), 'performance'),
     qSoft(sb.from('strategy_attribution').select('strategy_id,period,as_of,asset_class_id,w_portfolio,w_benchmark,r_portfolio,r_benchmark,contribution,allocation_effect,selection_effect,interaction_effect,attributable').order('as_of', { ascending: false }), 'attribution'),
     qSoft(sb.from('speed_limit_readings').select('as_of,category,score,light,weight,n_calls,n_recorded,target_beta_low,target_beta_high,sign_label').order('as_of', { ascending: false }), 'speed limit'),
     qSoft(sb.from('strategy_speed_limit').select('strategy_id,as_of,actual_beta,r_squared,n_obs,target_low,target_high,light,note').order('as_of', { ascending: false }), 'model speed limit'),
@@ -210,6 +210,7 @@ function route() {
     // button all close them the same way a model drawer closes.
     if (arg === 'speed-limit') { $('#drawer').innerHTML = speedLimitDrawer(); $('#drawer').hidden = false; $('#scrim').hidden = false; }
     else if (arg.startsWith('snr-')) { $('#drawer').innerHTML = snrDrawer(arg.slice(4)); $('#drawer').hidden = false; $('#scrim').hidden = false; }
+    else if (arg.startsWith('top3-')) { $('#drawer').innerHTML = top3Drawer(arg.slice(5)); $('#drawer').hidden = false; $('#scrim').hidden = false; }
     else openModel(arg);
   }
   if (page === 'markets' && arg) openChart(arg);
@@ -346,6 +347,42 @@ function speedLimitDrawer() {
    ${speedLimitModelCard()}`;
 }
 
+// The three positions carrying most of a model's volatility. Opened from the Top-3 risk cell,
+// because a concentration figure is only actionable once you know which names it is.
+function top3Drawer(strategyId) {
+  const m = D.models.find(x => x.id === strategyId);
+  if (!m) return `<button class="close" data-go="#stan">Close</button><div class="empty">Model not found.</div>`;
+  const all = (D.contribByStrategy?.[strategyId] || []).filter(c => c.risk_share !== null)
+    .sort((a, b) => +b.risk_share - +a.risk_share);
+  const top = all.slice(0, 3);
+  const n = v => v === null || v === undefined ? null : +v;
+  const totRisk = top.reduce((s, r) => s + +r.risk_share, 0);
+  const totWt = top.reduce((s, r) => s + +r.weight, 0);
+  return `<button class="close" data-go="#stan">Close</button>
+   <span class="eyebrow">Risk concentration</span><h1>${esc(m.name.replace(/\s*\([^)]*\)/g, ''))}</h1>
+   <p class="sub">The three positions carrying most of this model's volatility.</p>
+   ${!top.length ? '<div class="card"><div class="empty">No measured risk contributions for this model. Run jobs/compute-earns-its-place.mjs.</div></div>'
+    : `<div class="kpis">
+      <div class="card kpi"><span class="eyebrow">Risk in top 3</span><b>${(totRisk * 100).toFixed(0)}%</b><small>of model volatility</small></div>
+      <div class="card kpi"><span class="eyebrow">On weight of</span><b>${(totWt * 100).toFixed(0)}%</b><small>of the model</small></div>
+      <div class="card kpi"><span class="eyebrow">Concentration</span><b>${totWt > 0 ? (totRisk / totWt).toFixed(2) + '×' : '–'}</b><small>risk per unit of weight</small></div>
+      <div class="card kpi"><span class="eyebrow">Measured</span><b>${all.length}</b><small>of ${(D.contribByStrategy?.[strategyId] || []).length} holdings</small></div>
+     </div>
+     <div class="card" style="margin-bottom:14px"><h2>The three largest contributors</h2>
+      <table><thead><tr><th>Ticker</th><th class="num">Weight</th><th class="num">Risk share</th><th class="num">Ratio</th><th class="num">Vol</th><th class="num">Corr to rest</th></tr></thead><tbody>
+      ${top.map(r => `<tr><td><b>${esc(r.ticker)}</b></td>
+        <td class="num">${pct(+r.weight)}</td>
+        <td class="num"><b>${(+r.risk_share * 100).toFixed(1)}%</b></td>
+        <td class="num" style="color:${+r.risk_ratio >= 2 ? 'var(--neg)' : +r.risk_ratio <= 0.85 ? 'var(--pos)' : 'var(--text)'}">${n(r.risk_ratio) === null ? '–' : (+r.risk_ratio).toFixed(2) + '×'}</td>
+        <td class="num">${n(r.vol_ann) === null ? '–' : (+r.vol_ann * 100).toFixed(0) + '%'}</td>
+        <td class="num">${n(r.corr_to_rest) === null ? '–' : (+r.corr_to_rest).toFixed(2)}</td></tr>`).join('')}
+      </tbody></table></div>
+     <div class="card"><h2>Why each one</h2>
+      ${top.map(r => `<div style="margin-bottom:10px"><b>${esc(r.ticker)}</b> <span class="chip ${r.verdict === 'review' || r.verdict === 'redundant' ? 'short' : r.verdict === 'diversifier' ? 'long' : 'flat'}">${esc((r.verdict || '').replace(/_/g, ' '))}</span>
+        <p style="margin:4px 0 0;color:var(--muted)">${esc(r.rationale || '')}</p></div>`).join('')}
+      <p class="note">Risk share is each holding's marginal contribution to model volatility; the shares sum to 100%, so they compare directly against weight. A ratio above 1 is not a criticism — equity risk in a growth model <i>should</i> outrun its weight — it is the prompt to say what the position is for. Measured on volatility and correlation only, so it is silent on drawdown shape, tails, liquidity and tax.</p></div>`}`;
+}
+
 // ---------- Stan: risk across the models ----------
 //
 // Stan's standing job is a dashboard per strategy. This leads with risk rather than with the
@@ -385,19 +422,55 @@ function stan() {
     return `<span title="${esc(b.note || '')}">${lightDot(b.light, 9)} <span style="color:${LIGHT_COLOR[b.light]}">${n(b.actual_beta) === null ? '–' : n(b.actual_beta).toFixed(2) + '×'}</span></span>`;
   };
 
-  const riskTable = `<div class="card" style="margin-bottom:14px"><h2>Risk by model</h2>
-   <table><thead><tr><th>Model</th><th>Beta vs band</th><th class="num">Top-3 risk</th><th class="num">on weight</th><th class="num">Flagged</th><th>Worst scenario</th>${factorHeads()}<th class="num">1Y drawdown</th></tr></thead><tbody>
-   ${rows.map(r => `<tr class="click" data-go="#stan/${esc(r.m.id)}">
-     <td><b>${esc(r.m.name)}</b> <span class="chip">${esc(r.m.label)}</span></td>
-     <td>${lightCell(r.beta)}</td>
-     <td class="num"><b>${r.measured ? (r.top3Risk * 100).toFixed(0) + '%' : '–'}</b></td>
-     <td class="num" style="color:var(--muted)">${r.measured ? (r.top3Wt * 100).toFixed(0) + '%' : '–'}</td>
-     <td class="num">${r.review.length ? `<span style="color:var(--warn)">${r.review.length}</span>` : '<span style="color:var(--muted)">0</span>'}</td>
-     <td>${r.worst ? `<span title="${esc(scenById[r.worst.scenario_id]?.description || '')}">${esc(scenById[r.worst.scenario_id]?.name || '—')} <span style="color:var(--neg)">${sgn(+r.worst.factor_score)}</span></span>` : '<span style="color:var(--muted)">–</span>'}</td>
-     ${netCells(r.m)}
-     <td class="num">${r.perf ? pc(n(r.perf.max_drawdown)) : '<span style="color:var(--muted)" title="Needs a dated holdings history for this model">–</span>'}</td></tr>`).join('')}
-   </tbody></table>
-   <p class="note"><b>Top-3 risk</b> is the share of each model's volatility carried by its three largest risk contributors, against the share of weight those same three hold — the gap is the concentration. <b>Flagged</b> counts positions taking 2× or more of their weight in risk, or duplicating a larger holding. <b>Worst scenario</b> is the lowest factor score across the desk's four stress scenarios; it is a directional score, not a predicted return. <b>Beta</b> is measured against each model's peer benchmark and compared to the band the master Speed Limit calls for — read "unrated" as the regression fitting too poorly for the beta to describe risk posture, not as missing data. 1Y drawdown needs a dated holdings history, which only Balanced Core has so far.</p></div>`;
+  // ---- Model Surveillance ----
+  // A performance cell: green when ahead, red when behind, with the comparison named in the
+  // tooltip so a colour never has to be guessed at.
+  const perfCell = (v, title) => {
+    if (v === null || v === undefined) return `<td class="num"><span style="color:var(--muted)" title="${esc(title)}">–</span></td>`;
+    const good = v >= 0;
+    return `<td class="num"><span title="${esc(title)}" style="display:inline-block;padding:2px 7px;border-radius:5px;font-variant-numeric:tabular-nums;
+      background:${good ? 'rgba(63,178,127,.16)' : 'rgba(224,96,94,.16)'};color:${good ? 'var(--pos)' : 'var(--neg)'}">${(v >= 0 ? '+' : '') + (v * 100).toFixed(1)}%</span></td>`;
+  };
+  // The model measured in something other than dollars: (1+model)/(1+numeraire) - 1.
+  const vsNumeraire = (mr, nr) => (mr === null || nr === null || nr === undefined || nr <= -1) ? null : (1 + mr) / (1 + nr) - 1;
+
+  const riskTable = `<div class="card" style="margin-bottom:14px"><h2>Model Surveillance</h2>
+   <div style="overflow-x:auto"><table style="min-width:1040px"><thead><tr>
+     <th>Model</th><th class="num">Cash</th><th>Beta vs band</th><th class="num">Beta vs bench</th>
+     <th class="num">Top-3 risk</th><th class="num">YTD USD</th><th class="num">vs Gold</th>
+     <th class="num">vs BTC</th><th class="num">vs Bench</th><th class="num">Expense</th></tr></thead><tbody>
+   ${rows.map(r => {
+     const p = (D.perfByStrategy?.[r.m.id] || []).find(x => x.period === 'YTD') || null;
+     const num = v => v === null || v === undefined ? null : +v;
+     const mr = p ? num(p.portfolio_return) : null;
+     const br = p ? num(p.peer_benchmark_return) : null;
+     const gr = p ? num(p.gold_return) : null;
+     const btc = p ? num(p.btc_return) : null;
+     const cash = (r.m.byClass.find(c => c[0] === 'cash') || [0, 0])[1];
+     const exp = p ? num(p.weighted_expense_ratio) : null;
+     const expCov = p ? num(p.expense_coverage) : null;
+     const b = r.beta;
+     const bandState = !b || !b.actual_beta ? null
+       : b.target_low === null ? null
+       : +b.actual_beta < +b.target_low ? 'below' : +b.actual_beta > +b.target_high ? 'above' : 'inside';
+     return `<tr>
+       <td class="click" data-go="#stan/${esc(r.m.id)}" style="cursor:pointer"><b>${esc(r.m.name.replace(/\s*\([^)]*\)/g, ''))}</b> <span class="chip">${esc(r.m.label)}</span></td>
+       <td class="num">${pct(cash)}</td>
+       <td>${!b ? '<span style="color:var(--muted)">–</span>'
+          : !b.light ? `<span class="chip" title="${esc(b.note || '')}">unrated</span>`
+          : `<span title="${esc(b.note || '')}">${lightDot(b.light, 9)} <span style="color:${LIGHT_COLOR[b.light]}">${bandState || b.light}</span></span>`}</td>
+       <td class="num" title="${b && b.note ? esc(b.note) : 'Least-squares beta against the benchmark chosen for this model'}">${b && b.actual_beta !== null ? (+b.actual_beta).toFixed(2) + '×' : '<span style="color:var(--muted)">–</span>'}${b && b.r_squared !== null ? `<br><small style="color:${+b.r_squared < 0.5 ? 'var(--neg)' : 'var(--muted)'}">R² ${(+b.r_squared).toFixed(2)}</small>` : ''}</td>
+       <td class="num">${r.measured ? `<span class="click" data-go="#stan/top3-${esc(r.m.id)}" style="cursor:pointer;text-decoration:underline dotted" title="Show the three largest risk contributors"><b>${(r.top3Risk * 100).toFixed(0)}%</b></span><br><small style="color:var(--muted)">on ${(r.top3Wt * 100).toFixed(0)}% wt</small>` : '<span style="color:var(--muted)">–</span>'}</td>
+       ${perfCell(mr, 'Year-to-date return in USD, target weights')}
+       ${perfCell(vsNumeraire(mr, gr), gr === null ? 'No gold price for this window' : `Model ${((mr || 0) * 100).toFixed(1)}% against gold ${(gr * 100).toFixed(1)}% — the model measured in gold terms`)}
+       ${perfCell(vsNumeraire(mr, btc), btc === null ? 'No BTC price for this window' : `Model ${((mr || 0) * 100).toFixed(1)}% against bitcoin ${(btc * 100).toFixed(1)}% — the model measured in BTC terms`)}
+       ${perfCell(mr !== null && br !== null ? mr - br : null, br === null ? 'No benchmark return for this window' : `Model ${((mr || 0) * 100).toFixed(1)}% against its benchmark ${(br * 100).toFixed(1)}%`)}
+       <td class="num">${exp !== null ? (exp * 100).toFixed(2) + '%'
+          : `<span style="color:var(--muted)" title="No expense-ratio source is connected${expCov ? `; ${(expCov * 100).toFixed(0)}% of weight has one` : ''}. Supply them from the fund fact sheets and this computes itself — it is never estimated.">–</span>`}</td>
+     </tr>`;
+   }).join('')}
+   </tbody></table></div>
+   <p class="note"><b>Beta vs band</b> says whether the model sits inside, below or above the band the master Speed Limit calls for; <b>beta vs bench</b> is the figure itself, against that model's own benchmark — read R² first, since below 0.5 the regression is not describing risk posture and the band cell shows "unrated" instead. <b>Top-3 risk</b> is the share of model volatility carried by its three largest contributors, against the weight those same three hold; click it for the names. Performance is year-to-date on target weights, gross of fees. <b>vs Gold</b> and <b>vs BTC</b> restate the model in that numeraire — (1+model)÷(1+numeraire)−1 — using GLD for gold and Tiingo spot for bitcoin, so green means the model held its value against that yardstick rather than merely rose. <b>Expense</b> is withheld unless every holding has a ratio: there is no connected source for them, a partial average would understate what a model costs, and estimating one would flow straight into a net-of-fee conversation.</p></div>`;
 
   // Every position any model has flagged, gathered in one place so a name appearing in several
   // models is obvious — that is the concentration that matters at desk level, not model level.
