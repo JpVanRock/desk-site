@@ -123,7 +123,7 @@ async function load() {
     qSoft(sb.from('model_monthly_returns').select('strategy_id,as_of,year,month,model_return,benchmark_return,excess_return,coverage,is_partial,in_gap,basis,unavailable_reason'), 'monthly returns'),
     qSoft(sb.from('model_trades').select('strategy_id,as_of,ticker,entry_date,exit_date,avg_weight,entry_weight,exit_weight,total_return,contribution_bps,excess_bps,status,sizing_verdict,starts_in_gap,pre_existing,unavailable_reason'), 'trade ledger'),
     qSoft(sb.from('position_decision_scores').select('strategy_id,as_of,ticker,window_key,sort_order,start_date,end_date,weight,position_return,benchmark_return,decision_bps,is_partial,starts_in_gap,unavailable_reason').order('sort_order'), 'position decision scores'),
-    qSoft(sb.from('model_decision_stats').select('strategy_id,as_of,n_closed,n_open,n_wins,n_losses,batting_average,slugging_bps,win_bps,loss_bps,median_weight,n_unpriced,first_snapshot,last_snapshot,gap_days,n_beat_benchmark,excess_bps_total'), 'decision stats'),
+    qSoft(sb.from('model_decision_stats').select('strategy_id,as_of,n_closed,n_open,n_wins,n_losses,batting_average,slugging_bps,win_bps,loss_bps,median_weight,n_unpriced,first_snapshot,last_snapshot,gap_days,n_beat_benchmark,excess_bps_total,n_type_i,type_i_bps,n_type_ii,type_ii_reason'), 'decision stats'),
     qSoft(sb.from('annie_assessments').select('as_of,kind,strategy_id,ticker,headline,body_md,score,score_scale,confidence,sources,author').order('as_of', { ascending: false }), 'Annie assessments'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
@@ -871,10 +871,35 @@ function outputsFor(agent, kinds) {
 const PITCH_SCALE = '1 to 10. 10 is a fat pitch — a strong, identifiable two-way feedback loop. 1 is filthy — the loop is absent and the ordinary analysis applies.';
 const PITCH_NOTE = 'The reflexivity score is Soros\'s two-way feedback: does price action here change the fundamentals — flows bending a producer\'s behaviour, a price that funds the expansion it is pricing in — or does it only reflect them? <b>' + PITCH_SCALE + '</b> A low score is not bearish. It says the setup is ordinary, which is a different claim from saying the idea is bad. Scores and the case against each name are written by Annie after reading something, and each one carries its sources — unlike everything in the scorecard above, none of this is arithmetic.';
 const pitchLabel = v => v >= 8.5 ? 'fat pitch' : v >= 6.5 ? 'hittable' : v >= 4 ? 'ordinary' : 'filthy';
+// Which error the desk is exposed to on a name right now, from the master Speed Limit. The light
+// is the prior on H0 ("no edge here"): a red light says H0 is probably true, so acting anyway is
+// where a Type I error comes from; a green light says it is probably false, so passing is where a
+// Type II error comes from. Yellow is the honest case — the signal is not calling it, and the
+// reflexivity score is left to tip it, which it only does at the ends of the scale.
+function errorRisk(light, score) {
+  if (!light) return { k: null, label: '—', why: 'No master Speed Limit reading, so there is no signal to be wrong against.' };
+  if (light === 'red') return { k: 'I', label: 'Type I', why: 'The Speed Limit is red: the signal says take less risk, so opening here is acting against it. If the signal is right, this is the swing at nothing.' };
+  if (light === 'green') return { k: 'II', label: 'Type II', why: 'The Speed Limit is green: the signal says risk is paid, so NOT opening here is acting against it. If the signal is right, this is the strike watched go by.' };
+  if (score !== null && score >= 6.5) return { k: 'II', label: 'Type II lean', why: 'The Speed Limit is yellow, so the signal is not calling it. The reflexivity score is high enough that passing is the likelier mistake — a strong two-way loop does not wait for permission.' };
+  if (score !== null && score < 4) return { k: 'I', label: 'Type I lean', why: 'The Speed Limit is yellow, so the signal is not calling it. The reflexivity score is low enough that acting is the likelier mistake — an ordinary setup taken on an ambiguous signal is the swing at nothing.' };
+  return { k: null, label: 'both live', why: 'The Speed Limit is yellow and the reflexivity score is mid-scale. Neither mistake is the obvious one, which is a real answer rather than a missing one: this is the case where the decision rests on something other than the signal.' };
+}
+const RISK_COLOR = { I: 'var(--neg)', II: 'var(--flat)' };
 const pitchColor = v => v >= 8.5 ? 'var(--pos)' : v >= 6.5 ? 'var(--flat)' : v >= 4 ? 'var(--muted)' : 'var(--neg)';
 // An I-beam in cross-section: two flanges and a web. Drawn rather than fetched so it inherits the
 // theme colour and costs no request.
 const IBEAM = '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M2 2h12v2.6H9.3v6.8H14V14H2v-2.6h4.7V4.6H2z"/></svg>';
+
+// Type I and Type II, with the null hypothesis written down. H0 for a trade: "this position has
+// no edge — the model is better off holding its benchmark." Rejecting it means taking the
+// position, and the textbook table then maps exactly: a Type I error took a position that trailed
+// the benchmark, a Type II error passed on one that would have beaten it.
+//
+// NOT A HYPOTHESIS TEST. No alpha is set, no beta estimated, no distribution assumed. The
+// vocabulary is a way of asking which mistake the desk is more exposed to right now — swinging at
+// nothing, or watching a strike go by. Every surface that uses the words says so, because a reader
+// who sees "Type I error" and infers a significance test has been misled by the label.
+const ERROR_CAVEAT = 'Borrowed vocabulary, not a significance test: no α is set, no β is estimated and no distribution is assumed. H0 here is <b>"this position has no edge — the model is better off in its benchmark"</b>, so rejecting it means taking the position. A <b>Type I error</b> took one that then trailed the benchmark; a <b>Type II error</b> passed on one that would have beaten it.';
 
 let annieWindow = 'ITD';
 // Which scorecard tab is showing: 'overall' or a strategy id.
@@ -932,9 +957,31 @@ function annie() {
       n_closed: sum('n_closed'), n_open: sum('n_open'), n_wins: sum('n_wins'), n_losses: sum('n_losses'),
       n_beat_benchmark: sum('n_beat_benchmark'), win_bps: sum('win_bps'), loss_bps: sum('loss_bps'),
       excess_bps_total: sum('excess_bps_total'), n_unpriced: sum('n_unpriced'),
+      n_type_i: sum('n_type_i'), type_i_bps: sum('type_i_bps'), n_type_ii: null,
+      type_ii_reason: stats.map(x => x.type_ii_reason).find(Boolean) || null,
       first_snapshot: stats.map(s => s.first_snapshot).filter(Boolean).sort()[0],
       last_snapshot: stats.map(s => s.last_snapshot).filter(Boolean).sort().pop(),
       gap_days: sum('gap_days') || null,
+    };
+
+    // Past decision errors. Type I is countable from the ledger; Type II is not, by construction,
+    // and shows the reason rather than a zero — a zero would say no opportunity was ever missed.
+    const errorsBlock = (s, isOverall) => {
+      const t1 = s ? n(s.n_type_i) : null, t1bps = s ? n(s.type_i_bps) : null, t2 = s ? n(s.n_type_ii) : null;
+      const reason = (s && s.type_ii_reason) || 'Needs the high-potential shortlist: a holdings snapshot records what was bought and is silent on what was passed over.';
+      const cell = (lab, val, sub, title) => `<div style="flex:1;min-width:190px;padding:10px 12px;border:1px solid var(--line);border-radius:10px" title="${esc(title)}">
+        <div class="eyebrow">${esc(lab)}</div><b style="font-size:22px">${val}</b>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px">${sub}</div></div>`;
+      return `<div style="margin-top:14px">
+        <div class="eyebrow" style="margin-bottom:8px">Decision errors${isOverall ? ' — all graded models' : ''}</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          ${cell('Type I — swung at nothing', t1 === null ? '<span style="color:var(--muted)">—</span>' : `<span style="color:var(--neg)">${t1}</span>`,
+                 t1 === null ? 'no trades to grade' : `cost ${t1bps === null ? '—' : t1bps.toFixed(0) + ' bps'} against the benchmark`,
+                 'Positions taken that then trailed what the benchmark would have given the same money — H0 rejected when it was true. Pre-existing positions are excluded: nobody decided to open them inside this record.')}
+          ${cell('Type II — watched a strike go by', t2 === null ? '<span style="color:var(--muted)">—</span>' : `<span style="color:var(--neg)">${t2}</span>`,
+                 t2 === null ? 'not observable yet' : 'shortlisted, never bought, then beat the benchmark',
+                 reason)}
+        </div></div>`;
     };
 
     const isOverall = annieModel === 'overall';
@@ -954,7 +1001,7 @@ function annie() {
     const note = !s
       ? `This model has target weights but no dated holdings history, so there is nothing to compare over time and no trades to grade. The boxes are blank rather than zero — a zero would say it batted .000, which is a different and much worse claim than "not measured". Load a history with <code>jobs/load-holdings-history.mjs</code> and the figures compute themselves.`
       : `${isOverall ? `<b>Overall averages the ${graded.length} model${graded.length === 1 ? '' : 's'} that can be graded, each counting once</b> — a model with four trades weighs the same as one with fifty. The ${(D.models || []).length - graded.length} without a holdings history are left out rather than entered as zero: averaging in a zero would say they graded badly when the truth is they were not graded. Rates are that equal-weighted average; the counts beside them are totals. ` : ''}${beatRate !== null && ba !== null && beatRate < ba - 0.05
-          ? `<b>These two counts disagree, and the disagreement is the finding.</b> ${s.n_wins} of ${s.n_closed} trades exited profitable; ${s.n_beat_benchmark} of the same ${s.n_closed} beat the benchmark${ex === null ? '' : `, and the per-trade excess sums to ${ex >= 0 ? '+' : ''}${ex.toFixed(0)} bps`}. A trade can exit profitable having cost the model everything the index would have paid instead — a cash line is the clean case, with a permanent perfect batting average and a permanently negative decision score in a rising market. <i>That excess total is a rough aggregate across trades that ran over different, non-overlapping spans; it answers "how did these decisions fare against the index, added up" and is not the model's underperformance over any period.</i> ` : ''}${s.n_unpriced ? `<b>${s.n_unpriced} position${s.n_unpriced === 1 ? '' : 's'} could not be priced</b> and ${s.n_unpriced === 1 ? 'is' : 'are'} excluded from every figure here. ` : ''}${s.gap_days ? `The history has a ${s.gap_days}-day hole, and a round trip that opened and closed inside it is invisible — not counted as a win or a loss, simply absent. ` : ''}Trades are derived from the dated snapshots, not from a broker file: a ticker present in one snapshot and absent from the one before was bought, present and then absent was sold. A round trip that opened and closed between two snapshots cannot be seen at all.`;
+          ? `<b>These two counts disagree, and the disagreement is the finding.</b> ${s.n_wins} of ${s.n_closed} trades exited profitable; ${s.n_beat_benchmark} of the same ${s.n_closed} beat the benchmark${ex === null ? '' : `, and the per-trade excess sums to ${ex >= 0 ? '+' : ''}${ex.toFixed(0)} bps`}. A trade can exit profitable having cost the model everything the index would have paid instead — a cash line is the clean case, with a permanent perfect batting average and a permanently negative decision score in a rising market. <i>That excess total is a rough aggregate across trades that ran over different, non-overlapping spans; it answers "how did these decisions fare against the index, added up" and is not the model's underperformance over any period.</i> ` : ''}${s.n_unpriced ? `<b>${s.n_unpriced} position${s.n_unpriced === 1 ? '' : 's'} could not be priced</b> and ${s.n_unpriced === 1 ? 'is' : 'are'} excluded from every figure here. ` : ''}${s.gap_days ? `The history has a ${s.gap_days}-day hole, and a round trip that opened and closed inside it is invisible — not counted as a win or a loss, simply absent. ` : ''}Trades are derived from the dated snapshots, not from a broker file: a ticker present in one snapshot and absent from the one before was bought, present and then absent was sold. A round trip that opened and closed between two snapshots cannot be seen at all. ${ERROR_CAVEAT}`;
 
     return `<div class="card" style="margin-bottom:14px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
@@ -976,6 +1023,7 @@ function annie() {
         ${kpi('Backwards K', DASH, 'needs a loss threshold per trade',
               'Called out on strikes: positions sold at a loss BIGGER than the threshold set when the trade was entered. It cannot be counted yet — no trade here carries a recorded threshold, because the entry journal does not exist. Deliberately blank rather than zero: a zero would read as "no position has ever blown through its stop", which is a flattering claim nobody has earned. Build the entry journal and this counts itself.')}
       </div>
+      ${errorsBlock(s, isOverall)}
       <p class="note">${note}</p></div>`;
   })();
 
@@ -987,6 +1035,9 @@ function annie() {
   // argued from anything. It stays Annie's to write.
   const hunting = (() => {
     const shortlist = (D.markets || []).filter(s => s.hp);
+    const sl = (D.speedLimit || []).find(r => r.category === 'master') || null;
+    const masterLight = sl ? sl.light : null;
+    const slLabel = sl && sl.sign_label ? sl.sign_label.replace(/^Speed Limit\s*/i, '') : null;
     const refl = a => assess.find(x => x.kind === 'reflexivity' && x.ticker === a);
     const steel = a => assess.find(x => x.kind === 'steel_man' && x.ticker === a);
     const swing = a => assess.find(x => x.kind === 'sizing_recommendation' && x.ticker === a);
@@ -1000,13 +1051,13 @@ function annie() {
         <div class="empty" style="margin-top:10px">Nothing is tagged high potential yet, so there is nothing to swing at.
         Tag names with <code>node jobs/tag-high-potential.mjs --add TICKER</code> and they appear here; the Playground will own this once the watchlist moves there.
         The shortlist is deliberately not seeded from the sector and factor proxies already carrying the watchlist role — those are measurement tools, not ideas anyone had.</div>
-        <p class="note">${PITCH_NOTE}</p></div>`;
+        <p class="note">${PITCH_NOTE} Once names are tagged, each carries an <b>error risk</b> read off the master Speed Limit${slLabel ? `, currently ${esc(slLabel)}` : ''}: which of the two mistakes the signal exposes you to on that name right now. ${ERROR_CAVEAT}</p></div>`;
     }
 
     return `<div class="card" style="margin-bottom:14px">${head}
       <div style="overflow-x:auto;margin-top:10px"><table style="min-width:760px"><thead><tr>
         <th>Ticker</th><th>Name</th><th>Asset class</th><th class="num">Reflexivity score</th>
-        <th class="num">Swing size</th><th>Steel man</th></tr></thead><tbody>
+        <th class="num">Swing size</th><th>Error risk</th><th>Steel man</th></tr></thead><tbody>
       ${shortlist.slice().sort((a, b) => {
         const ra = n(refl(a.ticker)?.score), rb = n(refl(b.ticker)?.score);
         return (rb === null ? -1 : rb) - (ra === null ? -1 : ra) || a.ticker.localeCompare(b.ticker);
@@ -1023,12 +1074,13 @@ function annie() {
           <td class="num">${sw && sw.score !== null && sw.score !== undefined
             ? `<b>${(+sw.score).toFixed(1)}%</b><br><small style="color:var(--muted)">${esc(sw.headline.slice(0, 28))}</small>`
             : `<span style="color:var(--muted)" title="No swing size written for this name. It is deliberately not derived from the reflexivity score — that mapping would be invented here rather than argued from the desk's own record, which is Annie's job.">–</span>`}</td>
+          <td>${(() => { const e = errorRisk(masterLight, sc); return `<span style="color:${RISK_COLOR[e.k] || 'var(--muted)'}" title="${esc(e.why)}">${esc(e.label)}</span>`; })()}</td>
           <td>${sm
             ? `<button class="ibeam" data-go="#annie/steel-${esc(s.ticker)}" title="Read the case against ${esc(s.ticker)}">${IBEAM}</button>`
             : `<span class="ibeam off" title="Annie has not written a steel man for ${esc(s.ticker)} yet.">${IBEAM}</span>`}</td></tr>`;
       }).join('')}
       </tbody></table></div>
-      <p class="note">${PITCH_NOTE}</p></div>`;
+      <p class="note">${PITCH_NOTE} <b>Error risk</b> reads off the master Speed Limit${slLabel ? `, currently ${esc(slLabel)}` : ''}${masterLight ? ` and showing ${esc(masterLight)}` : ''}: the light is the prior on H0. A red light says take less risk, so acting anyway is where a Type I error comes from; a green light says risk is paid, so passing is where a Type II comes from. On yellow the signal is not calling it and only an extreme reflexivity score tips it — "both live" is a real answer, not a missing one. ${ERROR_CAVEAT}</p></div>`;
   })();
 
   // ---- decision score per open position, across the owner's windows ----
