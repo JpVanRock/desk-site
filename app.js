@@ -79,7 +79,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
@@ -113,6 +113,8 @@ async function load() {
     qSoft(sb.from('model_factor_allocation').select('strategy_id,as_of,basis,long_growth,long_inflation,long_liquidity,short_growth,short_inflation,short_liquidity,unclassified,detail').order('as_of', { ascending: false }), 'model factor allocation'),
     qSoft(sb.from('model_value_series').select('strategy_id,as_of,value,benchmark_value,coverage').order('as_of', { ascending: true }), 'model value series'),
     qSoft(sb.from('holdings_snapshot_integrity').select('strategy_id,as_of,n_holdings,weight_total,weight_off,n_unmatched,n_suspect_names,gap_days_before').order('as_of', { ascending: true }), 'holdings integrity'),
+    qSoft(sb.from('current_holdings').select('strategy_id,as_of,ticker,security_id,name_raw,weight'), 'current holdings'),
+    qSoft(sb.from('holding_factor_overrides').select('security_id,split,note,author,as_of'), 'factor overrides'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -130,7 +132,7 @@ async function load() {
       const w = +a.target_weight, ld = loadingFor(a.security_id, ac), slug = cls[ac]?.slug || 'unclassified';
       total += w; byClass[slug] = (byClass[slug] || 0) + w;
       if (ld) { cov += w; ld.forEach((v, i) => { net[i] += w * (v ?? 0); }); }
-      return { ticker: s.ticker || '?', name: s.name || '', weight: w, cls: slug, loading: ld };
+      return { ticker: s.ticker || '?', name: s.name || '', weight: w, cls: slug, loading: ld, security_id: a.security_id };
     }).sort((a, b) => b.weight - a.weight);
     return { id: st.id, name: st.name, label: st.label, holdings, total, net: net.map(x => +x.toFixed(3)), cov: total ? cov / total : 0,
       byClass: Object.entries(byClass).sort((a, b) => b[1] - a[1]), last: rows.map(r => r.effective_from).sort().pop() || null };
@@ -177,7 +179,8 @@ async function load() {
     triggerHits: (trigHits || []).map(h => ({ ...h, rule_name: (trigRules || []).find(r => r.id === h.rule_id)?.name || null })),
     signalToNoise: stn || [], softFailures: softFailures.slice(),
     periodStats: periodStats || [], contribution: contribution || [],
-    factorAlloc: factorAlloc || [], valueSeries: valueSeries || [], snapIntegrity: snapIntegrity || [] };
+    factorAlloc: factorAlloc || [], valueSeries: valueSeries || [], snapIntegrity: snapIntegrity || [],
+    currentHoldings: currentHoldings || [], factorOverrides: factorOverrides || [] };
 }
 
 // ---------- Views ----------
@@ -485,6 +488,84 @@ function briefs() {
    <p class="note">Briefs synthesise Adam, Stan, Megan and Annie. Sven's and Gail's data is deliberately excluded unless the owner explicitly taps it in for a specific question — that isolation is a standing rule, not an oversight, and a tap-in is recorded in their tap-ins log when it happens.</p>`;
 }
 
+// The firm's factor matrix and the owner-chosen splits. These must stay in step with
+// jobs/compute-model-reporting.mjs, which computes the same pie for storage; the page computes it
+// live so that classifying a holding answers immediately rather than after the nightly run.
+const FA_MATRIX = {
+  equities:                { growth: 'L', inflation: 'F', liquidity: 'S' },
+  bonds:                   { growth: 'S', inflation: 'S', liquidity: 'L' },
+  cash:                    { growth: 'F', inflation: 'S', liquidity: 'L' },
+  commodities_real_assets: { growth: 'L', inflation: 'L', liquidity: 'F' },
+  gold:                    { growth: 'F', inflation: 'L', liquidity: 'L' },
+};
+// Holdings the owner has said have no CONFIRMED asset class. This list beats whatever the
+// database holds, because this desk's classifier assigns classes by return correlation and an
+// inferred label is not a confirmed one.
+const FA_UNCONFIRMED = new Set(['QCFIX', 'CBYYX', 'BDMIX', 'QDSIX', 'PRWCX']);
+const FA_FACTORS = ['growth', 'inflation', 'liquidity'];
+// The six splits the owner can choose. Each sets where the holding is LONG and nothing else.
+const SPLIT_OPTIONS = [
+  { key: 'growth',          label: 'Growth',                       mix: { growth: 1.00 } },
+  { key: 'inflation',       label: 'Inflation',                    mix: { inflation: 1.00 } },
+  { key: 'liquidity',       label: 'Liquidity',                    mix: { liquidity: 1.00 } },
+  { key: 'growth60_liq40',  label: '60% Growth / 40% Liquidity',   mix: { growth: 0.60, liquidity: 0.40 } },
+  { key: 'growth50_infl50', label: '50% Growth / 50% Inflation',   mix: { growth: 0.50, inflation: 0.50 } },
+  { key: 'liq80_growth20',  label: '80% Liquidity / 20% Growth',   mix: { liquidity: 0.80, growth: 0.20 } },
+];
+const SPLIT_BY_KEY = Object.fromEntries(SPLIT_OPTIONS.map(o => [o.key, o]));
+
+// Compute the pie, the short tally and the unclassified residual for a set of holdings.
+// holdings: [{ ticker, security_id, weight }]. classOf(h) -> asset class slug or null.
+function computeFactorAllocation(holdings, classOf, overrideBySec) {
+  const longs = { growth: 0, inflation: 0, liquidity: 0 };
+  const shorts = { growth: 0, inflation: 0, liquidity: 0 };
+  let unclassified = 0;
+  const unresolved = [], resolved = [];
+  for (const h of holdings) {
+    const w = +h.weight;
+    const ov = h.security_id ? overrideBySec[h.security_id] : null;
+    if (ov && SPLIT_BY_KEY[ov.split]) {
+      // An owner-chosen split wins outright. It says where the holding is long and nothing more,
+      // so it deliberately adds nothing to the short tally.
+      for (const [f, share] of Object.entries(SPLIT_BY_KEY[ov.split].mix)) longs[f] += w * share;
+      resolved.push({ ...h, split: ov.split });
+      continue;
+    }
+    const slug = FA_UNCONFIRMED.has(h.ticker) ? null : classOf(h);
+    const row = slug ? FA_MATRIX[slug] : null;
+    if (!row) { unclassified += w; unresolved.push(h); continue; }
+    const lf = FA_FACTORS.filter(f => row[f] === 'L');
+    for (const f of lf) longs[f] += w / lf.length;
+    for (const f of FA_FACTORS) if (row[f] === 'S') shorts[f] += w;
+  }
+  return { longs, shorts, unclassified, unresolved, resolved };
+}
+
+// Persist a chosen split, then recompute and re-render. Writes are optimistic: the local map is
+// updated first so the chart answers at once, and a failed write is reported rather than silently
+// leaving the screen disagreeing with the database.
+async function setHoldingSplit(securityId, split) {
+  const prev = D.factorOverrides.slice();
+  D.factorOverrides = D.factorOverrides.filter(o => o.security_id !== securityId);
+  if (split) D.factorOverrides.push({ security_id: securityId, split, author: 'site', as_of: new Date().toISOString().slice(0, 10) });
+  $('#app').innerHTML = reporting();
+  try {
+    if (split) {
+      const { error } = await sb.from('holding_factor_overrides')
+        .upsert({ security_id: securityId, split, author: 'site', as_of: new Date().toISOString().slice(0, 10) }, { onConflict: 'security_id' });
+      if (error) throw new Error(error.message);
+    } else {
+      const { error } = await sb.from('holding_factor_overrides').delete().eq('security_id', securityId);
+      if (error) throw new Error(error.message);
+    }
+  } catch (ex) {
+    D.factorOverrides = prev;
+    repSaveError = `Could not save that classification: ${ex.message}. The chart has been put back to what the database holds.`;
+    $('#app').innerHTML = reporting();
+  }
+}
+let repSaveError = null;
+
 // ---------- Reporting: the three sections from docs/claude-code-handoff.md ----------
 //
 // The governing rule for this page: never show a number that was not computed from real data.
@@ -565,24 +646,31 @@ function reporting() {
    <p class="note"><b>These are reconstructed, not the firm's reported figures.</b> ${esc(stat.method_note || '')} Dividend yield is blank because nothing in the data can produce it; connecting an instrument-level yield source would fill it. Confirm the return, capture and beta conventions against how the firm reports before any of this goes to a client.</p>`}
   </div>`;
 
-  // ---- 2. factor allocation ----
+  // ---- 2. factor allocation, computed live so a classification answers immediately ----
   const faCard = (() => {
-    if (!fa.length) return `<div class="card" style="margin-bottom:14px"><h2>Factor allocation</h2><div class="empty">Not computed yet. Run jobs/compute-model-reporting.mjs.</div></div>`;
-    const panel = basis => {
-      const r = fa.find(x => x.basis === basis);
-      if (!r) return `<div style="flex:1;min-width:260px"><div class="eyebrow">${esc(basis)}</div><div class="empty">No ${esc(basis)} holdings.</div></div>`;
+    const ovBySec = Object.fromEntries((D.factorOverrides || []).map(o => [o.security_id, o]));
+    const actualH = (D.currentHoldings || []).filter(h => h.strategy_id === m.id);
+    const targetH = (m.holdings || []).filter(h => h.security_id);
+    const clsOfSec = id => (D.markets.find(x => x.id === id) || {}).cls || null;
+    if (!actualH.length && !targetH.length) {
+      return `<div class="card" style="margin-bottom:14px"><h2>Factor allocation</h2><div class="empty">No holdings loaded for this model. Load a history with jobs/load-holdings-history.mjs.</div></div>`;
+    }
+    const A = computeFactorAllocation(actualH, h => clsOfSec(h.security_id), ovBySec);
+    const T = computeFactorAllocation(targetH, h => h.cls, ovBySec);
+    const asOf = actualH.length ? actualH[0].as_of : null;
+
+    const panel = (label, r, sub) => {
       const parts = [
-        { label: 'Growth', v: +r.long_growth, color: 'var(--pos)' },
-        { label: 'Inflation', v: +r.long_inflation, color: 'var(--warn)' },
-        { label: 'Liquidity', v: +r.long_liquidity, color: 'var(--accent)' },
-        { label: 'Unclassified', v: +r.unclassified, color: 'var(--muted)' },
+        { label: 'Growth', v: r.longs.growth, color: 'var(--pos)' },
+        { label: 'Inflation', v: r.longs.inflation, color: 'var(--warn)' },
+        { label: 'Liquidity', v: r.longs.liquidity, color: 'var(--accent)' },
+        { label: 'Unclassified', v: r.unclassified, color: 'var(--muted)' },
       ].filter(p => p.v > 0);
-      const shorts = [['Growth', +r.short_growth], ['Inflation', +r.short_inflation], ['Liquidity', +r.short_liquidity]];
-      const maxShort = Math.max(...shorts.map(s => s[1]));
-      const top = shorts.filter(s => Math.abs(s[1] - maxShort) < 1e-9 && maxShort > 0);
-      const un = (r.detail && r.detail.unclassified_tickers) || [];
-      return `<div style="flex:1;min-width:260px">
-        <div class="eyebrow">${esc(basis)}${basis === 'actual' ? ' · ' + esc(r.as_of) : ''}</div>
+      const shorts = [['Growth', r.shorts.growth], ['Inflation', r.shorts.inflation], ['Liquidity', r.shorts.liquidity]];
+      const maxShort = Math.max(...shorts.map(x => x[1]));
+      const top = shorts.filter(x => Math.abs(x[1] - maxShort) < 1e-9 && maxShort > 0);
+      return `<div style="flex:1;min-width:250px">
+        <div class="eyebrow">${esc(label)}${sub ? ' · ' + esc(sub) : ''}</div>
         ${donutSvg(parts, 170)}
         <table style="margin:8px 0 0"><tbody>
         ${parts.map(p => `<tr><td><b style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${p.color};margin-right:7px"></b>${p.label}</td><td class="num">${pct(p.v)}</td></tr>`).join('')}
@@ -591,12 +679,33 @@ function reporting() {
          <div class="eyebrow">Largest short</div>
          ${maxShort > 0 ? `<b style="color:var(--neg);font-size:15px">${top.map(t => t[0]).join(' and ')} ${pct(maxShort)}</b>` : '<span style="color:var(--muted)">none</span>'}
         </div>
-        ${un.length ? `<p class="note" style="margin-top:8px">Unclassified: ${un.map(esc).join(', ')}</p>` : ''}
       </div>`;
     };
+
+    // The classification table. Every holding with no confirmed class gets a dropdown; choosing
+    // one moves it out of the unclassified slice and into the pie at once.
+    const rows = [...A.unresolved.map(h => ({ ...h, basis: 'actual' })), ...A.resolved.map(h => ({ ...h, basis: 'actual' }))]
+      .sort((a, b) => +b.weight - +a.weight);
+    const classifyTable = !rows.length ? '<div class="empty">Every holding in the current snapshot has a confirmed asset class or an assigned split.</div>'
+      : `<table><thead><tr><th>Ticker</th><th>Name</th><th class="num">Weight</th><th>Factor split</th></tr></thead><tbody>
+      ${rows.map(h => `<tr>
+        <td><b>${esc(h.ticker)}</b></td>
+        <td style="max-width:240px;color:var(--muted)">${esc(h.name_raw || '')}</td>
+        <td class="num">${pct(+h.weight)}</td>
+        <td><select data-splitfor="${esc(h.security_id || '')}" ${h.security_id ? '' : 'disabled title="No matching security, so a split cannot be stored against it"'}
+             style="background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px">
+          <option value="" ${!h.split ? 'selected' : ''}>— unclassified —</option>
+          ${SPLIT_OPTIONS.map(o => `<option value="${o.key}" ${h.split === o.key ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+        </select></td></tr>`).join('')}
+      </tbody></table>`;
+
+    const overriddenWeight = A.resolved.reduce((s, h) => s + +h.weight, 0);
     return `<div class="card" style="margin-bottom:14px"><h2>Factor allocation</h2>
-     <div style="display:flex;gap:22px;flex-wrap:wrap">${panel('actual')}${panel('target')}</div>
-     <p class="note">A holding's weight splits evenly across the factors it is <b>long</b>, so the pie sums to 100%. Its <b>full</b> weight counts against each factor it is short, and the short tally is separate — it never sums with the pie, and only the largest short is shown. Unclassified weight carries no factor exposure and is shown rather than hidden, because it measures how much of the model is not yet understood: a holding is unclassified when its asset class is not <i>confirmed</i>, which is why positions this desk's correlation classifier has labelled still appear here. Cost of liquidity means exposure to higher future capital costs; fixed income is treated as long it, the single documented override to the framework chart.</p></div>`;
+     ${repSaveError ? `<div class="empty" style="border-left:3px solid var(--neg);text-align:left;padding-left:10px">${esc(repSaveError)}</div>` : ''}
+     <div style="display:flex;gap:22px;flex-wrap:wrap">${panel('actual', A, asOf)}${panel('target', T, '')}</div>
+     <h2 style="font-size:13px;margin-top:16px">Classify the unclassified</h2>
+     ${classifyTable}
+     <p class="note">A holding's weight splits evenly across the factors it is <b>long</b>, so the pie sums to 100%. Its <b>full</b> weight counts against each factor it is short, and the short tally is separate — it never sums with the pie, and only the largest short is shown. A holding with no <i>confirmed</i> asset class carries no exposure and sits in the unclassified slice; choosing a split above moves it into the pie immediately, for this model and every other one holding it. ${overriddenWeight > 0 ? `<b>${pct(overriddenWeight)} of the current snapshot is in the pie by an assigned split rather than a confirmed asset class.</b> ` : ''}<b>An assigned split sets the long side only.</b> None of the six options says what the holding is <i>short</i>, so a classified holding still contributes nothing to the short tally — which therefore stays understated by that weight until shorts are decided separately. Cost of liquidity means exposure to higher future capital costs; fixed income is treated as long it, the single documented override to the framework chart.</p></div>`;
   })();
 
   // ---- 3. contribution ----
@@ -1476,7 +1585,13 @@ document.addEventListener('click', e => { const t = e.target.closest('[data-go]'
 // Chart layer toggles re-render from the already-fetched history — no refetch, no hash change.
 // Donut and period toggles re-render the model drawer from data already loaded.
 // Playground controls: all client-side, nothing saved.
-// Reporting page controls.
+// Reporting page controls. The split dropdown is a change event, not a click.
+document.addEventListener('change', e => {
+  const sel = e.target.closest('[data-splitfor]');
+  if (!sel) return;
+  repSaveError = null;
+  setHoldingSplit(sel.dataset.splitfor, sel.value || null);
+});
 document.addEventListener('click', e => {
   const rp = e.target.closest('[data-repperiod]'), rm = e.target.closest('[data-repmodel]');
   if (!rp && !rm) return;
