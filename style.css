@@ -34,6 +34,11 @@ td{padding:10px;border-bottom:1px solid var(--line);vertical-align:middle}tr:las
 tbody tr.click{cursor:pointer}tbody tr.click:hover{background:var(--panel2)}
 .num{text-align:right;font-variant-numeric:tabular-nums}
 .cell{display:inline-block;min-width:64px;text-align:center;padding:6px 8px;border-radius:6px;font-variant-numeric:tabular-nums;font-weight:600}
+/* The shared hover panel. pre-line so the ticker list keeps its own lines without markup. */
+#hovertip{position:fixed;z-index:60;pointer-events:none;max-width:260px;white-space:pre-line;
+  font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text);background:var(--panel);
+  border:1px solid var(--line);border-radius:8px;padding:8px 10px;box-shadow:var(--shadow,0 8px 30px rgba(0,0,0,.45))}
+#hovertip[hidden]{display:none}
 /* Thirteen numeric columns do not fit at the table's normal rhythm, and a grid that scrolls
    sideways hides December — the month a reader looks for first. */
 .monthgrid{font-size:12px}

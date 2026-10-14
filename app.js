@@ -894,6 +894,10 @@ const FA_FACTORS = ['growth', 'inflation', 'liquidity'];
 // FA_MATRIX rows, so nothing is assumed beyond the matrix itself.
 // Keep in step with jobs/compute-model-reporting.mjs.
 const SPLIT_OPTIONS = [
+  { key: 'eq100',          label: 'Equity',                                           mix: { equities: 1.00 } },
+  { key: 'fi100',          label: 'Fixed Income',                                     mix: { bonds: 1.00 } },
+  { key: 'cash100',        label: 'Cash Equivalents',                                 mix: { cash: 1.00 } },
+  { key: 'cm100',          label: 'Commodities',                                      mix: { commodities_real_assets: 1.00 } },
   { key: 'eq60_fi40',      label: '60% Equity / 40% Fixed Income',                    mix: { equities: 0.60, bonds: 0.40 } },
   { key: 'eq60_fi20_cm20', label: '60% Equity / 20% Fixed Income / 20% Commodities',  mix: { equities: 0.60, bonds: 0.20, commodities_real_assets: 0.20 } },
   { key: 'eq20_fi80',      label: '20% Equity / 80% Fixed Income',                    mix: { equities: 0.20, bonds: 0.80 } },
@@ -906,6 +910,11 @@ const SPLIT_BY_KEY = Object.fromEntries(SPLIT_OPTIONS.map(o => [o.key, o]));
 function computeFactorAllocation(holdings, classOf, overrideBySec) {
   const longs = { growth: 0, inflation: 0, liquidity: 0 };
   const shorts = { growth: 0, inflation: 0, liquidity: 0 };
+  // Who is in each slice, so the donut can name the holdings behind a wedge rather than only its
+  // size. A holding long in two factors appears in both, each carrying the half-weight the pie
+  // rule gave it — the same arithmetic the slice is made of, not a second version of it.
+  const members = { growth: [], inflation: [], liquidity: [], unclassified: [] };
+  const add = (f, h, w) => { if (w > 0) members[f].push({ ticker: h.ticker, w }); };
   let unclassified = 0;
   const unresolved = [], resolved = [];
   for (const h of holdings) {
@@ -918,7 +927,7 @@ function computeFactorAllocation(holdings, classOf, overrideBySec) {
         const row = FA_MATRIX[cls];
         if (!row) continue;
         const lf = FA_FACTORS.filter(f => row[f] === 'L');
-        for (const f of lf) longs[f] += w * share / lf.length;
+        for (const f of lf) { longs[f] += w * share / lf.length; add(f, h, w * share / lf.length); }
         for (const f of FA_FACTORS) if (row[f] === 'S') shorts[f] += w * share;
       }
       resolved.push({ ...h, split: ov.split });
@@ -926,12 +935,19 @@ function computeFactorAllocation(holdings, classOf, overrideBySec) {
     }
     const slug = FA_UNCONFIRMED.has(h.ticker) ? null : classOf(h);
     const row = slug ? FA_MATRIX[slug] : null;
-    if (!row) { unclassified += w; unresolved.push(h); continue; }
+    if (!row) { unclassified += w; unresolved.push(h); add('unclassified', h, w); continue; }
     const lf = FA_FACTORS.filter(f => row[f] === 'L');
-    for (const f of lf) longs[f] += w / lf.length;
+    for (const f of lf) { longs[f] += w / lf.length; add(f, h, w / lf.length); }
     for (const f of FA_FACTORS) if (row[f] === 'S') shorts[f] += w;
   }
-  return { longs, shorts, unclassified, unresolved, resolved };
+  // A holding split across classes can land in the same slice twice (60/40 equity and bonds are
+  // both long nothing in common, but 60/20/20 is). Fold those together so a ticker is named once.
+  for (const f of Object.keys(members)) {
+    const byTicker = new Map();
+    for (const e of members[f]) byTicker.set(e.ticker, (byTicker.get(e.ticker) || 0) + e.w);
+    members[f] = [...byTicker].map(([ticker, w]) => ({ ticker, w })).sort((a, b) => b.w - a.w);
+  }
+  return { longs, shorts, unclassified, unresolved, resolved, members };
 }
 
 // Commit the staged classifications in one go. The dropdowns only stage a choice; nothing is
@@ -982,6 +998,54 @@ function drawdownSeries(points, get) {
   return points.map(p => { const v = get(p); if (v === null || v === undefined) return null; if (v > peak) peak = v; return v / peak - 1; });
 }
 
+// What a wedge says on hover: its own size, then the holdings inside it at the weight the pie
+// rule actually gave them. A holding long in two factors shows half its weight in each, because
+// that is what the slice is made of — showing its full weight in both would add up to more book
+// than the model holds.
+function sliceTip(d) {
+  const head = `${d.label} — ${pct(d.v)} of the model`;
+  const ms = d.members || [];
+  if (!ms.length) return `${head}\nNothing in this slice.`;
+  const lines = ms.map(x => `${x.ticker}  ${pct(x.w)}`);
+  const shown = lines.slice(0, 18).join('\n');
+  return `${head}\n${shown}${lines.length > 18 ? `\n+${lines.length - 18} more` : ''}`;
+}
+
+// A single hover panel, positioned at the cursor, shared by anything carrying data-tip. The donut
+// wedges needed more than a native title tooltip could carry: a browser tooltip takes a second to
+// appear and truncates a list of fifteen tickers unpredictably across browsers.
+// Built on first hover rather than at load: nothing should touch document.body while the module
+// is still evaluating, and it keeps the module importable in a headless harness.
+let tipEl = null;
+const tip = () => {
+  if (!tipEl) {
+    tipEl = document.createElement('div');
+    tipEl.id = 'hovertip';
+    tipEl.hidden = true;
+    document.body.appendChild(tipEl);
+  }
+  return tipEl;
+};
+document.addEventListener('mouseover', e => {
+  const t = e.target.closest('[data-tip]');
+  if (!t) return;
+  const el = tip();
+  el.textContent = t.dataset.tip;
+  el.hidden = false;
+});
+document.addEventListener('mousemove', e => {
+  if (!tipEl || tipEl.hidden) return;
+  // Flip to the other side of the cursor near an edge, so the panel never runs off the window.
+  const pad = 14, r = tipEl.getBoundingClientRect();
+  const x = e.clientX + pad + r.width > window.innerWidth ? e.clientX - pad - r.width : e.clientX + pad;
+  const y = e.clientY + pad + r.height > window.innerHeight ? Math.max(4, e.clientY - pad - r.height) : e.clientY + pad;
+  tipEl.style.left = `${Math.max(4, x)}px`;
+  tipEl.style.top = `${y}px`;
+});
+document.addEventListener('mouseout', e => {
+  if (tipEl && e.target.closest('[data-tip]')) tipEl.hidden = true;
+});
+
 // Donut with the growth share called out in the middle, per the reference.
 function factorDonut(slices, size = 236) {
   const total = slices.reduce((s, d) => s + d.v, 0) || 1;
@@ -996,7 +1060,8 @@ function factorDonut(slices, size = 236) {
   for (const d of slices) {
     if (d.v <= 0) continue;
     const a1 = a + (d.v / total) * Math.PI * 2;
-    out += `<path d="${arc(a, Math.min(a1, a + Math.PI * 2 - 1e-6))}" fill="${FCOLOR[d.k] || 'var(--unclass)'}" stroke="var(--panel)" stroke-width="2"><title>${esc(d.label)} ${pct(d.v)}</title></path>`;
+    out += `<path d="${arc(a, Math.min(a1, a + Math.PI * 2 - 1e-6))}" fill="${FCOLOR[d.k] || 'var(--unclass)'}" stroke="var(--panel)" stroke-width="2"
+      style="cursor:default" data-tip="${esc(sliceTip(d))}"></path>`;
     a = a1;
   }
   const g = slices.find(s => s.k === 'growth');
@@ -1076,10 +1141,10 @@ function modelDashboard(m) {
     }
     const r = computeFactorAllocation(holdings, classOf, staged);
     const slices = [
-      { k: 'growth', label: 'Growth', v: r.longs.growth },
-      { k: 'inflation', label: 'Inflation', v: r.longs.inflation },
-      { k: 'liquidity', label: 'Liquidity', v: r.longs.liquidity },
-      { k: 'unclassified', label: 'Unclassified', v: r.unclassified },
+      { k: 'growth', label: 'Growth', v: r.longs.growth, members: r.members.growth },
+      { k: 'inflation', label: 'Inflation', v: r.longs.inflation, members: r.members.inflation },
+      { k: 'liquidity', label: 'Liquidity', v: r.longs.liquidity, members: r.members.liquidity },
+      { k: 'unclassified', label: 'Unclassified', v: r.unclassified, members: r.members.unclassified },
     ];
     const shorts = [['Growth', r.shorts.growth], ['Inflation', r.shorts.inflation], ['Liquidity', r.shorts.liquidity]];
     const maxShort = Math.max(...shorts.map(x => x[1]));
@@ -1098,7 +1163,7 @@ function modelDashboard(m) {
     const dirty = Object.keys(repPending).length > 0;
     return `<section class="card"><h2>${esc(title)}</h2><p class="asof" style="font-size:12px;color:var(--muted);margin:0 0 10px">${esc(asof)}</p>
       <div class="donutwrap">${factorDonut(slices)}</div>
-      <ul class="flegend">${slices.filter(s => s.v > 0).map(s => `<li><span class="sw" style="background:${FCOLOR[s.k]}"></span><span class="nm">${s.label}</span><span class="vl">${pct(s.v)}</span></li>`).join('')}</ul>
+      <ul class="flegend">${slices.filter(s => s.v > 0).map(s => `<li data-tip="${esc(sliceTip(s))}" style="cursor:default"><span class="sw" style="background:${FCOLOR[s.k]}"></span><span class="nm">${s.label}</span><span class="vl">${pct(s.v)}</span></li>`).join('')}</ul>
       <div class="shortbox"><div class="lab">Most short</div>
         <div class="val"><span class="pct" style="color:${maxShort > 0 ? 'var(--neg)' : 'var(--muted)'}">${pct(maxShort)}</span>
         <span class="fac">${top.length ? esc(top.map(t => t[0]).join(' and ')) : 'no short exposure'}</span></div></div>
