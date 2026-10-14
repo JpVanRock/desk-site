@@ -900,9 +900,9 @@ function annie() {
           ${kpi('Beat the benchmark', beatRate === null ? '—' : beatRate.toFixed(3).replace(/^0/, ''),
                 `${s.n_beat_benchmark} of ${s.n_closed} beat the index`,
                 'The same completed trades, counted against what the benchmark would have given the same money. A trade can exit profitable having cost the model everything the index would have paid instead, which is why this sits beside the batting average rather than behind it.')}
-          ${kpi('Slugging', sl === null ? '—' : `${sl >= 0 ? '+' : ''}${sl.toFixed(0)}`,
-                'bps added per completed trade',
-                'Average contribution to model return per completed trade, in basis points. The distance on the hits — a model can bat .700 and still lose money by sizing its winners small.')}
+          ${kpi('Slugging', sl === null ? '—' : `${sl >= 0 ? '+' : ''}${(sl / 100).toFixed(2)}%`,
+                'of model return per completed trade',
+                'Average contribution to the model\'s return per completed trade. The distance on the hits — a model can bat .700 and still lose money by sizing its winners small. Two decimals because the figure is a per-trade average and a basis point of it is real money.')}
           ${kpi('Wins vs losses', `<span style="color:var(--pos)">${s.n_wins}</span><span style="color:var(--muted)">/</span><span style="color:var(--neg)">${s.n_losses}</span>`,
                 `+${w.toFixed(0)} bps won, ${l.toFixed(0)} bps lost`,
                 'Completed trades split by whether they exited profitable, with the basis points each side contributed.')}
