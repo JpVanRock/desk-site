@@ -123,7 +123,7 @@ async function load() {
     qSoft(sb.from('model_monthly_returns').select('strategy_id,as_of,year,month,model_return,benchmark_return,excess_return,coverage,is_partial,in_gap,basis,unavailable_reason'), 'monthly returns'),
     qSoft(sb.from('model_trades').select('strategy_id,as_of,ticker,entry_date,exit_date,avg_weight,entry_weight,exit_weight,total_return,contribution_bps,excess_bps,status,sizing_verdict,starts_in_gap,pre_existing,unavailable_reason'), 'trade ledger'),
     qSoft(sb.from('position_decision_scores').select('strategy_id,as_of,ticker,window_key,sort_order,start_date,end_date,weight,position_return,benchmark_return,decision_bps,is_partial,starts_in_gap,unavailable_reason').order('sort_order'), 'position decision scores'),
-    qSoft(sb.from('model_decision_stats').select('strategy_id,as_of,n_closed,n_open,n_wins,n_losses,batting_average,slugging_bps,win_bps,loss_bps,median_weight,n_unpriced,first_snapshot,last_snapshot,gap_days'), 'decision stats'),
+    qSoft(sb.from('model_decision_stats').select('strategy_id,as_of,n_closed,n_open,n_wins,n_losses,batting_average,slugging_bps,win_bps,loss_bps,median_weight,n_unpriced,first_snapshot,last_snapshot,gap_days,n_beat_benchmark,excess_bps_total'), 'decision stats'),
     qSoft(sb.from('annie_assessments').select('as_of,kind,strategy_id,ticker,headline,body_md,score,score_scale,confidence,sources,author').order('as_of', { ascending: false }), 'Annie assessments'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
@@ -887,14 +887,19 @@ function annie() {
     return stats.map(s => {
       const ba = n(s.batting_average), sl = n(s.slugging_bps);
       const w = n(s.win_bps) || 0, l = n(s.loss_bps) || 0;
+      const beat = n(s.n_beat_benchmark), ex = n(s.excess_bps_total);
+      const beatRate = beat === null || !s.n_closed ? null : beat / s.n_closed;
       return `<div class="card" style="margin-bottom:14px">
         <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
           <h2 style="margin:0">${esc(bare(modelName(s.strategy_id)))} — scorecard</h2>
           <span style="font-size:12px;color:var(--muted)">${esc(s.first_snapshot)} to ${esc(s.last_snapshot)} · ${s.n_closed} completed, ${s.n_open} open</span></div>
-        <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-top:12px">
+        <div class="kpis" style="grid-template-columns:repeat(5,1fr);margin-top:12px">
           ${kpi('Batting average', ba === null ? '—' : ba.toFixed(3).replace(/^0/, ''),
                 `${s.n_wins} of ${s.n_closed} exited profitable`,
                 'Share of completed trades that exited with a positive return. Ted Williams by way of Buffett: it counts hits, not distance.')}
+          ${kpi('Beat the benchmark', beatRate === null ? '—' : beatRate.toFixed(3).replace(/^0/, ''),
+                `${s.n_beat_benchmark} of ${s.n_closed} beat the index`,
+                'The same completed trades, counted against what the benchmark would have given the same money. A trade can exit profitable having cost the model everything the index would have paid instead, which is why this sits beside the batting average rather than behind it.')}
           ${kpi('Slugging', sl === null ? '—' : `${sl >= 0 ? '+' : ''}${sl.toFixed(0)}`,
                 'bps added per completed trade',
                 'Average contribution to model return per completed trade, in basis points. The distance on the hits — a model can bat .700 and still lose money by sizing its winners small.')}
@@ -905,7 +910,8 @@ function annie() {
                 'the size a verdict is judged against',
                 'The median weight this model gives a position. The sizing verdict on each trade is read against it.')}
         </div>
-        <p class="note">${s.n_unpriced ? `<b>${s.n_unpriced} position${s.n_unpriced === 1 ? '' : 's'} could not be priced</b> and ${s.n_unpriced === 1 ? 'is' : 'are'} excluded from every figure here. ` : ''}${s.gap_days ? `The history has a ${s.gap_days}-day hole, and a round trip that opened and closed inside it is invisible — not counted as a win or a loss, simply absent. ` : ''}Trades are derived from the dated snapshots, not from a broker file: a ticker present in one snapshot and absent from the one before was bought, present and then absent was sold. A round trip that opened and closed between two snapshots cannot be seen at all.</p></div>`;
+        <p class="note">${beatRate !== null && ba !== null && beatRate < ba - 0.05
+          ? `<b>These two counts disagree, and the disagreement is the finding.</b> ${s.n_wins} of ${s.n_closed} trades exited profitable; ${beat} of the same ${s.n_closed} beat the benchmark${ex === null ? '' : `, and the per-trade excess sums to ${ex >= 0 ? '+' : ''}${ex.toFixed(0)} bps`}. A trade can exit profitable having cost the model everything the index would have paid instead — a cash line is the clean case, with a permanent perfect batting average and a permanently negative decision score in a rising market. <i>That excess total is a rough aggregate across trades that ran over different, non-overlapping spans; it answers "how did these decisions fare against the index, added up" and is not the model's underperformance over any period.</i> ` : ''}${s.n_unpriced ? `<b>${s.n_unpriced} position${s.n_unpriced === 1 ? '' : 's'} could not be priced</b> and ${s.n_unpriced === 1 ? 'is' : 'are'} excluded from every figure here. ` : ''}${s.gap_days ? `The history has a ${s.gap_days}-day hole, and a round trip that opened and closed inside it is invisible — not counted as a win or a loss, simply absent. ` : ''}Trades are derived from the dated snapshots, not from a broker file: a ticker present in one snapshot and absent from the one before was bought, present and then absent was sold. A round trip that opened and closed between two snapshots cannot be seen at all.</p></div>`;
     }).join('') + (!missing.length ? '' : `<div class="card" style="margin-bottom:14px"><h2>Not yet gradeable</h2>
       <div class="empty">${missing.map(m => esc(bare(m.name))).join(', ')} — these models have target weights but no dated holdings history, so there is nothing to compare over time and no trades to grade.</div></div>`);
   })();
