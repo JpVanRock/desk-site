@@ -858,6 +858,137 @@ function outputsFor(agent, kinds) {
   return (D.outputs || []).filter(o => o.agent === agent && (!kinds || kinds.includes(o.kind)));
 }
 
+// ---------- Equity curve, from the trade ledger ----------
+//
+// The curve is the running sum of what each completed trade CONTRIBUTED to the model, in order of
+// exit, plotted against trade number rather than against time. That is deliberate and it is a
+// different question from the monthly grid on a model's own page: this one asks how the decisions
+// compounded, so a quiet year takes no space and a flurry of trades takes a lot.
+//
+// Every figure in the panel beside it is computed here from the same two sources the rest of the
+// page uses — the ledger for anything per-trade, the daily value series for anything per-calendar
+// — so nothing can drift from the journal underneath. Which source each one uses is stated,
+// because "profitable days" and "winrate" sound like the same kind of number and are not.
+function equityCurve(trades, series) {
+  const closed = trades
+    .filter(t => t.status === 'closed' && t.total_return !== null && t.contribution_bps !== null)
+    .sort((a, b) => String(a.exit_date).localeCompare(String(b.exit_date)));
+  if (!closed.length) return null;
+
+  const pts = [];
+  let cum = 0;
+  for (const t of closed) { cum += (+t.contribution_bps) / 100; pts.push({ t, cum }); }
+
+  // Max drawdown on the curve itself: the deepest give-back from a running high, in points of
+  // cumulative return. Not the model's drawdown — this one only moves when a trade closes.
+  let peak = 0, mdd = 0, flat = 0, longestFlat = 0;
+  for (const p of pts) {
+    if (p.cum > peak) { peak = p.cum; flat = 0; } else { flat += 1; longestFlat = Math.max(longestFlat, flat); }
+    mdd = Math.min(mdd, p.cum - peak);
+  }
+
+  const wins = closed.filter(t => +t.total_return > 0);
+  const losses = closed.filter(t => +t.total_return <= 0);
+  const mean = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : null;
+  const avgWin = mean(wins.map(t => +t.total_return));
+  const avgLoss = mean(losses.map(t => +t.total_return));
+  const grossWin = closed.filter(t => +t.contribution_bps > 0).reduce((s, t) => s + +t.contribution_bps, 0);
+  const grossLoss = Math.abs(closed.filter(t => +t.contribution_bps < 0).reduce((s, t) => s + +t.contribution_bps, 0));
+
+  // Profit concentration: how much of the gross profit the best tenth of trades produced. A high
+  // number is not a compliment — it says the record rests on a handful of trades, and a sample
+  // that rests on a handful is a sample that has not been tested.
+  const posContrib = closed.map(t => +t.contribution_bps).filter(v => v > 0).sort((a, b) => b - a);
+  const topN = Math.max(1, Math.ceil(closed.length * 0.1));
+  const concentration = grossWin > 0 ? posContrib.slice(0, topN).reduce((s, v) => s + v, 0) / grossWin : null;
+
+  // Calendar measures come from the daily value series, NOT the trade list: a profitable day is a
+  // property of the book, and most days have no trade in them at all.
+  const daily = (series || []).slice().sort((a, b) => String(a.as_of).localeCompare(String(b.as_of)));
+  const rets = [];
+  for (let i = 1; i < daily.length; i++) {
+    const a = +daily[i - 1].value, b = +daily[i].value;
+    if (a > 0 && b > 0) rets.push({ d: daily[i].as_of, r: b / a - 1 });
+  }
+  const share = arr => arr.length ? arr.filter(v => v > 0).length / arr.length : null;
+  const bucket = (keyOf) => {
+    const m = new Map();
+    for (const x of rets) { const k = keyOf(x.d); m.set(k, (m.get(k) ?? 1) * (1 + x.r)); }
+    return [...m.values()].map(v => v - 1);
+  };
+  const isoWeek = d => { const dt = new Date(d + 'T00:00:00Z'); const day = (dt.getUTCDay() + 6) % 7; dt.setUTCDate(dt.getUTCDate() - day); return dt.toISOString().slice(0, 10); };
+  const weekly = bucket(isoWeek), monthly = bucket(d => d.slice(0, 7));
+  const sd = a => { if (a.length < 2) return null; const m = a.reduce((s, x) => s + x, 0) / a.length; return Math.sqrt(a.reduce((s, x) => s + (x - m) ** 2, 0) / (a.length - 1)); };
+
+  // Recent performance, measured over trades that CLOSED inside each window.
+  const end = closed.at(-1).exit_date;
+  const recent = [30, 90, 180].map(days => {
+    const from = new Date(Date.parse(end) - days * 864e5).toISOString().slice(0, 10);
+    const sub = closed.filter(t => t.exit_date > from);
+    if (!sub.length) return { days, n: 0 };
+    let c = 0, pk = 0, dd = 0;
+    for (const t of sub) { c += (+t.contribution_bps) / 100; if (c > pk) pk = c; dd = Math.min(dd, c - pk); }
+    return {
+      days, n: sub.length, ret: c,
+      winrate: sub.filter(t => +t.total_return > 0).length / sub.length,
+      avgTrade: mean(sub.map(t => +t.total_return)),
+      mdd: dd,
+    };
+  });
+
+  return {
+    pts, closed, mdd, longestFlat,
+    total: cum,
+    winrate: closed.length ? wins.length / closed.length : null,
+    avgWin, avgLoss,
+    rrr: (avgWin !== null && avgLoss !== null && avgLoss < 0) ? avgWin / Math.abs(avgLoss) : null,
+    profitFactor: grossLoss > 0 ? grossWin / grossLoss : null,
+    concentration, topN,
+    pDays: share(rets.map(x => x.r)), pWeeks: share(weekly), pMonths: share(monthly),
+    weeklySd: sd(weekly),
+    nDays: rets.length, nWeeks: weekly.length, nMonths: monthly.length,
+    recent,
+  };
+}
+
+// The curve itself. Hand-rolled SVG like every other chart here, split at zero so the area reads
+// green above and red below without a gradient library.
+function equitySvg(E) {
+  const W = 560, H = 300, pad = { l: 40, r: 12, t: 12, b: 34 };
+  const xs = E.pts.length;
+  const lo = Math.min(0, ...E.pts.map(p => p.cum)), hi = Math.max(0, ...E.pts.map(p => p.cum));
+  const span = (hi - lo) || 1;
+  const X = i => pad.l + (i / Math.max(1, xs - 1)) * (W - pad.l - pad.r);
+  const Y = v => pad.t + (1 - (v - lo) / span) * (H - pad.t - pad.b);
+  const line = E.pts.map((p, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(p.cum).toFixed(1)}`).join('');
+  const area = `${line}L${X(xs - 1).toFixed(1)} ${Y(0).toFixed(1)}L${X(0).toFixed(1)} ${Y(0).toFixed(1)}Z`;
+  const ticks = 5;
+  const grid = Array.from({ length: ticks + 1 }, (_, i) => {
+    const v = lo + (span * i) / ticks;
+    return `<line x1="${pad.l}" y1="${Y(v).toFixed(1)}" x2="${W - pad.r}" y2="${Y(v).toFixed(1)}" stroke="var(--line)" stroke-width="1"/>
+      <text x="${pad.l - 6}" y="${(Y(v) + 3.5).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)">${v.toFixed(0)}</text>`;
+  }).join('');
+  // One invisible hit column per trade, so hovering anywhere above a point names it.
+  const hits = E.pts.map((p, i) => {
+    const w = (W - pad.l - pad.r) / Math.max(1, xs);
+    const r = +p.t.total_return, c = +p.t.contribution_bps;
+    const tip = `${p.t.ticker} · trade ${i + 1} of ${xs}\nClosed ${p.t.exit_date} · held from ${p.t.entry_date}\nReturn ${(r >= 0 ? '+' : '') + (r * 100).toFixed(1)}% · contributed ${(c >= 0 ? '+' : '') + c.toFixed(0)} bps\nCurve at ${p.cum.toFixed(2)}%`;
+    return `<rect x="${(X(i) - w / 2).toFixed(1)}" y="${pad.t}" width="${w.toFixed(1)}" height="${H - pad.t - pad.b}" fill="transparent" data-tip="${esc(tip)}"/>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">
+    <defs><linearGradient id="eqfill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="var(--pos)" stop-opacity=".55"/><stop offset="100%" stop-color="var(--pos)" stop-opacity="0"/>
+    </linearGradient></defs>
+    ${grid}
+    <path d="${area}" fill="url(#eqfill)"/>
+    <path d="${line}" fill="none" stroke="var(--pos)" stroke-width="2"/>
+    <line x1="${pad.l}" y1="${Y(0).toFixed(1)}" x2="${W - pad.r}" y2="${Y(0).toFixed(1)}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3"/>
+    <text x="${pad.l}" y="${H - 8}" font-size="10" fill="var(--muted)">1</text>
+    <text x="${W - pad.r}" y="${H - 8}" font-size="10" fill="var(--muted)" text-anchor="end">${xs}</text>
+    <text x="${(pad.l + W - pad.r) / 2}" y="${H - 8}" font-size="10" fill="var(--muted)" text-anchor="middle">Trades</text>
+    ${hits}</svg>`;
+}
+
 // ---------- Annie: the decision coach ----------
 //
 // Two kinds of thing live on this page and they must never be made to look alike. The scorecard,
@@ -1016,6 +1147,70 @@ function annie() {
     const ex = s ? n(s.excess_bps_total) : null;
     const w = s ? n(s.win_bps) || 0 : 0, l = s ? n(s.loss_bps) || 0 : 0;
 
+    // ---- equity curve and its stats panel, at the foot of the scorecard ----
+    const curveBlock = (() => {
+      const scoped = trades.filter(t => isOverall || t.strategy_id === annieModel);
+      const vs = (D.valueSeries || []).filter(v => isOverall ? stats.some(x => x.strategy_id === v.strategy_id) : v.strategy_id === annieModel);
+      const E = equityCurve(scoped, vs);
+      if (!E) return '';
+      const p1 = (v, d = 2) => v === null || v === undefined ? '—' : `${(v * 100).toFixed(d)}%`;
+      const num = (v, d = 2) => v === null || v === undefined ? '—' : v.toFixed(d);
+      const stat = (lab, val, sub) => `<div style="min-width:0">
+        <div style="font-size:12px;font-weight:600;color:var(--text)">${esc(lab)}</div>
+        <div style="font-size:24px;font-weight:700;margin:2px 0 3px">${val}</div>
+        <div style="font-size:11.5px;color:var(--muted);line-height:1.45">${esc(sub)}</div></div>`;
+      const section = (title, blurb, body) => `<div style="padding:14px 0;border-top:1px solid var(--line)">
+        <div style="border-left:3px solid var(--accent);padding-left:10px;margin-bottom:12px">
+          <div style="font-size:16px;font-weight:700">${esc(title)}</div>
+          <div style="font-size:12px;color:var(--muted)">${esc(blurb)}</div></div>
+        ${body}</div>`;
+      const grid = cells => `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px 18px">${cells.join('')}</div>`;
+
+      const snapshot = section('Performance Snapshot', 'Core numbers across every completed trade in this scope.', grid([
+        stat('Return', `<span style="color:${col(E.total)}">${num(E.total)}%</span>`, 'Sum of what each completed trade contributed to the model.'),
+        stat('Winrate', p1(E.winrate, 1), 'Share of closed trades that exited profitable.'),
+        stat('Avg. RRR', E.rrr === null ? '—' : `${num(E.rrr)}:1`, 'Average winning return divided by the average losing return.'),
+        stat('Avg. Win and Loss', `${p1(E.avgWin)} / ${p1(E.avgLoss)}`, 'Mean return of winning trades and of losing trades.'),
+        stat('Profit Factor', num(E.profitFactor), 'Basis points won divided by basis points lost.'),
+        stat('Max Drawdown', `<span style="color:var(--neg)">${num(E.mdd)}%</span>`, 'Deepest give-back from a high on this curve. It only moves when a trade closes, so it is not the model’s own drawdown.'),
+      ]));
+
+      const quality = section('Consistency & Curve Quality', 'How steady, reliable and repeatable the record has been.', grid([
+        stat('Profitable Days', p1(E.pDays, 1), `Share of the ${E.nDays} trading days in the value series that ended positive.`),
+        stat('Profitable Weeks', p1(E.pWeeks, 1), `Share of ${E.nWeeks} weeks that ended positive.`),
+        stat('Profitable Months', p1(E.pMonths, 1), `Share of ${E.nMonths} months that ended positive.`),
+        stat('Profit Concentration', p1(E.concentration, 1), `Share of all basis points won that came from the best ${E.topN} trade${E.topN === 1 ? '' : 's'} — the top tenth. A high number is not a compliment.`),
+        stat('Weekly Performance Std Dev', p1(E.weeklySd), 'How much weekly returns moved around from one week to the next.'),
+        stat('Longest Flat Stretch', `${E.longestFlat}`, 'Longest run of completed trades without setting a new high on this curve.'),
+      ]));
+
+      const recent = section('Recent Performance', 'How the most recent trades compare with the whole record.',
+        `<table style="font-size:12.5px"><thead><tr><th></th><th class="num">Return</th><th class="num">Winrate</th><th class="num">Avg. trade</th><th class="num">Max DD</th></tr></thead><tbody>
+        ${E.recent.map(r => `<tr><td><b>${r.days} days</b></td>
+          ${r.n ? `<td class="num" style="color:${col(r.ret)}">${num(r.ret)}%</td>
+          <td class="num">${p1(r.winrate, 1)}</td>
+          <td class="num" style="color:${col(r.avgTrade)}">${p1(r.avgTrade)}</td>
+          <td class="num" style="color:var(--neg)">${num(r.mdd)}%</td>`
+          : `<td class="num" colspan="4" style="color:var(--muted)">no trade closed in this window</td>`}</tr>`).join('')}
+        </tbody></table>
+        <p class="note" style="margin-top:8px">Measured over trades that <b>closed</b> inside each window, counted back from the last exit in the record rather than from today — the newest snapshot is ${esc(E.closed.at(-1).exit_date)}, so a window counted from today would report a quiet stretch that is really just the end of the file.</p>`);
+
+      return `<div style="margin-top:18px;border-top:1px solid var(--line);padding-top:16px">
+        <div style="display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:18px" class="eqwrap">
+          <div style="min-width:0">
+            <div style="font-size:13px;font-weight:600;margin-bottom:2px">Return, gain sum (%)</div>
+            <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Cumulative contribution across ${E.pts.length} completed trades, in order of exit.</div>
+            ${equitySvg(E)}
+            <p class="note" style="margin-top:6px">Move over the graph to inspect a trade.</p>
+          </div>
+          <div style="min-width:0">
+            <div style="font-size:15px;font-weight:700">Equity Curve Stats</div>
+            <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Return, consistency and recent performance for the curve beside it.</div>
+            <div class="eqscroll">${snapshot}${quality}${recent}</div>
+          </div>
+        </div></div>`;
+    })();
+
     const head = !s
       ? '<span style="font-size:12px;color:var(--muted)">no dated holdings history — nothing to grade</span>'
       : `<span style="font-size:12px;color:var(--muted)">${esc(s.first_snapshot)} to ${esc(s.last_snapshot)} · ${s.n_closed} completed, ${s.n_open} open${isOverall ? ` · ${graded.length} of ${(D.models || []).length} models graded` : ''}</span>`;
@@ -1055,7 +1250,8 @@ function annie() {
         ${streakBox(streak)}
       </div>
       ${errorsBlock(s, isOverall)}
-      <p class="note">${note}</p></div>`;
+      <p class="note">${note}</p>
+      ${curveBlock}</div>`;
   })();
 
   // ---- Hunting Pitches: the shortlist, graded for reflexivity ----
