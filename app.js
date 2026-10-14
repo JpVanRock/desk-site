@@ -862,6 +862,8 @@ function outputsFor(agent, kinds) {
 // and Monday-morning sections are JUDGMENT, written by the Annie agent after reading something.
 // The second kind carries its sources and the date it was formed; the first carries its flags.
 let annieWindow = 'ITD';
+// Which scorecard tab is showing: 'overall' or a strategy id.
+let annieModel = 'overall';
 
 function annie() {
   // Same two helpers the other pages declare locally; keep them in step if they ever move to
@@ -875,45 +877,91 @@ function annie() {
   const modelName = id => (D.models.find(m => m.id === id) || {}).name || '—';
   const bare = s => String(s || '').replace(/\s*\([^)]*\)/g, '');
 
-  // ---- scorecard, one row per model that has a ledger at all ----
+  // ---- Scorecard, one tab per model plus an equal-weighted Overall ----
+  //
+  // Only models with a loaded snapshot history have a ledger. The rest get the same card with
+  // every figure blank, because the shape of what is missing is itself worth seeing: a reader
+  // comparing models should be able to tell "this one has not been graded" from "this one scored
+  // badly", and a model quietly absent from a tab strip teaches neither.
   const scorecard = (() => {
-    if (!stats.length) {
-      return `<div class="card" style="margin-bottom:14px"><h2>Scorecard</h2>
-        <div class="empty">No model has a dated holdings history loaded, so there are no trades to grade. Load one with jobs/load-holdings-history.mjs and run jobs/compute-decision-ledger.mjs.</div></div>`;
-    }
-    const missing = (D.models || []).filter(m => !stats.some(s => s.strategy_id === m.id));
     const kpi = (lab, val, sub, title) => `<div class="card kpi" title="${esc(title)}">
       <span class="eyebrow">${esc(lab)}</span><b style="font-size:26px">${val}</b><small>${esc(sub)}</small></div>`;
-    return stats.map(s => {
-      const ba = n(s.batting_average), sl = n(s.slugging_bps);
-      const w = n(s.win_bps) || 0, l = n(s.loss_bps) || 0;
-      const beat = n(s.n_beat_benchmark), ex = n(s.excess_bps_total);
-      const beatRate = beat === null || !s.n_closed ? null : beat / s.n_closed;
-      return `<div class="card" style="margin-bottom:14px">
-        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
-          <h2 style="margin:0">${esc(bare(modelName(s.strategy_id)))} — scorecard</h2>
-          <span style="font-size:12px;color:var(--muted)">${esc(s.first_snapshot)} to ${esc(s.last_snapshot)} · ${s.n_closed} completed, ${s.n_open} open</span></div>
-        <div class="kpis" style="grid-template-columns:repeat(5,1fr);margin-top:12px">
-          ${kpi('Batting average', ba === null ? '—' : ba.toFixed(3).replace(/^0/, ''),
-                `${s.n_wins} of ${s.n_closed} exited profitable`,
-                'Share of completed trades that exited with a positive return. Ted Williams by way of Buffett: it counts hits, not distance.')}
-          ${kpi('Beat the benchmark', beatRate === null ? '—' : beatRate.toFixed(3).replace(/^0/, ''),
-                `${s.n_beat_benchmark} of ${s.n_closed} beat the index`,
-                'The same completed trades, counted against what the benchmark would have given the same money. A trade can exit profitable having cost the model everything the index would have paid instead, which is why this sits beside the batting average rather than behind it.')}
-          ${kpi('Slugging', sl === null ? '—' : `${sl >= 0 ? '+' : ''}${(sl / 100).toFixed(2)}%`,
-                'of model return per completed trade',
-                'Average contribution to the model\'s return per completed trade. The distance on the hits — a model can bat .700 and still lose money by sizing its winners small. Two decimals because the figure is a per-trade average and a basis point of it is real money.')}
-          ${kpi('Wins vs losses', `<span style="color:var(--pos)">${s.n_wins}</span><span style="color:var(--muted)">/</span><span style="color:var(--neg)">${s.n_losses}</span>`,
-                `+${w.toFixed(0)} bps won, ${l.toFixed(0)} bps lost`,
-                'Completed trades split by whether they exited profitable, with the basis points each side contributed.')}
-          ${kpi('Backwards K', '<span style="color:var(--muted)">—</span>',
-                'needs a loss threshold per trade',
-                'Called out on strikes: positions sold at a loss BIGGER than the threshold set when the trade was entered. It cannot be counted yet — no trade here carries a recorded threshold, because the entry journal does not exist. Deliberately blank rather than zero: a zero would read as "no position has ever blown through its stop", which is a flattering claim nobody has earned. Build the entry journal and this counts itself.')}
-        </div>
-        <p class="note">${beatRate !== null && ba !== null && beatRate < ba - 0.05
-          ? `<b>These two counts disagree, and the disagreement is the finding.</b> ${s.n_wins} of ${s.n_closed} trades exited profitable; ${beat} of the same ${s.n_closed} beat the benchmark${ex === null ? '' : `, and the per-trade excess sums to ${ex >= 0 ? '+' : ''}${ex.toFixed(0)} bps`}. A trade can exit profitable having cost the model everything the index would have paid instead — a cash line is the clean case, with a permanent perfect batting average and a permanently negative decision score in a rising market. <i>That excess total is a rough aggregate across trades that ran over different, non-overlapping spans; it answers "how did these decisions fare against the index, added up" and is not the model's underperformance over any period.</i> ` : ''}${s.n_unpriced ? `<b>${s.n_unpriced} position${s.n_unpriced === 1 ? '' : 's'} could not be priced</b> and ${s.n_unpriced === 1 ? 'is' : 'are'} excluded from every figure here. ` : ''}${s.gap_days ? `The history has a ${s.gap_days}-day hole, and a round trip that opened and closed inside it is invisible — not counted as a win or a loss, simply absent. ` : ''}Trades are derived from the dated snapshots, not from a broker file: a ticker present in one snapshot and absent from the one before was bought, present and then absent was sold. A round trip that opened and closed between two snapshots cannot be seen at all.</p></div>`;
-    }).join('') + (!missing.length ? '' : `<div class="card" style="margin-bottom:14px"><h2>Not yet gradeable</h2>
-      <div class="empty">${missing.map(m => esc(bare(m.name))).join(', ')} — these models have target weights but no dated holdings history, so there is nothing to compare over time and no trades to grade.</div></div>`);
+    const DASH = '<span style="color:var(--muted)">—</span>';
+    const graded = (D.models || []).filter(m => stats.some(s => s.strategy_id === m.id));
+
+    const tabs = `<div class="tabs" style="margin:0">
+      ${[{ id: 'overall', label: 'Overall' }, ...(D.models || []).map(m => ({ id: m.id, label: bare(m.name) }))]
+        .map(t => {
+          const has = t.id === 'overall' ? graded.length > 0 : stats.some(s => s.strategy_id === t.id);
+          return `<button class="tab" data-anniemodel="${esc(t.id)}" aria-selected="${t.id === annieModel}"
+            ${has ? '' : 'title="No dated holdings history for this model, so there are no trades to grade"'}
+            style="${has ? '' : 'opacity:.6'}">${esc(t.label)}</button>`;
+        }).join('')}</div>`;
+
+    // Overall is the EQUAL-WEIGHTED average across the models that can be graded: a model with
+    // four trades counts the same as one with fifty, which is what "equally weighted" has to mean
+    // if it is to mean anything. Models with no ledger are left out rather than entered as zero —
+    // averaging in a zero would say they graded badly when the truth is they were not graded.
+    const avg = key => {
+      const vals = stats.map(s => n(s[key])).filter(v => v !== null);
+      return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    };
+    const sum = key => stats.reduce((a, s) => a + (n(s[key]) || 0), 0);
+    const overall = !graded.length ? null : {
+      batting_average: avg('batting_average'),
+      slugging_bps: avg('slugging_bps'),
+      beatRate: (() => {
+        const vals = stats.filter(s => s.n_closed).map(s => (n(s.n_beat_benchmark) || 0) / s.n_closed);
+        return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+      })(),
+      n_closed: sum('n_closed'), n_open: sum('n_open'), n_wins: sum('n_wins'), n_losses: sum('n_losses'),
+      n_beat_benchmark: sum('n_beat_benchmark'), win_bps: sum('win_bps'), loss_bps: sum('loss_bps'),
+      excess_bps_total: sum('excess_bps_total'), n_unpriced: sum('n_unpriced'),
+      first_snapshot: stats.map(s => s.first_snapshot).filter(Boolean).sort()[0],
+      last_snapshot: stats.map(s => s.last_snapshot).filter(Boolean).sort().pop(),
+      gap_days: sum('gap_days') || null,
+    };
+
+    const isOverall = annieModel === 'overall';
+    const s = isOverall ? overall : (stats.find(x => x.strategy_id === annieModel) || null);
+    const label = isOverall ? 'Overall' : bare(modelName(annieModel));
+
+    const ba = s ? n(s.batting_average) : null;
+    const sl = s ? n(s.slugging_bps) : null;
+    const beatRate = !s ? null : isOverall ? s.beatRate : (s.n_closed ? (n(s.n_beat_benchmark) || 0) / s.n_closed : null);
+    const ex = s ? n(s.excess_bps_total) : null;
+    const w = s ? n(s.win_bps) || 0 : 0, l = s ? n(s.loss_bps) || 0 : 0;
+
+    const head = !s
+      ? '<span style="font-size:12px;color:var(--muted)">no dated holdings history — nothing to grade</span>'
+      : `<span style="font-size:12px;color:var(--muted)">${esc(s.first_snapshot)} to ${esc(s.last_snapshot)} · ${s.n_closed} completed, ${s.n_open} open${isOverall ? ` · ${graded.length} of ${(D.models || []).length} models graded` : ''}</span>`;
+
+    const note = !s
+      ? `This model has target weights but no dated holdings history, so there is nothing to compare over time and no trades to grade. The boxes are blank rather than zero — a zero would say it batted .000, which is a different and much worse claim than "not measured". Load a history with <code>jobs/load-holdings-history.mjs</code> and the figures compute themselves.`
+      : `${isOverall ? `<b>Overall averages the ${graded.length} model${graded.length === 1 ? '' : 's'} that can be graded, each counting once</b> — a model with four trades weighs the same as one with fifty. The ${(D.models || []).length - graded.length} without a holdings history are left out rather than entered as zero: averaging in a zero would say they graded badly when the truth is they were not graded. Rates are that equal-weighted average; the counts beside them are totals. ` : ''}${beatRate !== null && ba !== null && beatRate < ba - 0.05
+          ? `<b>These two counts disagree, and the disagreement is the finding.</b> ${s.n_wins} of ${s.n_closed} trades exited profitable; ${s.n_beat_benchmark} of the same ${s.n_closed} beat the benchmark${ex === null ? '' : `, and the per-trade excess sums to ${ex >= 0 ? '+' : ''}${ex.toFixed(0)} bps`}. A trade can exit profitable having cost the model everything the index would have paid instead — a cash line is the clean case, with a permanent perfect batting average and a permanently negative decision score in a rising market. <i>That excess total is a rough aggregate across trades that ran over different, non-overlapping spans; it answers "how did these decisions fare against the index, added up" and is not the model's underperformance over any period.</i> ` : ''}${s.n_unpriced ? `<b>${s.n_unpriced} position${s.n_unpriced === 1 ? '' : 's'} could not be priced</b> and ${s.n_unpriced === 1 ? 'is' : 'are'} excluded from every figure here. ` : ''}${s.gap_days ? `The history has a ${s.gap_days}-day hole, and a round trip that opened and closed inside it is invisible — not counted as a win or a loss, simply absent. ` : ''}Trades are derived from the dated snapshots, not from a broker file: a ticker present in one snapshot and absent from the one before was bought, present and then absent was sold. A round trip that opened and closed between two snapshots cannot be seen at all.`;
+
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Scorecard</h2>${head}</div>
+      <div style="margin-top:10px">${tabs}</div>
+      <div class="kpis" style="grid-template-columns:repeat(5,1fr);margin-top:14px">
+        ${kpi('Batting average', ba === null ? DASH : ba.toFixed(3).replace(/^0/, ''),
+              s ? `${s.n_wins} of ${s.n_closed} exited profitable` : 'no trades to grade',
+              'Share of completed trades that exited with a positive return. Ted Williams by way of Buffett: it counts hits, not distance.')}
+        ${kpi('Beat the benchmark', beatRate === null ? DASH : beatRate.toFixed(3).replace(/^0/, ''),
+              s ? `${s.n_beat_benchmark} of ${s.n_closed} beat the index` : 'no trades to grade',
+              'The same completed trades, counted against what the benchmark would have given the same money. A trade can exit profitable having cost the model everything the index would have paid instead, which is why this sits beside the batting average rather than behind it.')}
+        ${kpi('Slugging', sl === null ? DASH : `${sl >= 0 ? '+' : ''}${(sl / 100).toFixed(2)}%`,
+              s ? 'of model return per completed trade' : 'no trades to grade',
+              'Average contribution to the model\'s return per completed trade. The distance on the hits — a model can bat .700 and still lose money by sizing its winners small. Two decimals because the figure is a per-trade average and a basis point of it is real money.')}
+        ${kpi('Wins vs losses', !s ? DASH : `<span style="color:var(--pos)">${s.n_wins}</span><span style="color:var(--muted)">/</span><span style="color:var(--neg)">${s.n_losses}</span>`,
+              s ? `+${w.toFixed(0)} bps won, ${l.toFixed(0)} bps lost` : 'no trades to grade',
+              'Completed trades split by whether they exited profitable, with the basis points each side contributed. Counts, so on Overall these are totals rather than an average.')}
+        ${kpi('Backwards K', DASH, 'needs a loss threshold per trade',
+              'Called out on strikes: positions sold at a loss BIGGER than the threshold set when the trade was entered. It cannot be counted yet — no trade here carries a recorded threshold, because the entry journal does not exist. Deliberately blank rather than zero: a zero would read as "no position has ever blown through its stop", which is a flattering claim nobody has earned. Build the entry journal and this counts itself.')}
+      </div>
+      <p class="note">${note}</p></div>`;
   })();
 
   // ---- decision score per open position, across the owner's windows ----
@@ -2305,6 +2353,13 @@ document.addEventListener('click', e => {
   monthlyTab = t.dataset.monthtab;
   const arg = (location.hash.split('/')[1] || '');
   if (arg) openModel(arg);
+});
+// Scorecard model tabs on Annie's page.
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-anniemodel]');
+  if (!t) return;
+  annieModel = t.dataset.anniemodel;
+  $('#app').innerHTML = annie();
 });
 // Decision-score window tabs on Annie's page.
 document.addEventListener('click', e => {
