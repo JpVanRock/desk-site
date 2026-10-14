@@ -79,7 +79,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
@@ -118,6 +118,8 @@ async function load() {
     qSoft(sb.from('lens_signal_to_noise').select('category,window_label,n_scored,n_sources,hit_rate,signal,noise,signal_to_noise,too_few_to_judge'), 'lens signal to noise'),
     qSoft(sb.from('holding_risk_return').select('security_id,period,as_of,start_date,end_date,total_return,sharpe,vol_ann,n_obs'), 'holding risk/return'),
     qSoft(sb.from('model_trailing_returns').select('strategy_id,period,as_of,sort_order,start_date,end_date,model_return,benchmark_return,excess_return,is_cagr,basis,unavailable_reason').order('sort_order'), 'trailing returns'),
+    qSoft(sb.from('model_style_exposure').select('strategy_id,lens,as_of,bucket,label,sort_order,kind,model_weight,benchmark_weight').order('sort_order'), 'style exposure'),
+    qSoft(sb.from('model_style_coverage').select('strategy_id,lens,as_of,basis,window_start,window_end,model_equity_weight,model_resolved,benchmark_resolved,unresolved'), 'style coverage'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -187,7 +189,8 @@ async function load() {
     // rather than like a bug, which is the dangerous kind.
     periodStats: newest(periodStats), contribution: newest(contribution),
     factorAlloc: newest(factorAlloc), valueSeries: valueSeries || [], snapIntegrity: snapIntegrity || [],
-    currentHoldings: currentHoldings || [], factorOverrides: factorOverrides || [], lensSnr: lensSnr || [], holdingRR: newest(holdingRR), trailing: newest(trailing) };
+    currentHoldings: currentHoldings || [], factorOverrides: factorOverrides || [], lensSnr: lensSnr || [], holdingRR: newest(holdingRR), trailing: newest(trailing),
+    styleExposure: newest(styleExposure), styleCoverage: newest(styleCoverage) };
 }
 
 // ---------- Views ----------
@@ -390,6 +393,9 @@ function top3Drawer(strategyId) {
 // One point per security currently held anywhere in the book. Sharpe is excess of the desk's cash
 // proxy rather than of zero, so a cash-like fund does not get credit for the risk-free rate.
 let scatterPeriod = 'YTD';
+// Which lens the model drawer's portfolio breakdown is showing. Module scope so it survives the
+// drawer re-render the toggle triggers.
+let breakdownLens = 'sector';
 const SCATTER_PERIODS = ['YTD', '1Y', '3Y', '5Y'];
 
 function positionScatter() {
@@ -566,7 +572,7 @@ function stan() {
   const byTicker = {};
   for (const f of allFlags) (byTicker[f.ticker] ||= []).push(f);
   const flagRows = Object.entries(byTicker).sort((a, b) => b[1].length - a[1].length || (+b[1][0].risk_ratio || 0) - (+a[1][0].risk_ratio || 0));
-  const flagsCard = `<div class="card" style="margin-bottom:14px"><h2>Positions on review <span class="chip">${allFlags.length}</span></h2>
+  const flagsCard = `<div class="card" style="margin-bottom:14px"><h2>Flagged positions <span class="chip">${allFlags.length}</span></h2>
    ${!flagRows.length ? '<div class="empty">Nothing flagged. No position is taking 2× or more of its weight in risk, and nothing duplicates a larger holding.</div>'
     : `<table><thead><tr><th>Ticker</th><th class="num">Models</th><th class="num">Worst ratio</th><th>Why</th></tr></thead><tbody>
    ${flagRows.map(([tk, fs]) => {
@@ -582,7 +588,7 @@ function stan() {
 
   // Stan's own written work, from the workspace.
   const docs = (D.outputs || []).filter(o => o.agent === 'stan').sort((a, b) => b.as_of.localeCompare(a.as_of));
-  const docsCard = `<div class="card"><h2>Stan's notes</h2>
+  const docsCard = `<div class="card"><h2 style="font-size:20px;margin-bottom:14px">Stan's notes</h2>
    ${!docs.length ? '<div class="empty">No written output yet. Run Stan, then jobs/sync-agent-outputs.mjs.</div>'
     : docs.map((o, i) => `<details ${i === 0 ? 'open' : ''} style="margin-bottom:8px">
         <summary style="cursor:pointer;padding:6px 0"><b>${esc(o.title)}</b> <span class="chip">${esc(o.as_of)}</span></summary>
@@ -1203,6 +1209,105 @@ function modelDashboard(m) {
       Returns are gross of fees. The three annualised columns are CAGR rather than cumulative and are withheld entirely where the price history does not reach back that far, or where the window would start inside a gap in the holdings history — annualising over a span that does not match the label is wrong rather than approximate, so a dash there is deliberate. Hover a dash for the reason.${spansGap ? ` <b>Windows reaching before ${esc(gap.as_of)} include the ${gap.gap_days_before}-day stretch where the holdings were carried forward unchanged</b>, so the longer periods reflect a book that was not rebalanced through it.` : ''}</p></div>`;
   })();
 
+  // ---- Portfolio breakdown: sector / equity-factor mix against the benchmark ----
+  //
+  // The percentages are of the model's EQUITY sleeve, not of the whole model, because a sector
+  // or factor weight only means anything inside equity — that is also what the owner asked for.
+  // Both sides renormalise over the part that resolved, so the comparison is of mix rather than
+  // of level, and the coverage line says how much of each side that was.
+  const breakdownCard = (() => {
+    const all = (D.styleExposure || []).filter(r => r.strategy_id === m.id);
+    if (!all.length) {
+      return `<div class="card" style="margin-top:18px"><h2>Portfolio breakdown</h2>
+        <div class="empty">Not computed yet. Run jobs/compute-style-exposure.mjs.</div></div>`;
+    }
+    const lens = breakdownLens;
+    const rows = all.filter(r => r.lens === lens).sort((a, b) => a.sort_order - b.sort_order);
+    const cov = (D.styleCoverage || []).find(r => r.strategy_id === m.id && r.lens === lens);
+    const benchLabel = m.benchmarkLabel || 'Benchmark';
+    const modelLabel = m.name.replace(/\s*\([^)]*\)/g, '');
+    const alloc = rows.filter(r => r.kind === 'allocation');
+    const comps = rows.filter(r => r.kind === 'composite');
+
+    const tabs = `<div class="tabs" style="margin:0">
+      ${[['sector', 'Sector'], ['factor', 'Equity factors']].map(([k, lbl]) =>
+        `<button class="tab" data-breakdown="${k}" aria-selected="${k === lens}">${lbl}</button>`).join('')}</div>`;
+
+    const have = v => v !== null && v !== undefined;
+    const scale = Math.max(0.01, ...rows.filter(r => r.kind === 'allocation').flatMap(r => [+r.model_weight || 0, +r.benchmark_weight || 0]));
+    const diffs = alloc.map(r => have(r.model_weight) && have(r.benchmark_weight) ? +r.model_weight - +r.benchmark_weight : null);
+    const dScale = Math.max(0.005, ...diffs.filter(d => d !== null).map(Math.abs));
+    const p1 = v => (v * 100).toFixed(1) + '%';
+
+    const bar = (v, color, muted) => have(v)
+      ? `<div style="display:flex;align-items:center;gap:6px">
+           <div style="height:9px;width:${+v > 0 ? Math.max(0.6, (+v / scale) * 100) : 0}%;background:${color};border-radius:2px"></div>
+           <small style="color:${muted ? 'var(--muted)' : 'var(--text)'};white-space:nowrap">${p1(+v)}</small></div>`
+      : `<div><small style="color:var(--muted)">not resolved</small></div>`;
+
+    // The bar diverges from a centre line and the figure sits in its own fixed column beside it.
+    // Putting the figure next to the end of the bar reads better but clips the largest row off the
+    // edge of the card, which is the one row nobody can afford to lose.
+    const diffCell = d => {
+      if (d === null) return '<td style="width:190px"></td>';
+      const flat = Math.abs(d) < 0.0005;
+      const w = (Math.abs(d) / dScale) * 48;                 // 48% of the bar track each side of centre
+      const up = d >= 0, col = flat ? 'var(--muted)' : up ? 'var(--pos)' : 'var(--neg)';
+      return `<td style="width:190px"><div style="display:flex;align-items:center;gap:8px">
+        <div style="position:relative;height:20px;flex:1;min-width:90px">
+          <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--line)"></div>
+          ${flat ? '' : `<div style="position:absolute;top:5px;height:10px;background:${col};border-radius:2px;${up ? `left:50%;width:${w}%` : `right:50%;width:${w}%`}"></div>`}
+        </div>
+        <small style="color:${col};white-space:nowrap;width:52px;text-align:right">${flat ? '0.0%' : (up ? '+' : '−') + (Math.abs(d) * 100).toFixed(1) + '%'}</small>
+      </div></td>`;
+    };
+
+    const allocRows = alloc.map((r, i) => `<tr>
+      <td style="width:210px">${esc(r.label)}</td>
+      <td>${bar(r.model_weight, 'var(--accent)', false)}${bar(r.benchmark_weight, 'var(--bench)', true)}</td>
+      ${diffCell(diffs[i])}</tr>`).join('');
+
+    const compRows = !comps.length ? '' : `<tr><td colspan="3" style="padding-top:14px">
+      <div style="border-top:1px solid var(--line);padding-top:10px;font-size:12px;color:var(--muted)">
+        Derived from the rows above, not additional to them</div></td></tr>` +
+      comps.map(r => {
+        const d = have(r.model_weight) && have(r.benchmark_weight) ? +r.model_weight - +r.benchmark_weight : null;
+        return `<tr><td style="width:210px;color:var(--muted)">${esc(r.label)}</td>
+          <td>${bar(r.model_weight, 'var(--accent)', false)}${bar(r.benchmark_weight, 'var(--bench)', true)}</td>
+          ${diffCell(d)}</tr>`;
+      }).join('');
+
+    const un = (cov?.unresolved || []);
+    const unBlock = !un.length ? '' : `<details style="margin-top:10px;font-size:13px">
+      <summary style="cursor:pointer;color:var(--text)">${un.length} holding${un.length === 1 ? '' : 's'} could not be placed</summary>
+      <table style="margin-top:8px"><thead><tr><th>Ticker</th><th>Side</th><th class="num">Weight</th><th>Why</th></tr></thead><tbody>
+      ${un.map(u => `<tr><td><b>${esc(u.ticker || '—')}</b></td><td>${esc(u.side)}</td>
+        <td class="num">${(+u.weight * 100).toFixed(1)}%</td>
+        <td style="max-width:460px;color:var(--muted)">${esc(u.reason)}</td></tr>`).join('')}
+      </tbody></table></details>`;
+
+    const covLine = !cov ? '' : `Equity is ${p1(+cov.model_equity_weight)} of this model${cov.basis === 'target' ? ' on target weights' : ''}. `
+      + `The bars describe ${have(cov.model_resolved) ? p1(+cov.model_resolved) : 'none'} of that equity and `
+      + `${have(cov.benchmark_resolved) ? p1(+cov.benchmark_resolved) : 'none'} of the benchmark's.`;
+
+    return `<div class="card" style="margin-top:18px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Portfolio breakdown</h2>
+        <span style="font-size:12px;color:var(--muted)">
+          <span style="display:inline-block;width:9px;height:9px;background:var(--accent);border-radius:2px;margin-right:5px"></span>${esc(modelLabel)}
+          <span style="display:inline-block;width:9px;height:9px;background:var(--bench);border-radius:2px;margin:0 5px 0 12px"></span>${esc(benchLabel)}</span></div>
+      <div style="margin-top:10px">${tabs}</div>
+      <div style="overflow-x:auto;margin-top:12px"><table style="min-width:680px"><thead><tr>
+        <th>${lens === 'sector' ? 'Sector' : 'Factor'}</th><th>Share of resolved equity</th><th>Over / under weight</th>
+      </tr></thead><tbody>${allocRows}${compRows}</tbody></table></div>
+      ${unBlock}
+      <p class="note"><b>These are estimated from returns, not read from holdings.</b> No data source connected to this desk publishes what the funds in these models own, so each fund's daily returns are fitted to a basis of real index ETFs — the eleven sector SPDRs for the sector view, iShares' value, momentum, quality and min-vol funds plus the S&P 500 for factors — with weights that cannot go negative and must sum to one. That measures how a fund <i>behaves</i>. A fund can be placed in a sector it owns no shares of, if it moves like one. ${covLine}
+      ${lens === 'factor'
+        ? 'AQR defines <b>Defensive</b> as quality combined with low volatility, and <b>Multi-Factor</b> as several styles run in one framework, so both are made out of the four rows above rather than sitting alongside them — they are shown separately because adding them in would count the same holding twice. Multi-factor counts the equity held in funds carrying at least three of the four styles at once, which is a property of the fund and not of the blend: one pure value fund beside one pure momentum fund is not a multi-factor model.'
+        : 'Non-US equity keeps its own row instead of being pushed into US sectors. Fitting the international and emerging-market indices to the sector SPDRs was tried and rejected — it explained two thirds and a half of their movement respectively, and returned an emerging-market mix with no financials at all in an index that is roughly a quarter financials.'}
+      A fund whose fit explains less than 70% of its own daily movement is left out by name rather than spread across the others${un.length ? ' — the list above' : ''}, and the percentages renormalise over what remains.${cov?.window_start ? ` Fitted on daily returns from ${esc(cov.window_start)} to ${esc(cov.window_end)}.` : ''}</p></div>`;
+  })();
+
   // ---- data quality ----
   const offSum = integ.filter(i => i.weight_off);
   const gaps = integ.filter(i => n(i.gap_days_before) !== null && +i.gap_days_before > 60);
@@ -1218,7 +1323,7 @@ function modelDashboard(m) {
 
   return `<p class="sub">Each holding's weight splits evenly across the factors it is long. Shorts are tallied separately, so they do not sum with the pie. Classify the unclassified positions and press Update to refresh.</p>
    ${repSaveError ? `<div class="card" style="margin-bottom:18px;border-left:3px solid var(--neg)"><p style="margin:0">${esc(repSaveError)}</p></div>` : ''}
-   ${dqCard}${statsCard}${allocGrid}${contribCard}${ddCard}${trailingCard}
+   ${dqCard}${statsCard}${allocGrid}${contribCard}${ddCard}${trailingCard}${breakdownCard}
    <details style="margin-top:22px;font-size:13px;color:var(--muted)">
      <summary style="cursor:pointer;color:var(--text)">The classification matrix</summary>
      <table style="margin-top:10px"><thead><tr><th>Asset class</th><th>Growth</th><th>Inflation</th><th>Cost of liquidity</th></tr></thead><tbody>
@@ -1865,6 +1970,14 @@ document.addEventListener('click', e => {
   if (!t || t.disabled) return;
   scatterPeriod = t.dataset.scatter;
   $('#app').innerHTML = stan();
+});
+// Sector / equity-factor toggle inside the model drawer.
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-breakdown]');
+  if (!t) return;
+  breakdownLens = t.dataset.breakdown;
+  const arg = (location.hash.split('/')[1] || '');
+  if (arg) openModel(arg);
 });
 // SNR window tabs, inside the signal-to-noise drawer.
 document.addEventListener('click', e => {

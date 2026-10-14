@@ -1,6 +1,6 @@
 :root{
   --bg:#0e1116; --panel:#151a22; --panel2:#1b2130; --line:#252d3b; --text:#e6e9ef; --muted:#8b95a7;
-  --accent:#7aa2f7; --pos:#3fb27f; --neg:#e0605e; --flat:#d6a93b; --warn:#e0a23b;
+  --accent:#7aa2f7; --pos:#3fb27f; --neg:#e0605e; --flat:#d6a93b; --warn:#e0a23b; --bench:#5b6577;
   --shadow:0 8px 30px rgba(0,0,0,.35);
   /* Factor colours, from the owner's dashboard reference. Deliberately distinct from the
      pos/neg/warn tokens: a factor is not good or bad, it is a category, and reusing the
@@ -9,7 +9,7 @@
 }
 :root[data-theme="light"]{
   --bg:#f5f6f8; --panel:#ffffff; --panel2:#f0f2f6; --line:#dfe3ea; --text:#1b2230; --muted:#667085;
-  --accent:#3b62d6; --pos:#1f8f5f; --neg:#c8443f; --flat:#b98a14; --warn:#b7791f; --shadow:0 8px 30px rgba(20,30,50,.12);
+  --accent:#3b62d6; --pos:#1f8f5f; --neg:#c8443f; --flat:#b98a14; --warn:#b7791f; --shadow:0 8px 30px rgba(20,30,50,.12); --bench:#9aa4b2;
   --growth:#2a78d6; --inflation:#eb6834; --liquidity:#1baf7a; --unclass:#c3c2b7;
 }
 *{box-sizing:border-box} html{background:var(--bg)}
