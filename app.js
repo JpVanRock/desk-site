@@ -82,7 +82,7 @@ async function load() {
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
-    q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
+    q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
     q(sb.from('asset_classes').select('id,slug,name,sort_order,primary_role,primary_role_is_draft').order('sort_order')),
     q(sb.from('factors').select('id,slug,name,sort_order').order('sort_order')),
     q(sb.from('asset_class_factor_loadings').select('asset_class_id,factor_id,loading,as_of')),
@@ -151,7 +151,8 @@ async function load() {
   const matrix = classes.map(c => ({ slug: c.slug, name: c.name, v: factors.map(f => (cl.get(c.id + '|' + f.id) || {}).loading ?? null) }));
   const priceBySec = Object.fromEntries(prices.map(p => [p.security_id, p]));
   const techBySec = Object.fromEntries(technicals.map(t => [t.security_id, t]));
-  const markets = secs.map(s => ({ id: s.id, ticker: s.ticker, name: s.name, role: s.role, cls: cls[s.asset_class_id]?.slug || 'unclassified', price: priceBySec[s.id] || null, tech: techBySec[s.id] || null }))
+  const markets = secs.map(s => ({ id: s.id, ticker: s.ticker, name: s.name, role: s.role, cls: cls[s.asset_class_id]?.slug || 'unclassified', price: priceBySec[s.id] || null, tech: techBySec[s.id] || null,
+    hp: !!s.high_potential, hpSince: s.high_potential_since || null, hpNote: s.high_potential_note || null }))
     .sort((a, b) => a.ticker.localeCompare(b.ticker));
 
   const factorSlug = Object.fromEntries(factors.map(f => [f.id, f.slug]));
@@ -231,6 +232,9 @@ function route() {
     else if (arg.startsWith('snr-')) { $('#drawer').innerHTML = snrDrawer(arg.slice(4)); $('#drawer').hidden = false; $('#scrim').hidden = false; }
     else if (arg.startsWith('top3-')) { $('#drawer').innerHTML = top3Drawer(arg.slice(5)); $('#drawer').hidden = false; $('#scrim').hidden = false; }
     else openModel(arg);
+  }
+  if (page === 'annie' && arg && arg.startsWith('steel-')) {
+    $('#drawer').innerHTML = steelManDrawer(arg.slice(6)); $('#drawer').hidden = false; $('#scrim').hidden = false;
   }
   if (page === 'markets' && arg) openChart(arg);
   if (page === 'overview' && arg) openExposureChart(arg);
@@ -861,6 +865,17 @@ function outputsFor(agent, kinds) {
 // adjusted prices by jobs/compute-decision-ledger.mjs. The reflexivity, bias, steel-man, Kahneman
 // and Monday-morning sections are JUDGMENT, written by the Annie agent after reading something.
 // The second kind carries its sources and the date it was formed; the first carries its flags.
+// The pitch scale, in the owner's words: 10 is a fat pitch, 1 is filthy. Stated everywhere the
+// number appears, because a bare 7 invites the reader to invent a scale and they invent a
+// flattering one.
+const PITCH_SCALE = '1 to 10. 10 is a fat pitch — a strong, identifiable two-way feedback loop. 1 is filthy — the loop is absent and the ordinary analysis applies.';
+const PITCH_NOTE = 'The reflexivity score is Soros\'s two-way feedback: does price action here change the fundamentals — flows bending a producer\'s behaviour, a price that funds the expansion it is pricing in — or does it only reflect them? <b>' + PITCH_SCALE + '</b> A low score is not bearish. It says the setup is ordinary, which is a different claim from saying the idea is bad. Scores and the case against each name are written by Annie after reading something, and each one carries its sources — unlike everything in the scorecard above, none of this is arithmetic.';
+const pitchLabel = v => v >= 8.5 ? 'fat pitch' : v >= 6.5 ? 'hittable' : v >= 4 ? 'ordinary' : 'filthy';
+const pitchColor = v => v >= 8.5 ? 'var(--pos)' : v >= 6.5 ? 'var(--flat)' : v >= 4 ? 'var(--muted)' : 'var(--neg)';
+// An I-beam in cross-section: two flanges and a web. Drawn rather than fetched so it inherits the
+// theme colour and costs no request.
+const IBEAM = '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M2 2h12v2.6H9.3v6.8H14V14H2v-2.6h4.7V4.6H2z"/></svg>';
+
 let annieWindow = 'ITD';
 // Which scorecard tab is showing: 'overall' or a strategy id.
 let annieModel = 'overall';
@@ -962,6 +977,58 @@ function annie() {
               'Called out on strikes: positions sold at a loss BIGGER than the threshold set when the trade was entered. It cannot be counted yet — no trade here carries a recorded threshold, because the entry journal does not exist. Deliberately blank rather than zero: a zero would read as "no position has ever blown through its stop", which is a flattering claim nobody has earned. Build the entry journal and this counts itself.')}
       </div>
       <p class="note">${note}</p></div>`;
+  })();
+
+  // ---- Hunting Pitches: the shortlist, graded for reflexivity ----
+  //
+  // Not every column here can be filled yet and the ones that cannot are left blank rather than
+  // guessed. Swing size in particular: there is an obvious temptation to derive it from the
+  // reflexivity score with some tidy mapping, and that mapping would be invented here rather than
+  // argued from anything. It stays Annie's to write.
+  const hunting = (() => {
+    const shortlist = (D.markets || []).filter(s => s.hp);
+    const refl = a => assess.find(x => x.kind === 'reflexivity' && x.ticker === a);
+    const steel = a => assess.find(x => x.kind === 'steel_man' && x.ticker === a);
+    const swing = a => assess.find(x => x.kind === 'sizing_recommendation' && x.ticker === a);
+
+    const head = `<div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Hunting Pitches</h2>
+      <span style="font-size:12px;color:var(--muted)">${shortlist.length ? `${shortlist.length} name${shortlist.length === 1 ? '' : 's'} on the shortlist` : 'shortlist empty'}</span></div>`;
+
+    if (!shortlist.length) {
+      return `<div class="card" style="margin-bottom:14px">${head}
+        <div class="empty" style="margin-top:10px">Nothing is tagged high potential yet, so there is nothing to swing at.
+        Tag names with <code>node jobs/tag-high-potential.mjs --add TICKER</code> and they appear here; the Playground will own this once the watchlist moves there.
+        The shortlist is deliberately not seeded from the sector and factor proxies already carrying the watchlist role — those are measurement tools, not ideas anyone had.</div>
+        <p class="note">${PITCH_NOTE}</p></div>`;
+    }
+
+    return `<div class="card" style="margin-bottom:14px">${head}
+      <div style="overflow-x:auto;margin-top:10px"><table style="min-width:760px"><thead><tr>
+        <th>Ticker</th><th>Name</th><th>Asset class</th><th class="num">Reflexivity score</th>
+        <th class="num">Swing size</th><th>Steel man</th></tr></thead><tbody>
+      ${shortlist.slice().sort((a, b) => {
+        const ra = n(refl(a.ticker)?.score), rb = n(refl(b.ticker)?.score);
+        return (rb === null ? -1 : rb) - (ra === null ? -1 : ra) || a.ticker.localeCompare(b.ticker);
+      }).map(s => {
+        const r = refl(s.ticker), sm = steel(s.ticker), sw = swing(s.ticker);
+        const sc = n(r?.score);
+        return `<tr>
+          <td><b>${esc(s.ticker)}</b>${s.hpSince ? `<br><small style="color:var(--muted)">since ${esc(s.hpSince)}</small>` : ''}</td>
+          <td style="max-width:280px">${esc(s.name || '—')}${s.hpNote ? `<br><small style="color:var(--muted)">${esc(s.hpNote)}</small>` : ''}</td>
+          <td style="color:var(--muted)">${esc(D.classNames[s.cls] || s.cls)}</td>
+          <td class="num">${sc === null
+            ? `<span style="color:var(--muted)" title="Annie has not scored this one yet. Run the Annie agent and load with jobs/load-annie-assessments.mjs.">–</span>`
+            : `<b style="color:${pitchColor(sc)}" title="${esc(r.score_scale || '')}">${sc.toFixed(1)}</b><br><small style="color:${pitchColor(sc)}">${esc(pitchLabel(sc))}</small>`}</td>
+          <td class="num">${sw && sw.score !== null && sw.score !== undefined
+            ? `<b>${(+sw.score).toFixed(1)}%</b><br><small style="color:var(--muted)">${esc(sw.headline.slice(0, 28))}</small>`
+            : `<span style="color:var(--muted)" title="No swing size written for this name. It is deliberately not derived from the reflexivity score — that mapping would be invented here rather than argued from the desk's own record, which is Annie's job.">–</span>`}</td>
+          <td>${sm
+            ? `<button class="ibeam" data-go="#annie/steel-${esc(s.ticker)}" title="Read the case against ${esc(s.ticker)}">${IBEAM}</button>`
+            : `<span class="ibeam off" title="Annie has not written a steel man for ${esc(s.ticker)} yet.">${IBEAM}</span>`}</td></tr>`;
+      }).join('')}
+      </tbody></table></div>
+      <p class="note">${PITCH_NOTE}</p></div>`;
   })();
 
   // ---- decision score per open position, across the owner's windows ----
@@ -1096,6 +1163,7 @@ function annie() {
   return `<span class="eyebrow">Annie</span><h1>Decision Coach</h1>
    <p class="sub">OODA — Observe, Orient, Decide, Act.</p>
    ${scorecard}
+   ${hunting}
    ${positions}
    ${journal}
    ${note('Open decisions', open, 'Nothing open. Annie records a decision before it is made, not after.')}
@@ -1795,6 +1863,25 @@ function donutSvg(parts, size = 190) {
 
 // ---------- Contribution and attribution ----------
 
+
+// The case against a name, opened from the I-beam in Hunting Pitches. On the hash like the Stan
+// drawers, so Escape, the scrim and the back button all close it the same way.
+function steelManDrawer(ticker) {
+  const a = (D.assessments || []).find(x => x.kind === 'steel_man' && x.ticker === ticker);
+  const sec = (D.markets || []).find(x => x.ticker === ticker);
+  const src = a && Array.isArray(a.sources) ? a.sources : [];
+  return `<button class="close" data-go="#annie">Close</button>
+   <span class="eyebrow">The case against</span><h1>${esc(ticker)}${sec && sec.name ? ` — ${esc(sec.name)}` : ''}</h1>
+   ${!a ? '<div class="card"><div class="empty">Annie has not written a steel man for this name yet.</div></div>'
+   : `<div class="card">
+      <h2>${esc(a.headline)}</h2>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Written ${esc(a.as_of)}${a.confidence ? ` · ${esc(a.confidence)} confidence` : ''}</div>
+      ${md(a.body_md)}
+      <p class="note">${src.length
+        ? 'Read: ' + src.map(x => x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title || x.url)}</a>` : esc(x.title || '')).join(' · ')
+        : '<b>No sources recorded.</b> Treat this as an opinion rather than a finding.'}</p></div>
+      <p class="note">A steel man is the strongest honest case against the position, not the weak version that is easy to dismiss. It is written to be <i>believed</i> for the length of a read — if it is not uncomfortable, it is not doing its job.</p>`}`;
+}
 
 function openModel(id) {
   const m = D.models.find(x => x.id === id); if (!m) return;

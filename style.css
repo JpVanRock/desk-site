@@ -34,6 +34,13 @@ td{padding:10px;border-bottom:1px solid var(--line);vertical-align:middle}tr:las
 tbody tr.click{cursor:pointer}tbody tr.click:hover{background:var(--panel2)}
 .num{text-align:right;font-variant-numeric:tabular-nums}
 .cell{display:inline-block;min-width:64px;text-align:center;padding:6px 8px;border-radius:6px;font-variant-numeric:tabular-nums;font-weight:600}
+/* The I-beam that opens a steel man. A button rather than a link so it is reachable by keyboard,
+   and faded rather than hidden when nothing has been written — an absent icon reads as "no case
+   against this", which is a claim nobody made. */
+.ibeam{background:none;border:0;padding:4px 6px;border-radius:6px;cursor:pointer;color:var(--accent);display:inline-flex;align-items:center}
+.ibeam:hover{background:var(--panel2)}
+.ibeam.off{color:var(--line);cursor:default}
+.ibeam.off:hover{background:none}
 /* The shared hover panel. pre-line so the ticker list keeps its own lines without markup. */
 #hovertip{position:fixed;z-index:60;pointer-events:none;max-width:260px;white-space:pre-line;
   font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text);background:var(--panel);
