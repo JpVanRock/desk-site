@@ -79,8 +79,8 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR] = await Promise.all([
-    q(sb.from('strategies').select('id,name,label,sort_order').order('sort_order')),
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing] = await Promise.all([
+    q(sb.from('strategies').select('id,name,label,sort_order,benchmark').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
     q(sb.from('asset_classes').select('id,slug,name,sort_order,primary_role,primary_role_is_draft').order('sort_order')),
@@ -117,6 +117,7 @@ async function load() {
     qSoft(sb.from('holding_factor_overrides').select('security_id,split,note,author,as_of'), 'factor overrides'),
     qSoft(sb.from('lens_signal_to_noise').select('category,window_label,n_scored,n_sources,hit_rate,signal,noise,signal_to_noise,too_few_to_judge'), 'lens signal to noise'),
     qSoft(sb.from('holding_risk_return').select('security_id,period,as_of,start_date,end_date,total_return,sharpe,vol_ann,n_obs'), 'holding risk/return'),
+    qSoft(sb.from('model_trailing_returns').select('strategy_id,period,as_of,sort_order,start_date,end_date,model_return,benchmark_return,excess_return,is_cagr,basis,unavailable_reason').order('sort_order'), 'trailing returns'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -136,7 +137,7 @@ async function load() {
       if (ld) { cov += w; ld.forEach((v, i) => { net[i] += w * (v ?? 0); }); }
       return { ticker: s.ticker || '?', name: s.name || '', weight: w, cls: slug, loading: ld, security_id: a.security_id };
     }).sort((a, b) => b.weight - a.weight);
-    return { id: st.id, name: st.name, label: st.label, holdings, total, net: net.map(x => +x.toFixed(3)), cov: total ? cov / total : 0,
+    return { id: st.id, name: st.name, label: st.label, benchmarkLabel: st.benchmark || null, holdings, total, net: net.map(x => +x.toFixed(3)), cov: total ? cov / total : 0,
       byClass: Object.entries(byClass).sort((a, b) => b[1] - a[1]), last: rows.map(r => r.effective_from).sort().pop() || null };
   });
   const classNames = Object.fromEntries(classes.map(c => [c.slug, c.name])); classNames.unclassified = 'Unclassified';
@@ -186,7 +187,7 @@ async function load() {
     // rather than like a bug, which is the dangerous kind.
     periodStats: newest(periodStats), contribution: newest(contribution),
     factorAlloc: newest(factorAlloc), valueSeries: valueSeries || [], snapIntegrity: snapIntegrity || [],
-    currentHoldings: currentHoldings || [], factorOverrides: factorOverrides || [], lensSnr: lensSnr || [], holdingRR: newest(holdingRR) };
+    currentHoldings: currentHoldings || [], factorOverrides: factorOverrides || [], lensSnr: lensSnr || [], holdingRR: newest(holdingRR), trailing: newest(trailing) };
 }
 
 // ---------- Views ----------
@@ -1166,6 +1167,42 @@ function modelDashboard(m) {
      <p class="note">Drawdown is value divided by its running peak, minus one, computed <b>within the selected window</b> — so each period starts at 0% and a loss carried in from before the window is not shown.${ddStat && ddStat.window_starts_in_gap ? ' <b style="color:var(--warn)">The start of this window fell inside the history gap and was pulled back, so it covers more time than its label suggests.</b>' : ''} Whether the peak should instead carry in from before the window is an open decision.</p></div>`;
   })();
 
+  // ---- Trailing returns against the model's benchmark ----
+  const trailingCard = (() => {
+    const rows = (D.trailing || []).filter(r => r.strategy_id === m.id)
+      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    if (!rows.length) {
+      return `<div class="card" style="margin-top:18px"><h2>Trailing returns</h2>
+        <div class="empty">Not computed yet. Run jobs/compute-trailing-returns.mjs.</div></div>`;
+    }
+    const LBL = { '1D': '1 Day', '1W': '1 Week', '1M': '1 Month', '3M': '3 Month', MTD: 'MTD', QTD: 'QTD',
+                  YTD: 'YTD', '1Y': '1 Year', '3Y': '3 Year CAGR', '5Y': '5 Year CAGR', '10Y': '10 Year CAGR' };
+    const basis = rows[0].basis;
+    const benchLabel = m.benchmarkLabel || 'Benchmark';
+    const cell = (v, reason) => v === null || v === undefined
+      ? `<td class="num"><span style="color:var(--muted)" ${reason ? `title="${esc(reason)}"` : ''}>–</span></td>`
+      : `<td class="num"><span style="color:${+v >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(+v >= 0 ? '' : '') + (+v * 100).toFixed(2)}%</span></td>`;
+    const head = rows.map(r => `<th class="num">${esc(LBL[r.period] || r.period)}</th>`).join('');
+    // Any window reaching back past the first post-gap snapshot carries weights that were held
+    // unchanged across the hole — worth saying once rather than on every cell.
+    const integ = (D.snapIntegrity || []).filter(i => i.strategy_id === m.id);
+    const gap = integ.find(i => i.gap_days_before && +i.gap_days_before > 60);
+    const spansGap = gap && rows.some(r => r.start_date && r.start_date < gap.as_of);
+    return `<div class="card" style="margin-top:18px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Trailing returns</h2>
+        <span style="font-size:12px;color:var(--muted)">against ${esc(benchLabel)} · ${basis === 'holdings' ? 'from the dated holdings history' : 'from current target weights'}</span></div>
+      <div style="overflow-x:auto;margin-top:10px"><table style="min-width:860px"><thead><tr><th>Period</th>${head}</tr></thead><tbody>
+        <tr><td><b>${esc(m.name.replace(/\s*\([^)]*\)/g, ''))}</b></td>${rows.map(r => cell(r.model_return, r.unavailable_reason)).join('')}</tr>
+        <tr><td>${esc(benchLabel)}</td>${rows.map(r => cell(r.benchmark_return, r.unavailable_reason)).join('')}</tr>
+        <tr style="border-top:2px solid var(--line)"><td><b>Vs. Benchmark</b></td>${rows.map(r => cell(r.excess_return, r.unavailable_reason)).join('')}</tr>
+      </tbody></table></div>
+      <p class="note">${basis === 'holdings'
+        ? 'Computed from the dated holdings history, so it follows what the model actually held.'
+        : '<b>Computed from current target weights held fixed back through each window</b>, because this model has no dated holdings history loaded. It answers how today’s allocation would have done, not what the model did — load a history and this switches to the real thing.'}
+      Returns are gross of fees. The three annualised columns are CAGR rather than cumulative and are withheld entirely where the price history does not reach back that far, or where the window would start inside a gap in the holdings history — annualising over a span that does not match the label is wrong rather than approximate, so a dash there is deliberate. Hover a dash for the reason.${spansGap ? ` <b>Windows reaching before ${esc(gap.as_of)} include the ${gap.gap_days_before}-day stretch where the holdings were carried forward unchanged</b>, so the longer periods reflect a book that was not rebalanced through it.` : ''}</p></div>`;
+  })();
+
   // ---- data quality ----
   const offSum = integ.filter(i => i.weight_off);
   const gaps = integ.filter(i => n(i.gap_days_before) !== null && +i.gap_days_before > 60);
@@ -1181,7 +1218,7 @@ function modelDashboard(m) {
 
   return `<p class="sub">Each holding's weight splits evenly across the factors it is long. Shorts are tallied separately, so they do not sum with the pie. Classify the unclassified positions and press Update to refresh.</p>
    ${repSaveError ? `<div class="card" style="margin-bottom:18px;border-left:3px solid var(--neg)"><p style="margin:0">${esc(repSaveError)}</p></div>` : ''}
-   ${dqCard}${statsCard}${allocGrid}${contribCard}${ddCard}
+   ${dqCard}${statsCard}${allocGrid}${contribCard}${ddCard}${trailingCard}
    <details style="margin-top:22px;font-size:13px;color:var(--muted)">
      <summary style="cursor:pointer;color:var(--text)">The classification matrix</summary>
      <table style="margin-top:10px"><thead><tr><th>Asset class</th><th>Growth</th><th>Inflation</th><th>Cost of liquidity</th></tr></thead><tbody>
