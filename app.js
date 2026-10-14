@@ -100,7 +100,7 @@ async function load() {
     qSoft(sb.from('holding_contributions').select('strategy_id,security_id,as_of,weight,risk_share,risk_ratio,corr_to_rest,max_corr,closest_peer_id,verdict,rationale').order('as_of', { ascending: false }), 'holding contributions'),
     qSoft(sb.from('stress_scenarios').select('id,slug,name,description,shocks').order('sort_order'), 'stress scenarios'),
     qSoft(sb.from('strategy_stress_results').select('strategy_id,scenario_id,as_of,factor_score,coverage,n_windows,mean_return,worst_return,best_return,replay_coverage,windows').order('as_of', { ascending: false }), 'stress results'),
-    qSoft(sb.from('strategy_performance').select('strategy_id,period,as_of,start_date,end_date,portfolio_return,peer_benchmark_return,policy_benchmark_return,coverage,max_drawdown,peer_max_drawdown,gold_return,btc_return,weighted_expense_ratio,expense_coverage').order('as_of', { ascending: false }), 'performance'),
+    qSoft(sb.from('strategy_performance').select('strategy_id,period,as_of,start_date,end_date,portfolio_return,peer_benchmark_return,policy_benchmark_return,coverage,max_drawdown,peer_max_drawdown,gold_return,btc_return,weighted_expense_ratio,expense_coverage,cpi_return,cpi_window_start,cpi_window_end,model_return_cpi_window').order('as_of', { ascending: false }), 'performance'),
     qSoft(sb.from('strategy_attribution').select('strategy_id,period,as_of,asset_class_id,w_portfolio,w_benchmark,r_portfolio,r_benchmark,contribution,allocation_effect,selection_effect,interaction_effect,attributable').order('as_of', { ascending: false }), 'attribution'),
     qSoft(sb.from('speed_limit_readings').select('as_of,category,score,light,weight,n_calls,n_recorded,target_beta_low,target_beta_high,sign_label').order('as_of', { ascending: false }), 'speed limit'),
     qSoft(sb.from('strategy_speed_limit').select('strategy_id,as_of,actual_beta,r_squared,n_obs,target_low,target_high,light,note').order('as_of', { ascending: false }), 'model speed limit'),
@@ -533,8 +533,8 @@ function stan() {
   const riskTable = `<div class="card" style="margin-bottom:14px"><h2>Model Surveillance</h2>
    <div style="overflow-x:auto"><table style="min-width:1040px"><thead><tr>
      <th>Model</th><th class="num">Cash</th><th>Beta vs band</th><th class="num">Beta vs bench</th>
-     <th class="num">Top-3 risk</th><th class="num">YTD USD</th><th class="num">vs Gold</th>
-     <th class="num">vs BTC</th><th class="num">vs Bench</th><th class="num">Expense</th></tr></thead><tbody>
+     <th class="num">Top-3 risk</th><th class="num">YTD</th><th class="num">vs CPI</th>
+     <th class="num">vs Gold</th><th class="num">vs BTC</th><th class="num">vs Bench</th></tr></thead><tbody>
    ${rows.map(r => {
      const p = (D.perfByStrategy?.[r.m.id] || []).find(x => x.period === 'YTD') || null;
      const num = v => v === null || v === undefined ? null : +v;
@@ -543,8 +543,10 @@ function stan() {
      const gr = p ? num(p.gold_return) : null;
      const btc = p ? num(p.btc_return) : null;
      const cash = (r.m.byClass.find(c => c[0] === 'cash') || [0, 0])[1];
-     const exp = p ? num(p.weighted_expense_ratio) : null;
-     const expCov = p ? num(p.expense_coverage) : null;
+     // The CPI leg and the model measured over the SAME, shorter window -- never portfolio_return
+     // divided by cpi_return, which would be a nine-month return over an eight-month price level.
+     const cpi = p ? num(p.cpi_return) : null;
+     const mCpi = p ? num(p.model_return_cpi_window) : null;
      const b = r.beta;
      const bandState = !b || !b.actual_beta ? null
        : b.target_low === null ? null
@@ -556,19 +558,20 @@ function stan() {
           : !b.light ? `<span class="chip" title="${esc(b.note || '')}">unrated</span>`
           : `<span title="${esc([b.note, b.target_low === null ? '' : `Band ${(+b.target_low).toFixed(2)}×–${(+b.target_high).toFixed(2)}×`].filter(Boolean).join(' · '))}">
               <b style="font-variant-numeric:tabular-nums;color:${LIGHT_COLOR[b.light]}">${b.actual_beta === null ? '–' : (+b.actual_beta).toFixed(2) + '×'}</b>
-              <br><small>${lightDot(b.light, 8)} <span style="color:${LIGHT_COLOR[b.light]}">${bandState || b.light}</span>${b.target_low === null ? '' : `<span style="color:var(--muted)"> of ${(+b.target_low).toFixed(2)}–${(+b.target_high).toFixed(2)}</span>`}</small></span>`}</td>
+              <br><small style="white-space:nowrap">${lightDot(b.light, 8)} <span style="color:${LIGHT_COLOR[b.light]}">${bandState || b.light}</span>${b.target_low === null ? '' : `<span style="color:var(--muted)"> ${(+b.target_low).toFixed(2)}–${(+b.target_high).toFixed(2)}</span>`}</small></span>`}</td>
        <td class="num" title="${b && b.note ? esc(b.note) : 'Least-squares beta against the benchmark chosen for this model'}">${b && b.actual_beta !== null ? (+b.actual_beta).toFixed(2) + '×' : '<span style="color:var(--muted)">–</span>'}${b && b.r_squared !== null ? `<br><small style="color:${+b.r_squared < 0.5 ? 'var(--neg)' : 'var(--muted)'}">R² ${(+b.r_squared).toFixed(2)}</small>` : ''}</td>
        <td class="num">${r.measured ? `<span class="click" data-go="#stan/top3-${esc(r.m.id)}" style="cursor:pointer;text-decoration:underline dotted" title="Show the three largest risk contributors"><b>${(r.top3Risk * 100).toFixed(0)}%</b></span><br><small style="color:var(--muted)">on ${(r.top3Wt * 100).toFixed(0)}% wt</small>` : '<span style="color:var(--muted)">–</span>'}</td>
-       ${perfCell(mr, 'Year-to-date return in USD, target weights')}
+       ${perfCell(mr, 'Year-to-date return, target weights, gross of fees')}
+       ${perfCell(vsNumeraire(mCpi, cpi), cpi === null
+          ? 'No CPI reading covers this window. Check that the macro feed is still running.'
+          : `Model ${(mCpi * 100).toFixed(1)}% against CPI ${(cpi * 100).toFixed(1)}% over ${p.cpi_window_start} to ${p.cpi_window_end} — a SHORTER window than the YTD beside it, because CPI is monthly and published in arrears. Both legs run over the same dates.`)}
        ${perfCell(vsNumeraire(mr, gr), gr === null ? 'No gold price for this window' : `Model ${((mr || 0) * 100).toFixed(1)}% against gold ${(gr * 100).toFixed(1)}% — the model measured in gold terms`)}
        ${perfCell(vsNumeraire(mr, btc), btc === null ? 'No BTC price for this window' : `Model ${((mr || 0) * 100).toFixed(1)}% against bitcoin ${(btc * 100).toFixed(1)}% — the model measured in BTC terms`)}
        ${perfCell(mr !== null && br !== null ? mr - br : null, br === null ? 'No benchmark return for this window' : `Model ${((mr || 0) * 100).toFixed(1)}% against its benchmark ${(br * 100).toFixed(1)}%`)}
-       <td class="num">${exp !== null ? (exp * 100).toFixed(2) + '%'
-          : `<span style="color:var(--muted)" title="No expense-ratio source is connected${expCov ? `; ${(expCov * 100).toFixed(0)}% of weight has one` : ''}. Supply them from the fund fact sheets and this computes itself — it is never estimated.">–</span>`}</td>
      </tr>`;
    }).join('')}
    </tbody></table></div>
-   <p class="note"><b>Beta vs band</b> says whether the model sits inside, below or above the band the master Speed Limit calls for; <b>beta vs bench</b> is the figure itself, against that model's own benchmark — read R² first, since below 0.5 the regression is not describing risk posture and the band cell shows "unrated" instead. <b>Top-3 risk</b> is the share of model volatility carried by its three largest contributors, against the weight those same three hold; click it for the names. Performance is year-to-date on <b>target weights for every model</b>, gross of fees, so the eight are comparable with each other. That is not the same number a model's own drawer shows: where a model has a dated holdings history its drawer measures what it actually held, and the two will differ — for Balanced Core by several points. Cash is priced as BIL rather than dropped, which it used to be. <b>vs Gold</b> and <b>vs BTC</b> restate the model in that numeraire — (1+model)÷(1+numeraire)−1 — using GLD for gold and Tiingo spot for bitcoin, so green means the model held its value against that yardstick rather than merely rose. <b>Expense</b> is withheld unless every holding has a ratio: there is no connected source for them, a partial average would understate what a model costs, and estimating one would flow straight into a net-of-fee conversation.</p></div>`;
+   <p class="note"><b>Beta vs band</b> says whether the model sits inside, below or above the band the master Speed Limit calls for; <b>beta vs bench</b> is the figure itself, against that model's own benchmark — read R² first, since below 0.5 the regression is not describing risk posture and the band cell shows "unrated" instead. <b>Top-3 risk</b> is the share of model volatility carried by its three largest contributors, against the weight those same three hold; click it for the names. Performance is year-to-date on <b>target weights for every model</b>, gross of fees, so the eight are comparable with each other. That is not the same number a model's own drawer shows: where a model has a dated holdings history its drawer measures what it actually held, and the two will differ — for Balanced Core by several points. Cash is priced as BIL rather than dropped, which it used to be. <b>vs CPI</b>, <b>vs Gold</b> and <b>vs BTC</b> restate the model in that numeraire — (1+model)÷(1+numeraire)−1 — so green means the model held its value against that yardstick rather than merely rose. Gold is GLD and bitcoin is Tiingo spot, both over the model's own window. <b>CPI is different and the cell is honest about it:</b> headline CPI is monthly and published in arrears, so the newest reading always covers a month that ended some time ago. Rather than divide a longer investment return by a shorter inflation one — which would quietly flatter every model here — the comparison runs over the months CPI has actually reported, with the model re-measured over exactly those dates. Hover the cell for the window.</p></div>`;
 
   // Every position any model has flagged, gathered in one place so a name appearing in several
   // models is obvious — that is the concentration that matters at desk level, not model level.
