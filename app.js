@@ -1115,8 +1115,8 @@ function annie() {
         </div></div>`;
     };
 
-    // The last five completed trades, oldest on the left so the newest sits where the eye lands.
-    // Taken straight from the ledger rather than stored: it is five rows of a table already here,
+    // The last ten completed trades, oldest on the left so the newest sits where the eye lands.
+    // Taken straight from the ledger rather than stored: it is ten rows of a table already here,
     // and a stored copy would be one more thing that can disagree with the journal below it.
     const streakBox = list => {
       const chips = list.map(t => {
@@ -1125,9 +1125,9 @@ function annie() {
         const tip = `${t.ticker} · opened ${t.entry_date}\n${won ? 'Win' : 'Loss'} ${r === null ? '—' : (r >= 0 ? '+' : '') + (r * 100).toFixed(1) + '%'} · closed ${t.exit_date}`;
         return `<span class="stk ${won ? 'w' : 'l'}" data-tip="${esc(tip)}">${won ? 'W' : 'L'}</span>`;
       }).join('');
-      return `<div class="card kpi" title="The last five completed trades, oldest on the left. Hover one for the ticker, the date it was opened and what it returned.">
+      return `<div class="card kpi" title="The last ten completed trades, oldest on the left. Hover one for the ticker, the date it was opened and what it returned.">
         <span class="eyebrow">Current streak</span>
-        <div style="display:flex;gap:5px;margin:6px 0 4px">${chips || '<span style="color:var(--muted);font-size:22px">—</span>'}</div>
+        <div style="display:flex;gap:5px;margin:6px 0 4px;flex-wrap:wrap">${chips || '<span style="color:var(--muted);font-size:22px">—</span>'}</div>
         <small>${list.length ? 'last ' + list.length + ', oldest first' : 'no closed trades'}</small></div>`;
     };
 
@@ -1138,7 +1138,7 @@ function annie() {
     const streak = trades
       .filter(t => t.status === 'closed' && t.total_return !== null && (isOverall || t.strategy_id === annieModel))
       .sort((a, b) => String(a.exit_date).localeCompare(String(b.exit_date)))
-      .slice(-5);
+      .slice(-10);
     const hold = !s ? null : isOverall ? (() => { const v = stats.map(x => n(x.avg_hold_days)).filter(x => x !== null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; })() : n(s.avg_hold_days);
     const ytd = !s ? null : isOverall ? stats.reduce((a, x) => a + (n(x.n_trades_ytd) || 0), 0) : n(s.n_trades_ytd);
     const ba = s ? n(s.batting_average) : null;
