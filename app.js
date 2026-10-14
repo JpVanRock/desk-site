@@ -206,10 +206,14 @@ const factorHeads = () => D.factors.map(f => `<th class="num">${esc(fname(f))}</
 
 function route() {
   if (!D) return;
-  const [page, arg] = (location.hash || '#overview').slice(1).split('/');
+  let [page, arg] = (location.hash || '#overview').slice(1).split('/');
+  // #decisions was this page's hash before it was named after the agent who writes it. Anything
+  // already bookmarked or pasted into a note still has to land, so the old name redirects rather
+  // than falling through to Overview and looking like the page was deleted.
+  if (page === 'decisions') { location.replace('#annie'); return; }
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
-  const pages = { overview, stan, markets, views: viewsPage, signals, playground, agents, decisions, briefs, inbox, status, sources };
+  const pages = { overview, stan, markets, views: viewsPage, signals, playground, agents, annie, briefs, inbox, status, sources };
   $('#app').innerHTML = (pages[page] || overview)();
   if (page === 'stan' && arg) {
     // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
@@ -841,7 +845,7 @@ function outputsFor(agent, kinds) {
   return (D.outputs || []).filter(o => o.agent === agent && (!kinds || kinds.includes(o.kind)));
 }
 
-function decisions() {
+function annie() {
   const journal = outputsFor('annie', ['decision_journal']);
   const open = outputsFor('annie', ['open_decisions']);
   const stats = outputsFor('annie', ['decision_stats']);
@@ -849,7 +853,7 @@ function decisions() {
    <div class="card" style="margin-bottom:14px"><h2>${esc(title)}</h2>
     ${list.length ? list.map(o => `<div style="margin-bottom:10px"><div class="eyebrow">as of ${esc(o.as_of)}</div>${md(o.body_md)}</div>`).join('')
                   : `<div class="empty">${esc(emptyMsg)}</div>`}</div>`;
-  return `<span class="eyebrow">Decision quality</span><h1>Decisions</h1>
+  return `<span class="eyebrow">Decision quality</span><h1>Annie</h1>
    <p class="sub">Annie's journal, the decisions still open, and how the desk's calls have actually turned out.</p>
    ${sec('Open decisions', open, 'Nothing open. Annie records a decision before it is made, not after.')}
    ${sec('Decision journal', journal, 'No entries yet. The journal is append-only and is written at the time of a decision, with the dashboard snapshot that informed it.')}
