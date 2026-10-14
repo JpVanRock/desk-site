@@ -503,14 +503,16 @@ const FA_MATRIX = {
 // inferred label is not a confirmed one.
 const FA_UNCONFIRMED = new Set(['QCFIX', 'CBYYX', 'BDMIX', 'QDSIX', 'PRWCX']);
 const FA_FACTORS = ['growth', 'inflation', 'liquidity'];
-// The six splits the owner can choose. Each sets where the holding is LONG and nothing else.
+// The asset-class look-throughs the owner can choose. Expressed as a mix of CLASSES, not of
+// factors — that is what lets the short tally be derived, since shorts belong to a class and a
+// factor share does not name one. Longs, shorts and loadings are then all weighted blends of
+// FA_MATRIX rows, so nothing is assumed beyond the matrix itself.
+// Keep in step with jobs/compute-model-reporting.mjs.
 const SPLIT_OPTIONS = [
-  { key: 'growth',          label: 'Growth',                       mix: { growth: 1.00 } },
-  { key: 'inflation',       label: 'Inflation',                    mix: { inflation: 1.00 } },
-  { key: 'liquidity',       label: 'Liquidity',                    mix: { liquidity: 1.00 } },
-  { key: 'growth60_liq40',  label: '60% Growth / 40% Liquidity',   mix: { growth: 0.60, liquidity: 0.40 } },
-  { key: 'growth50_infl50', label: '50% Growth / 50% Inflation',   mix: { growth: 0.50, inflation: 0.50 } },
-  { key: 'liq80_growth20',  label: '80% Liquidity / 20% Growth',   mix: { liquidity: 0.80, growth: 0.20 } },
+  { key: 'eq60_fi40',      label: '60% Equity / 40% Fixed Income',                    mix: { equities: 0.60, bonds: 0.40 } },
+  { key: 'eq60_fi20_cm20', label: '60% Equity / 20% Fixed Income / 20% Commodities',  mix: { equities: 0.60, bonds: 0.20, commodities_real_assets: 0.20 } },
+  { key: 'eq20_fi80',      label: '20% Equity / 80% Fixed Income',                    mix: { equities: 0.20, bonds: 0.80 } },
+  { key: 'eq90_cm10',      label: '90% Equity / 10% Commodities',                     mix: { equities: 0.90, commodities_real_assets: 0.10 } },
 ];
 const SPLIT_BY_KEY = Object.fromEntries(SPLIT_OPTIONS.map(o => [o.key, o]));
 
@@ -525,9 +527,15 @@ function computeFactorAllocation(holdings, classOf, overrideBySec) {
     const w = +h.weight;
     const ov = h.security_id ? overrideBySec[h.security_id] : null;
     if (ov && SPLIT_BY_KEY[ov.split]) {
-      // An owner-chosen split wins outright. It says where the holding is long and nothing more,
-      // so it deliberately adds nothing to the short tally.
-      for (const [f, share] of Object.entries(SPLIT_BY_KEY[ov.split].mix)) longs[f] += w * share;
+      // A look-through is a blend of real asset classes, so it earns both sides of the matrix:
+      // the long pie AND the short tally, each weighted by the class share.
+      for (const [cls, share] of Object.entries(SPLIT_BY_KEY[ov.split].mix)) {
+        const row = FA_MATRIX[cls];
+        if (!row) continue;
+        const lf = FA_FACTORS.filter(f => row[f] === 'L');
+        for (const f of lf) longs[f] += w * share / lf.length;
+        for (const f of FA_FACTORS) if (row[f] === 'S') shorts[f] += w * share;
+      }
       resolved.push({ ...h, split: ov.split });
       continue;
     }
@@ -705,7 +713,7 @@ function reporting() {
      <div style="display:flex;gap:22px;flex-wrap:wrap">${panel('actual', A, asOf)}${panel('target', T, '')}</div>
      <h2 style="font-size:13px;margin-top:16px">Classify the unclassified</h2>
      ${classifyTable}
-     <p class="note">A holding's weight splits evenly across the factors it is <b>long</b>, so the pie sums to 100%. Its <b>full</b> weight counts against each factor it is short, and the short tally is separate — it never sums with the pie, and only the largest short is shown. A holding with no <i>confirmed</i> asset class carries no exposure and sits in the unclassified slice; choosing a split above moves it into the pie immediately, for this model and every other one holding it. ${overriddenWeight > 0 ? `<b>${pct(overriddenWeight)} of the current snapshot is in the pie by an assigned split rather than a confirmed asset class.</b> ` : ''}<b>An assigned split sets the long side only.</b> None of the six options says what the holding is <i>short</i>, so a classified holding still contributes nothing to the short tally — which therefore stays understated by that weight until shorts are decided separately. Cost of liquidity means exposure to higher future capital costs; fixed income is treated as long it, the single documented override to the framework chart.</p></div>`;
+     <p class="note">A holding's weight splits evenly across the factors it is <b>long</b>, so the pie sums to 100%. Its <b>full</b> weight counts against each factor it is short, and the short tally is separate — it never sums with the pie, and only the largest short is shown. A holding with no <i>confirmed</i> asset class carries no exposure and sits in the unclassified slice; choosing a split above moves it into the pie immediately, for this model and every other one holding it. ${overriddenWeight > 0 ? `<b>${pct(overriddenWeight)} of the current snapshot is in the pie by an assigned split rather than a confirmed asset class.</b> ` : ''}An assigned split is an <b>asset-class look-through</b> — "this holding behaves like 60% equity and 40% fixed income" — so it earns both sides of the matrix: it joins the pie <i>and</i> the short tally, each weighted by its class shares. Nothing is inferred beyond the matrix itself. Cost of liquidity means exposure to higher future capital costs; fixed income is treated as long it, the single documented override to the framework chart.</p></div>`;
   })();
 
   // ---- 3. contribution ----
