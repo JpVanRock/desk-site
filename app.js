@@ -74,7 +74,12 @@ async function qSoft(query, label) {
 function latestBy(rows, keyFn) { const m = new Map(); for (const r of rows) { const k = keyFn(r); const p = m.get(k); if (!p || r.as_of > p.as_of) m.set(k, r); } return m; }
 
 async function load() {
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn] = await Promise.all([
+  // CAUTION: this is POSITIONAL destructuring over a long Promise.all. A query inserted
+  // anywhere but the end silently shifts every binding after it, and the page still renders
+  // — it just renders the wrong table's rows. That happened: five queries added before the
+  // signal-to-noise one made the statistics block read contribution rows. The rule is append
+  // only: add the query at the END of the array and its name at the END of this list.
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role')),
@@ -103,6 +108,11 @@ async function load() {
     qSoft(sb.from('trigger_hits').select('as_of,headline,value,rule_id,security_id,strategy_id').order('as_of', { ascending: false }).limit(200), 'trigger hits'),
     qSoft(sb.from('trigger_rules').select('id,name,kind,enabled'), 'trigger rules'),
     qSoft(sb.from('source_signal_to_noise').select('source,category,window_label,n_scored,hit_rate,signal,noise,signal_to_noise,too_few_to_judge'), 'signal to noise'),
+    qSoft(sb.from('model_period_stats').select('strategy_id,period,as_of,start_date,end_date,model_return,benchmark_return,max_drawdown,benchmark_max_drawdown,upside_capture,downside_capture,beta_sp500,beta_r2,dividend_yield,min_coverage,window_starts_in_gap,unavailable_reason,method_note').order('as_of', { ascending: false }), 'model period stats'),
+    qSoft(sb.from('model_contribution').select('strategy_id,period,as_of,ticker,name_raw,start_weight,end_weight,period_return,contribution_bps,status,priced').order('as_of', { ascending: false }), 'model contribution'),
+    qSoft(sb.from('model_factor_allocation').select('strategy_id,as_of,basis,long_growth,long_inflation,long_liquidity,short_growth,short_inflation,short_liquidity,unclassified,detail').order('as_of', { ascending: false }), 'model factor allocation'),
+    qSoft(sb.from('model_value_series').select('strategy_id,as_of,value,benchmark_value,coverage').order('as_of', { ascending: true }), 'model value series'),
+    qSoft(sb.from('holdings_snapshot_integrity').select('strategy_id,as_of,n_holdings,weight_total,weight_off,n_unmatched,n_suspect_names,gap_days_before').order('as_of', { ascending: true }), 'holdings integrity'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -165,7 +175,9 @@ async function load() {
     modelSpeedLimit: newest(modelSpeed),
     rocBoard: newest(rocBoard),
     triggerHits: (trigHits || []).map(h => ({ ...h, rule_name: (trigRules || []).find(r => r.id === h.rule_id)?.name || null })),
-    signalToNoise: stn || [], softFailures: softFailures.slice() };
+    signalToNoise: stn || [], softFailures: softFailures.slice(),
+    periodStats: periodStats || [], contribution: contribution || [],
+    factorAlloc: factorAlloc || [], valueSeries: valueSeries || [], snapIntegrity: snapIntegrity || [] };
 }
 
 // ---------- Views ----------
@@ -183,7 +195,7 @@ function route() {
   const [page, arg] = (location.hash || '#overview').slice(1).split('/');
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
-  const pages = { overview, models, markets, views: viewsPage, signals, playground, agents, decisions, briefs, inbox, status, sources };
+  const pages = { overview, models, markets, views: viewsPage, signals, reporting, playground, agents, decisions, briefs, inbox, status, sources };
   $('#app').innerHTML = (pages[page] || overview)();
   if (page === 'models' && arg) openModel(arg);
   if (page === 'markets' && arg) openChart(arg);
@@ -471,6 +483,167 @@ function briefs() {
    ${list('Morning briefs', morning, 'No brief yet. Run the morning-brief skill, then jobs/sync-agent-outputs.mjs.')}
    ${list('Sunday primers', primers, 'No primer yet. The primer answers "what do we care about this week and why?"')}
    <p class="note">Briefs synthesise Adam, Stan, Megan and Annie. Sven's and Gail's data is deliberately excluded unless the owner explicitly taps it in for a specific question — that isolation is a standing rule, not an oversight, and a tap-in is recorded in their tap-ins log when it happens.</p>`;
+}
+
+// ---------- Reporting: the three sections from docs/claude-code-handoff.md ----------
+//
+// The governing rule for this page: never show a number that was not computed from real data.
+// Where an input is missing, the row says what is missing and what would fill it. Every figure
+// carries its as-of date, and the reconstruction caveat is printed with the statistics rather
+// than buried in a tooltip, because a return that looks official and is not is the worst
+// failure available here.
+let repPeriod = '1YR';
+let repModelId = null;
+const REP_PERIODS = ['1W', '1M', '3M', '6M', 'YTD', '1YR', '3YR', '5YR', '10YR', 'ALL'];
+
+// Drawdown within a window, peak reset at the window start. This matches the tested prototype
+// engine: the series [100, 110, 99, 120] must give [0%, 0%, -10%, 0%].
+function drawdownSeries(points, get) {
+  let peak = -Infinity;
+  return points.map(p => { const v = get(p); if (v === null || v === undefined) return null; if (v > peak) peak = v; return v / peak - 1; });
+}
+
+function reporting() {
+  const withHistory = [...new Set((D.valueSeries || []).map(v => v.strategy_id))];
+  if (!withHistory.length) {
+    return `<span class="eyebrow">Reporting</span><h1>Reporting</h1>
+     <div class="card"><div class="empty">No model has a dated holdings history loaded yet. Load one with jobs/load-holdings-history.mjs, then run jobs/compute-model-reporting.mjs.</div></div>`;
+  }
+  const m = D.models.find(x => x.id === repModelId) || D.models.find(x => withHistory.includes(x.id)) || D.models[0];
+  repModelId = m.id;
+
+  const stats = (D.periodStats || []).filter(r => r.strategy_id === m.id);
+  const stat = stats.find(r => r.period === repPeriod);
+  const series = (D.valueSeries || []).filter(v => v.strategy_id === m.id);
+  const contrib = (D.contribution || []).filter(c => c.strategy_id === m.id && c.period === repPeriod);
+  const fa = (D.factorAlloc || []).filter(f => f.strategy_id === m.id);
+  const integ = (D.snapIntegrity || []).filter(i => i.strategy_id === m.id);
+  const n = v => v === null || v === undefined ? null : +v;
+  const pc = (v, d = 2) => v === null ? '<span style="color:var(--muted)">–</span>'
+    : `<span style="color:${v >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(v >= 0 ? '+' : '') + (v * 100).toFixed(d)}%</span>`;
+  const plain = (v, d = 2) => v === null ? '<span style="color:var(--muted)">–</span>' : (v * 100).toFixed(d) + '%';
+
+  const tab = k => {
+    const s = stats.find(r => r.period === k);
+    const dead = s && s.unavailable_reason;
+    return `<span class="click" data-repperiod="${k}" title="${dead ? esc(s.unavailable_reason) : ''}" style="cursor:pointer;padding:3px 9px;border-radius:6px;font-size:12px;background:${repPeriod === k ? 'var(--panel2)' : 'transparent'};color:${repPeriod === k ? 'var(--text)' : dead ? 'var(--muted)' : 'var(--muted)'};${dead ? 'text-decoration:line-through dotted;opacity:.6' : ''}">${k}</span>`;
+  };
+  const modelTabs = D.models.filter(x => withHistory.includes(x.id)).map(x =>
+    `<span class="click" data-repmodel="${esc(x.id)}" style="cursor:pointer;padding:4px 10px;border-radius:6px;font-size:12px;background:${x.id === m.id ? 'var(--panel2)' : 'transparent'};color:${x.id === m.id ? 'var(--text)' : 'var(--muted)'}">${esc(x.name)}</span>`).join('');
+
+  // ---- data quality, from the integrity view ----
+  const offSum = integ.filter(i => i.weight_off);
+  const gaps = integ.filter(i => n(i.gap_days_before) !== null && +i.gap_days_before > 60);
+  const suspect = integ.filter(i => +i.n_suspect_names > 0);
+  const unmatched = integ.filter(i => +i.n_unmatched > 0);
+  const dqItems = [
+    gaps.length ? `<li><b>${gaps.map(g => `${esc(g.as_of)} (${g.gap_days_before} days since the previous snapshot)`).join(', ')}</b> — the history has a hole. Any window opening inside it falls back to the snapshot before it, and the period below says so when that happens. Periods longer than the history cannot be built at all.</li>` : '',
+    offSum.length ? `<li><b>${offSum.length} snapshot${offSum.length === 1 ? '' : 's'} do not sum to 100%</b>: ${offSum.map(o => `${esc(o.as_of)} at ${(+o.weight_total * 100).toFixed(2)}%`).join(', ')}. Loaded exactly as exported and <i>not</i> corrected — this is a discrepancy in the source records, not a rounding artefact to tidy away.</li>` : '',
+    suspect.length ? `<li><b>Editorial text in the name field</b> on ${suspect.length} snapshot${suspect.length === 1 ? '' : 's'}. At least one holding's name in the custodian export contains AI-generated commentary rather than a fund name. Names are shown verbatim below so this stays visible; other names in the same file may be affected.</li>` : '',
+    unmatched.length ? `<li><b>${unmatched.length} snapshot${unmatched.length === 1 ? '' : 's'} contain a ticker with no matching security</b>, so it carries no price and no factor exposure.</li>` : '',
+  ].filter(Boolean).join('');
+  const dqCard = `<div class="card" style="margin-bottom:14px;border-left:3px solid var(--warn)">
+    <h2>Data quality <span class="chip">${[gaps.length, offSum.length, suspect.length, unmatched.length].filter(x => x).length} issue type${[gaps.length, offSum.length, suspect.length, unmatched.length].filter(x => x).length === 1 ? '' : 's'}</span></h2>
+    ${dqItems ? `<ul style="margin:6px 0 0 18px;line-height:1.6">${dqItems}</ul>` : '<div class="empty">No integrity problems found in the loaded snapshots.</div>'}
+    <p class="note">These are reported, never silently repaired. ${integ.length} snapshots loaded${integ.length ? `, ${esc(integ[0].as_of)} to ${esc(integ.at(-1).as_of)}` : ''}.</p></div>`;
+
+  // ---- 1. model statistics ----
+  const statsCard = `<div class="card" style="margin-bottom:14px"><h2>Model statistics</h2>
+   <div style="margin-bottom:10px">${REP_PERIODS.map(tab).join('')}</div>
+   ${!stat ? '<div class="empty">No statistics computed for this period yet. Run jobs/compute-model-reporting.mjs.</div>'
+    : stat.unavailable_reason ? `<div class="empty">${esc(stat.unavailable_reason)}</div>`
+    : `<p class="sub" style="margin-top:0">${esc(stat.start_date)} to ${esc(stat.end_date)}${n(stat.min_coverage) !== null && n(stat.min_coverage) < 0.999 ? ` · computed over ${(n(stat.min_coverage) * 100).toFixed(0)}% of model weight at the thinnest point` : ''}${stat.window_starts_in_gap ? ' · <b style="color:var(--warn)">window start fell inside the history gap and was pulled back to the prior snapshot</b>' : ''}</p>
+   <div class="kpis">
+    <div class="card kpi"><span class="eyebrow">Total return</span><b>${pc(n(stat.model_return))}</b><small>${esc(repPeriod)}, gross of fees</small></div>
+    <div class="card kpi"><span class="eyebrow">Benchmark</span><b>${pc(n(stat.benchmark_return))}</b><small>${esc(m.benchmarkLabel || 'peer benchmark')}</small></div>
+    <div class="card kpi"><span class="eyebrow">Max drawdown</span><b>${pc(n(stat.max_drawdown))}</b><small>bench ${plain(n(stat.benchmark_max_drawdown), 1)}</small></div>
+    <div class="card kpi"><span class="eyebrow">Upside capture</span><b>${n(stat.upside_capture) === null ? '–' : (n(stat.upside_capture) * 100).toFixed(0) + '%'}</b><small>vs benchmark</small></div>
+    <div class="card kpi"><span class="eyebrow">Downside capture</span><b>${n(stat.downside_capture) === null ? '–' : (n(stat.downside_capture) * 100).toFixed(0) + '%'}</b><small>vs benchmark</small></div>
+    <div class="card kpi"><span class="eyebrow">Beta vs S&amp;P 500</span><b>${n(stat.beta_sp500) === null ? '–' : n(stat.beta_sp500).toFixed(2) + '×'}</b><small>R² ${n(stat.beta_r2) === null ? '–' : n(stat.beta_r2).toFixed(2)}</small></div>
+    <div class="card kpi"><span class="eyebrow">Dividend yield</span><b style="color:var(--muted)">not available</b><small>no instrument-level yield source</small></div>
+   </div>
+   <p class="note"><b>These are reconstructed, not the firm's reported figures.</b> ${esc(stat.method_note || '')} Dividend yield is blank because nothing in the data can produce it; connecting an instrument-level yield source would fill it. Confirm the return, capture and beta conventions against how the firm reports before any of this goes to a client.</p>`}
+  </div>`;
+
+  // ---- 2. factor allocation ----
+  const faCard = (() => {
+    if (!fa.length) return `<div class="card" style="margin-bottom:14px"><h2>Factor allocation</h2><div class="empty">Not computed yet. Run jobs/compute-model-reporting.mjs.</div></div>`;
+    const panel = basis => {
+      const r = fa.find(x => x.basis === basis);
+      if (!r) return `<div style="flex:1;min-width:260px"><div class="eyebrow">${esc(basis)}</div><div class="empty">No ${esc(basis)} holdings.</div></div>`;
+      const parts = [
+        { label: 'Growth', v: +r.long_growth, color: 'var(--pos)' },
+        { label: 'Inflation', v: +r.long_inflation, color: 'var(--warn)' },
+        { label: 'Liquidity', v: +r.long_liquidity, color: 'var(--accent)' },
+        { label: 'Unclassified', v: +r.unclassified, color: 'var(--muted)' },
+      ].filter(p => p.v > 0);
+      const shorts = [['Growth', +r.short_growth], ['Inflation', +r.short_inflation], ['Liquidity', +r.short_liquidity]];
+      const maxShort = Math.max(...shorts.map(s => s[1]));
+      const top = shorts.filter(s => Math.abs(s[1] - maxShort) < 1e-9 && maxShort > 0);
+      const un = (r.detail && r.detail.unclassified_tickers) || [];
+      return `<div style="flex:1;min-width:260px">
+        <div class="eyebrow">${esc(basis)}${basis === 'actual' ? ' · ' + esc(r.as_of) : ''}</div>
+        ${donutSvg(parts, 170)}
+        <table style="margin:8px 0 0"><tbody>
+        ${parts.map(p => `<tr><td><b style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${p.color};margin-right:7px"></b>${p.label}</td><td class="num">${pct(p.v)}</td></tr>`).join('')}
+        </tbody></table>
+        <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)">
+         <div class="eyebrow">Largest short</div>
+         ${maxShort > 0 ? `<b style="color:var(--neg);font-size:15px">${top.map(t => t[0]).join(' and ')} ${pct(maxShort)}</b>` : '<span style="color:var(--muted)">none</span>'}
+        </div>
+        ${un.length ? `<p class="note" style="margin-top:8px">Unclassified: ${un.map(esc).join(', ')}</p>` : ''}
+      </div>`;
+    };
+    return `<div class="card" style="margin-bottom:14px"><h2>Factor allocation</h2>
+     <div style="display:flex;gap:22px;flex-wrap:wrap">${panel('actual')}${panel('target')}</div>
+     <p class="note">A holding's weight splits evenly across the factors it is <b>long</b>, so the pie sums to 100%. Its <b>full</b> weight counts against each factor it is short, and the short tally is separate — it never sums with the pie, and only the largest short is shown. Unclassified weight carries no factor exposure and is shown rather than hidden, because it measures how much of the model is not yet understood: a holding is unclassified when its asset class is not <i>confirmed</i>, which is why positions this desk's correlation classifier has labelled still appear here. Cost of liquidity means exposure to higher future capital costs; fixed income is treated as long it, the single documented override to the framework chart.</p></div>`;
+  })();
+
+  // ---- 3. contribution ----
+  const cRows = contrib.slice().sort((a, b) => (n(b.contribution_bps) ?? -1e9) - (n(a.contribution_bps) ?? -1e9));
+  const totalBps = cRows.reduce((s, c) => s + (n(c.contribution_bps) || 0), 0);
+  const unpriced = cRows.filter(c => !c.priced);
+  const SUSPECT = /can be simplified to|as an AI|\*\*/i;
+  const contribCard = `<div class="card" style="margin-bottom:14px"><h2>Contribution summary <span class="chip">${esc(repPeriod)}</span></h2>
+   ${stat && stat.unavailable_reason ? `<div class="empty">${esc(stat.unavailable_reason)}</div>`
+    : !cRows.length ? '<div class="empty">No contribution rows for this period.</div>'
+    : `<table><thead><tr><th>Ticker</th><th>Name</th><th class="num">Start wt</th><th class="num">Return</th><th class="num">End wt</th><th class="num">Contribution</th><th></th></tr></thead><tbody>
+   ${cRows.map(c => `<tr>
+     <td><b>${esc(c.ticker)}</b></td>
+     <td style="max-width:260px;color:var(--muted)">${SUSPECT.test(c.name_raw || '') ? `<span style="color:var(--warn)" title="This name contains AI-generated editorial text in the source export, shown verbatim">⚠ ${esc(c.name_raw)}</span>` : esc(c.name_raw || '')}</td>
+     <td class="num">${n(c.start_weight) === null ? '–' : pct(n(c.start_weight))}</td>
+     <td class="num">${c.priced ? pc(n(c.period_return)) : '<span style="color:var(--muted)" title="No price for this holding across the window">no price</span>'}</td>
+     <td class="num">${n(c.end_weight) === null ? '–' : pct(n(c.end_weight))}</td>
+     <td class="num">${n(c.contribution_bps) === null ? '<span style="color:var(--muted)">–</span>' : `<span style="color:${n(c.contribution_bps) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${n(c.contribution_bps) >= 0 ? '+' : ''}${n(c.contribution_bps).toFixed(0)} bps</span>`}</td>
+     <td>${c.status === 'added' ? '<span class="chip long">added</span>' : c.status === 'removed' ? '<span class="chip short">removed</span>' : ''}</td></tr>`).join('')}
+   <tr style="border-top:2px solid var(--line)"><td colspan="5"><b>Total</b></td><td class="num"><b>${totalBps >= 0 ? '+' : ''}${totalBps.toFixed(0)} bps</b></td><td></td></tr>
+   </tbody></table>
+   <p class="note">Contribution = start weight × period return, in basis points, on <b>actual holdings</b>. Positions added during the period start at zero weight and contribute nothing by this measure; positions sold are shown with the weight they started at. ${unpriced.length ? `<b>${unpriced.length} holding${unpriced.length === 1 ? '' : 's'} could not be priced across this window</b> and contribute nothing here — their weight is real but their return is unknown, so the total understates. ` : ''}The total is an approximation of the period return and will drift from it over long windows, because it uses starting weights and ignores the ${'rebalancing'} in between.</p>`}
+  </div>`;
+
+  // ---- 4. drawdown ----
+  const ddCard = (() => {
+    if (!series.length) return `<div class="card"><h2>Drawdown history</h2><div class="empty">No value series. Run jobs/compute-model-reporting.mjs.</div></div>`;
+    if (stat && stat.unavailable_reason) return `<div class="card"><h2>Drawdown history <span class="chip">${esc(repPeriod)}</span></h2><div class="empty">${esc(stat.unavailable_reason)}</div></div>`;
+    const from = stat ? stat.start_date : series[0].as_of;
+    const win = series.filter(p => p.as_of >= from);
+    if (win.length < 2) return `<div class="card"><h2>Drawdown history</h2><div class="empty">Not enough points inside this window to draw a line.</div></div>`;
+    const dates = win.map(p => p.as_of);
+    const mdd = drawdownSeries(win, p => +p.value);
+    const bdd = drawdownSeries(win, p => p.benchmark_value === null ? null : +p.benchmark_value);
+    return `<div class="card"><h2>Drawdown history <span class="chip">${esc(repPeriod)}</span></h2>
+     ${priceChartSvg(dates, [
+       { vals: mdd, color: 'var(--accent)', width: 1.75 },
+       { vals: bdd, color: 'var(--flat)', dash: '4,3', width: 1.2 },
+     ], 560, 220)}
+     <div class="legend" style="margin-top:8px"><span><b style="background:var(--accent)"></b>${esc(m.name)}</span><span><b style="background:var(--flat)"></b>Benchmark</span></div>
+     <p class="note">Drawdown is value divided by its running peak, minus one, computed <b>within the selected window</b> — so each period starts at 0% and a loss carried in from before the window is not shown. ${stat && stat.window_starts_in_gap ? '<b style="color:var(--warn)">The start of this window fell inside the history gap and was pulled back to the previous snapshot, so it covers more time than its label suggests.</b> ' : ''}Whether the peak should instead be carried in from before the window is an open decision.</p></div>`;
+  })();
+
+  return `<span class="eyebrow">Client reporting</span><h1>${esc(m.name)}</h1>
+   <p class="sub">Factor allocation, contribution and drawdown, computed from dated holdings and real prices.</p>
+   ${D.models.filter(x => withHistory.includes(x.id)).length > 1 ? `<div class="card" style="margin-bottom:14px"><h2>Model</h2><div style="display:flex;gap:6px;flex-wrap:wrap">${modelTabs}</div></div>` : ''}
+   ${dqCard}${statsCard}${faCard}${contribCard}${ddCard}`;
 }
 
 // ---------- Signals: the Speed Limit lights, the ROC board, and trigger hits ----------
@@ -1303,6 +1476,14 @@ document.addEventListener('click', e => { const t = e.target.closest('[data-go]'
 // Chart layer toggles re-render from the already-fetched history — no refetch, no hash change.
 // Donut and period toggles re-render the model drawer from data already loaded.
 // Playground controls: all client-side, nothing saved.
+// Reporting page controls.
+document.addEventListener('click', e => {
+  const rp = e.target.closest('[data-repperiod]'), rm = e.target.closest('[data-repmodel]');
+  if (!rp && !rm) return;
+  if (rp) repPeriod = rp.dataset.repperiod;
+  if (rm) repModelId = rm.dataset.repmodel;
+  $('#app').innerHTML = reporting();
+});
 document.addEventListener('click', e => {
   const adj = e.target.closest('[data-pgadj]'), pm = e.target.closest('[data-pgmodel]'), rs = e.target.closest('[data-pgreset]');
   if (!adj && !pm && !rs) return;
