@@ -71,6 +71,27 @@ async function qSoft(query, label) {
   try { return await q(query); }
   catch (ex) { softFailures.push(`${label}: ${ex.message}`); console.warn(`[desk] optional dataset "${label}" unavailable:`, ex.message); return []; }
 }
+// Paging read, for the one dataset that is a genuine time series rather than a per-run snapshot.
+// PostgREST caps a response at 1000 rows and signals it only in a header, so a table that crosses
+// the line comes back truncated and entirely healthy-looking. model_value_series gains a row per
+// trading day and was at 992 when this was written: without paging, the drawdown chart would have
+// started quietly losing its oldest days about a week later, with nothing to show for it.
+// `make` is a thunk because a builder cannot be re-ranged once awaited.
+async function qAllSoft(make, label) {
+  const page = 1000, out = [];
+  try {
+    for (let from = 0; ; from += page) {
+      const got = await q(make().range(from, from + page - 1));
+      out.push(...got);
+      if (got.length < page) return out;
+      if (from > 200000) throw new Error('paged past 200k rows; refusing to loop further');
+    }
+  } catch (ex) {
+    softFailures.push(`${label}: ${ex.message}`);
+    console.warn(`[desk] optional dataset "${label}" unavailable:`, ex.message);
+    return out;
+  }
+}
 function latestBy(rows, keyFn) { const m = new Map(); for (const r of rows) { const k = keyFn(r); const p = m.get(k); if (!p || r.as_of > p.as_of) m.set(k, r); } return m; }
 
 async function load() {
@@ -97,21 +118,21 @@ async function load() {
     qSoft(sb.from('source_track_record').select('source,category,n_directional,hit_rate,n_open,last_call_at').order('source'), 'source track record'),
     qSoft(sb.from('research_calls').select('id,source,category,agent,called_at,asset_class_id,direction,confidence,thesis,review_at,scored_at,actual_return,hit').order('called_at', { ascending: false }).limit(200), 'research calls'),
     qSoft(sb.from('inbox_routing_log').select('file,source,received_at,routed_to,lens,reason,status,processed_at').order('processed_at', { ascending: false }).limit(200), 'routing log'),
-    qSoft(sb.from('holding_contributions').select('strategy_id,security_id,as_of,weight,risk_share,risk_ratio,corr_to_rest,max_corr,closest_peer_id,verdict,rationale').order('as_of', { ascending: false }), 'holding contributions'),
+    qSoft(sb.from('latest_holding_contributions').select('strategy_id,security_id,as_of,weight,risk_share,risk_ratio,corr_to_rest,max_corr,closest_peer_id,verdict,rationale').order('as_of', { ascending: false }), 'holding contributions'),
     qSoft(sb.from('stress_scenarios').select('id,slug,name,description,shocks').order('sort_order'), 'stress scenarios'),
-    qSoft(sb.from('strategy_stress_results').select('strategy_id,scenario_id,as_of,factor_score,coverage,n_windows,mean_return,worst_return,best_return,replay_coverage,windows').order('as_of', { ascending: false }), 'stress results'),
-    qSoft(sb.from('strategy_performance').select('strategy_id,period,as_of,start_date,end_date,portfolio_return,peer_benchmark_return,policy_benchmark_return,coverage,max_drawdown,peer_max_drawdown,gold_return,btc_return,weighted_expense_ratio,expense_coverage,cpi_return,cpi_window_start,cpi_window_end,model_return_cpi_window').order('as_of', { ascending: false }), 'performance'),
-    qSoft(sb.from('strategy_attribution').select('strategy_id,period,as_of,asset_class_id,w_portfolio,w_benchmark,r_portfolio,r_benchmark,contribution,allocation_effect,selection_effect,interaction_effect,attributable').order('as_of', { ascending: false }), 'attribution'),
-    qSoft(sb.from('speed_limit_readings').select('as_of,category,score,light,weight,n_calls,n_recorded,target_beta_low,target_beta_high,sign_label').order('as_of', { ascending: false }), 'speed limit'),
-    qSoft(sb.from('strategy_speed_limit').select('strategy_id,as_of,actual_beta,r_squared,n_obs,target_low,target_high,light,note').order('as_of', { ascending: false }), 'model speed limit'),
+    qSoft(sb.from('latest_strategy_stress_results').select('strategy_id,scenario_id,as_of,factor_score,coverage,n_windows,mean_return,worst_return,best_return,replay_coverage,windows').order('as_of', { ascending: false }), 'stress results'),
+    qSoft(sb.from('latest_strategy_performance').select('strategy_id,period,as_of,start_date,end_date,portfolio_return,peer_benchmark_return,policy_benchmark_return,coverage,max_drawdown,peer_max_drawdown,gold_return,btc_return,weighted_expense_ratio,expense_coverage,cpi_return,cpi_window_start,cpi_window_end,model_return_cpi_window').order('as_of', { ascending: false }), 'performance'),
+    qSoft(sb.from('latest_strategy_attribution').select('strategy_id,period,as_of,asset_class_id,w_portfolio,w_benchmark,r_portfolio,r_benchmark,contribution,allocation_effect,selection_effect,interaction_effect,attributable').order('as_of', { ascending: false }), 'attribution'),
+    qSoft(sb.from('latest_speed_limit_readings').select('as_of,category,score,light,weight,n_calls,n_recorded,target_beta_low,target_beta_high,sign_label').order('as_of', { ascending: false }), 'speed limit'),
+    qSoft(sb.from('latest_strategy_speed_limit').select('strategy_id,as_of,actual_beta,r_squared,n_obs,target_low,target_high,light,note').order('as_of', { ascending: false }), 'model speed limit'),
     qSoft(sb.from('market_roc_board').select('as_of,security_id,label,sort_order,close,price_roc_1d,price_roc_1w,price_roc_1m,volume_roc_1w,vol_ann,vol_roc_1m').order('sort_order'), 'ROC board'),
     qSoft(sb.from('trigger_hits').select('as_of,headline,value,rule_id,security_id,strategy_id').order('as_of', { ascending: false }).limit(200), 'trigger hits'),
     qSoft(sb.from('trigger_rules').select('id,name,kind,enabled'), 'trigger rules'),
     qSoft(sb.from('source_signal_to_noise').select('source,category,window_label,n_scored,hit_rate,signal,noise,signal_to_noise,too_few_to_judge'), 'signal to noise'),
-    qSoft(sb.from('model_period_stats').select('strategy_id,period,as_of,start_date,end_date,model_return,benchmark_return,max_drawdown,benchmark_max_drawdown,upside_capture,downside_capture,beta_sp500,beta_r2,dividend_yield,min_coverage,window_starts_in_gap,unavailable_reason,method_note').order('as_of', { ascending: false }), 'model period stats'),
-    qSoft(sb.from('model_contribution').select('strategy_id,period,as_of,ticker,name_raw,start_weight,end_weight,period_return,contribution_bps,status,priced').order('as_of', { ascending: false }), 'model contribution'),
-    qSoft(sb.from('model_factor_allocation').select('strategy_id,as_of,basis,long_growth,long_inflation,long_liquidity,short_growth,short_inflation,short_liquidity,unclassified,detail').order('as_of', { ascending: false }), 'model factor allocation'),
-    qSoft(sb.from('model_value_series').select('strategy_id,as_of,value,benchmark_value,coverage').order('as_of', { ascending: true }), 'model value series'),
+    qSoft(sb.from('latest_model_period_stats').select('strategy_id,period,as_of,start_date,end_date,model_return,benchmark_return,max_drawdown,benchmark_max_drawdown,upside_capture,downside_capture,beta_sp500,beta_r2,dividend_yield,min_coverage,window_starts_in_gap,unavailable_reason,method_note').order('as_of', { ascending: false }), 'model period stats'),
+    qSoft(sb.from('latest_model_contribution').select('strategy_id,period,as_of,ticker,name_raw,start_weight,end_weight,period_return,contribution_bps,status,priced').order('as_of', { ascending: false }), 'model contribution'),
+    qSoft(sb.from('latest_model_factor_allocation').select('strategy_id,as_of,basis,long_growth,long_inflation,long_liquidity,short_growth,short_inflation,short_liquidity,unclassified,detail').order('as_of', { ascending: false }), 'model factor allocation'),
+    qAllSoft(() => sb.from('model_value_series').select('strategy_id,as_of,value,benchmark_value,coverage').order('as_of', { ascending: true }), 'model value series'),
     qSoft(sb.from('holdings_snapshot_integrity').select('strategy_id,as_of,n_holdings,weight_total,weight_off,n_unmatched,n_suspect_names,gap_days_before').order('as_of', { ascending: true }), 'holdings integrity'),
     qSoft(sb.from('current_holdings').select('strategy_id,as_of,ticker,security_id,name_raw,weight'), 'current holdings'),
     qSoft(sb.from('holding_factor_overrides').select('security_id,split,note,author,as_of'), 'factor overrides'),
