@@ -14,7 +14,18 @@
 }
 *{box-sizing:border-box} html{background:var(--bg)}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Inter","Segoe UI",sans-serif}
-.top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:24px;padding:12px 24px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+/* The Sisyphus mark. One asset for both themes: it fills with currentColor and the theme sets
+   `color`. Dark is this site's default, so the off-white is the base and light overrides it —
+   the off-white (#F0EFEC) rather than pure white is deliberate, because pure white on a near-black
+   surface glares and makes the thin frame strokes vibrate.
+   The mark is portrait, 0.635:1, and stops being legible below about 48px tall: below that the
+   figure closes up and only the frame and circle read. The header is sized around that floor
+   rather than the mark being squeezed to fit the header. */
+.logo{color:#F0EFEC;display:block;flex:none}
+:root[data-theme="light"] .logo{color:#111111}
+.logo-header{height:48px;width:30.5px}
+.logo-gate{height:88px;width:56px;margin:0 auto 4px}
+.top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:24px;padding:10px 24px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
 .brand{display:flex;gap:10px;align-items:center}.brand b{display:block;font-size:15px;letter-spacing:.2px}.brand small{color:var(--muted);font-size:11px;letter-spacing:.6px;text-transform:uppercase}
 nav{display:flex;gap:4px;flex:1}nav a{color:var(--muted);text-decoration:none;padding:6px 12px;border-radius:8px}nav a:hover{color:var(--text)}nav a.on{color:var(--text);background:var(--panel2)}
 .tools{display:flex;gap:10px;align-items:center}
