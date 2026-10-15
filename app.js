@@ -1005,8 +1005,11 @@ const RULE_STATE = {
   not_evaluable: { dot: 'transparent',  label: 'not evaluable on daily bars' },
 };
 const GROUPS = [['US equity', 'US equity'], ['International', 'International'], ['Commodity', 'Commodity']];
-const SVEN_GROUP = { SPY: 'US equity', QQQ: 'US equity', IWM: 'US equity', DIA: 'US equity', EFA: 'International', EEM: 'International', GLD: 'Commodity', USO: 'Commodity' };
-const SVEN_LABEL = { SPY: 'S&P 500', QQQ: 'Nasdaq 100', IWM: 'Russell 2000', DIA: 'Dow Industrials', EFA: 'Developed ex-US', EEM: 'Emerging markets', GLD: 'Gold', USO: 'Crude oil', AGG: 'US aggregate bonds' };
+const SVEN_GROUP = { SPY: 'US equity', QQQ: 'US equity', MDY: 'US equity', IWM: 'US equity', DIA: 'US equity', EFA: 'International', EEM: 'International', GLD: 'Commodity', USO: 'Commodity' };
+// The order the owner reads them in, broad market first. Kept here rather than left to whatever
+// order the rows arrive in, which is the database's business and not a reading order.
+const SVEN_ORDER = ['SPY', 'QQQ', 'MDY', 'IWM', 'DIA', 'EFA', 'EEM', 'GLD', 'USO'];
+const SVEN_LABEL = { SPY: 'S&P 500', QQQ: 'Nasdaq 100', MDY: 'S&P MidCap 400', IWM: 'Russell 2000', DIA: 'Dow Industrials', EFA: 'Developed ex-US', EEM: 'Emerging markets', GLD: 'Gold', USO: 'Crude oil', AGG: 'US aggregate bonds' };
 const FAILURE_STYLE = {
   positive_failure: ['Positive news failure', 'var(--neg)', 'Good news that did not lift it — the warning to sell.'],
   negative_failure: ['Negative news failure', 'var(--pos)', 'Bad news that did not sink it — a trend may be turning up.'],
@@ -1028,14 +1031,18 @@ function sven() {
   }
 
   // ---- the rule matrix ----
-  const tickers = [...new Set(rules.map(r => r.ticker))];
+  const tickers = [...new Set(rules.map(r => r.ticker))]
+    .sort((a, b) => {
+      const ia = SVEN_ORDER.indexOf(a), ib = SVEN_ORDER.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+    });
   const ruleCols = [...new Map(rules.map(r => [r.rule_key, r])).values()].sort((a, b) => a.rule_no - b.rule_no || a.rule_key.localeCompare(b.rule_key));
   const asOf = rules.map(r => r.as_of).sort().pop();
   const cellFor = (t, key) => rules.find(r => r.ticker === t && r.rule_key === key) || null;
 
   const matrix = !tickers.length ? '' : `<div class="card" style="margin-bottom:14px">
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
-      <h2 style="margin:0">Raschke rule matrix</h2>
+      <h2 style="margin:0">Price is King Rule Matrix</h2>
       <span style="font-size:12px;color:var(--muted)">${esc(asOf)} · ${ruleCols.length} rules × ${tickers.length} indices · click an index for the detail</span></div>
     <div style="overflow-x:auto;margin-top:12px"><table style="min-width:720px"><thead><tr>
       <th>Index</th>${ruleCols.map(c => `<th class="num" style="font-size:11px" title="${esc(c.rule_title)}">${c.rule_no}${/^r11/.test(c.rule_key) ? c.rule_key.slice(3, 4) : ''}</th>`).join('')}
