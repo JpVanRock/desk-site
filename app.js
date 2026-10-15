@@ -31,7 +31,7 @@ $('#login').addEventListener('submit', async e => {
     if (gateMode === 'set') {
       const { error } = await sb.auth.updateUser({ password: $('#password').value });
       if (error) throw error;
-      history.replaceState(null, '', location.pathname + '#overview');
+      history.replaceState(null, '', location.pathname + '#sisyphus');
     } else {
       const { error } = await sb.auth.signInWithPassword({ email: $('#email').value.trim(), password: $('#password').value });
       if (error) throw error;
@@ -219,15 +219,19 @@ const factorHeads = () => D.factors.map(f => `<th class="num">${esc(fname(f))}</
 
 function route() {
   if (!D) return;
-  let [page, arg] = (location.hash || '#overview').slice(1).split('/');
+  let [page, arg] = (location.hash || '#sisyphus').slice(1).split('/');
   // #decisions was this page's hash before it was named after the agent who writes it. Anything
   // already bookmarked or pasted into a note still has to land, so the old name redirects rather
-  // than falling through to Overview and looking like the page was deleted.
+  // than falling through to the default page and looking like it had been deleted.
   if (page === 'decisions') { location.replace('#annie'); return; }
+  // #overview was this page's hash before it was named after the agent whose brief it summarises.
+  // It is also the hash anything bookmarked before today will carry, and it was the DEFAULT, so a
+  // stale link is more likely here than anywhere else on the site.
+  if (page === 'overview') { location.replace('#sisyphus' + (arg ? '/' + arg : '')); return; }
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
-  const pages = { overview, stan, sven, markets, views: viewsPage, signals, playground, agents, annie, briefs, inbox, status, sources };
-  $('#app').innerHTML = (pages[page] || overview)();
+  const pages = { sisyphus, stan, sven, markets, views: viewsPage, signals, playground, agents, annie, briefs, inbox, status, sources };
+  $('#app').innerHTML = (pages[page] || sisyphus)();
   if (page === 'stan' && arg) {
     // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
     // button all close them the same way a model drawer closes.
@@ -241,11 +245,11 @@ function route() {
   }
   if (page === 'sven' && arg) { $('#drawer').innerHTML = svenDrawer(arg); $('#drawer').hidden = false; $('#scrim').hidden = false; }
   if (page === 'markets' && arg) openChart(arg);
-  if (page === 'overview' && arg) openExposureChart(arg);
+  if (page === 'sisyphus' && arg) openExposureChart(arg);
   if (page === 'views' && arg) openMacroChart(arg);
 }
 
-function overview() {
+function sisyphus() {
   const M = D.models, latest = M.map(m => m.last).filter(Boolean).sort().pop();
   const gaps = M.filter(m => m.cov < 0.95), off = M.filter(m => Math.abs(m.total - 1) > 0.005);
   const alerts = [];
@@ -254,7 +258,7 @@ function overview() {
   off.forEach(m => alerts.push(`<b>${esc(m.name)}</b>: latest weights sum to ${pct(m.total)}.`));
   M.filter(m => m.last && latest && m.last < latest).forEach(m => alerts.push(`<b>${esc(m.name)}</b>: last allocation ${m.last}, older than ${latest}.`));
   const run = D.run;
-  return `<span class="eyebrow">Allocation model</span><h1>Overview</h1>
+  return `<span class="eyebrow">Sisyphus · the desk at a glance</span><h1>Sisyphus</h1>
   <p class="sub">Eight models, viewed as net long or short growth, inflation and the cost of liquidity.</p>
   <div class="kpis">
    <div class="card kpi"><span class="eyebrow">Models</span><b>${M.length}</b><small>10/90 to 80/20</small></div>
@@ -264,7 +268,7 @@ function overview() {
   </div>
   <div class="grid2"><div class="card"><h2>Net exposure by model <span class="chip draft">draft loadings</span></h2>
    <table><thead><tr><th>Model</th>${factorHeads()}<th class="num">Scored</th></tr></thead><tbody>
-   ${M.map(m => `<tr class="click" data-go="#overview/${esc(m.id)}"><td><b>${esc(m.name)}</b> <span class="chip">${esc(m.label)}</span></td>${netCells(m)}<td class="num">${pct(m.cov, 0)}</td></tr>`).join('')}</tbody></table>
+   ${M.map(m => `<tr class="click" data-go="#sisyphus/${esc(m.id)}"><td><b>${esc(m.name)}</b> <span class="chip">${esc(m.label)}</span></td>${netCells(m)}<td class="num">${pct(m.cov, 0)}</td></tr>`).join('')}</tbody></table>
    <p class="note">Net exposure = Σ weight × loading on each model's last recorded allocation (not drifted). Unscored holdings count as zero, so low coverage understates the figures. Click a row for its exposure history.</p></div>
   <div class="card"><h2>Needs attention</h2>${alerts.length ? alerts.map(a => `<div class="alert"><span class="dot"></span><div>${a}</div></div>`).join('') : '<div class="empty">Nothing flagged.</div>'}</div></div>`;
 }
@@ -2599,7 +2603,7 @@ const FACTOR_COLORS = { growth: 'var(--pos)', inflation: 'var(--warn)', liquidit
 
 async function openExposureChart(strategyId) {
   const m = D.models.find(x => x.id === strategyId); if (!m) return;
-  $('#drawer').innerHTML = `<button class="close" data-go="#overview">Close</button>
+  $('#drawer').innerHTML = `<button class="close" data-go="#sisyphus">Close</button>
    <span class="eyebrow">Model · ${esc(m.label)}</span><h1>${esc(m.name)}</h1>
    <p class="sub">Net exposure over time, computed at each historical allocation snapshot.</p><div class="empty">Loading chart…</div>`;
   $('#drawer').hidden = false; $('#scrim').hidden = false;
@@ -2620,7 +2624,7 @@ async function openExposureChart(strategyId) {
     vals: dates.map(d => { const v = byFactorDate.get(f.id + '|' + d); return v === undefined ? null : +v; }),
     color: FACTOR_COLORS[f.slug] || 'var(--text)', width: 1.75,
   }));
-  $('#drawer').innerHTML = `<button class="close" data-go="#overview">Close</button>
+  $('#drawer').innerHTML = `<button class="close" data-go="#sisyphus">Close</button>
    <span class="eyebrow">Model · ${esc(m.label)}</span><h1>${esc(m.name)}</h1>
    <p class="sub">Net exposure at each of ${dates.length} allocation snapshots, ${esc(dates[0])} to ${esc(dates.at(-1))}. Not drifted between snapshots — each point is that snapshot's target weights.</p>
    <div class="card"><h2>Growth, inflation, cost of liquidity</h2>${priceChartSvg(dates, series, 560, 240)}
@@ -2937,7 +2941,7 @@ document.addEventListener('click', e => {
   if (chartCtx.layers.has(k)) chartCtx.layers.delete(k); else chartCtx.layers.add(k);
   renderChart();
 });
-const closeDrawerHash = () => { location.hash = (location.hash || '#overview').split('/')[0]; };
+const closeDrawerHash = () => { location.hash = (location.hash || '#sisyphus').split('/')[0]; };
 $('#scrim').addEventListener('click', closeDrawerHash);
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#drawer').hidden) closeDrawerHash(); });
 $('#theme').addEventListener('click', () => { const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = t; try { localStorage.setItem('theme', t); } catch (e) {} });
