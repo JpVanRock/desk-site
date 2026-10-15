@@ -79,7 +79,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, svenRules, newsFailure] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -116,15 +116,17 @@ async function load() {
     qSoft(sb.from('current_holdings').select('strategy_id,as_of,ticker,security_id,name_raw,weight'), 'current holdings'),
     qSoft(sb.from('holding_factor_overrides').select('security_id,split,note,author,as_of'), 'factor overrides'),
     qSoft(sb.from('lens_signal_to_noise').select('category,window_label,n_scored,n_sources,hit_rate,signal,noise,signal_to_noise,too_few_to_judge'), 'lens signal to noise'),
-    qSoft(sb.from('holding_risk_return').select('security_id,period,as_of,start_date,end_date,total_return,sharpe,vol_ann,n_obs'), 'holding risk/return'),
-    qSoft(sb.from('model_trailing_returns').select('strategy_id,period,as_of,sort_order,start_date,end_date,model_return,benchmark_return,excess_return,is_cagr,basis,unavailable_reason').order('sort_order'), 'trailing returns'),
-    qSoft(sb.from('model_style_exposure').select('strategy_id,lens,as_of,bucket,label,sort_order,kind,model_weight,benchmark_weight').order('sort_order'), 'style exposure'),
-    qSoft(sb.from('model_style_coverage').select('strategy_id,lens,as_of,basis,window_start,window_end,model_equity_weight,model_resolved,benchmark_resolved,unresolved'), 'style coverage'),
-    qSoft(sb.from('model_monthly_returns').select('strategy_id,as_of,year,month,model_return,benchmark_return,excess_return,coverage,is_partial,in_gap,basis,unavailable_reason'), 'monthly returns'),
-    qSoft(sb.from('model_trades').select('strategy_id,as_of,ticker,entry_date,exit_date,avg_weight,entry_weight,exit_weight,total_return,contribution_bps,excess_bps,status,sizing_verdict,starts_in_gap,pre_existing,unavailable_reason'), 'trade ledger'),
-    qSoft(sb.from('position_decision_scores').select('strategy_id,as_of,ticker,window_key,sort_order,start_date,end_date,weight,position_return,benchmark_return,decision_bps,is_partial,starts_in_gap,unavailable_reason').order('sort_order'), 'position decision scores'),
-    qSoft(sb.from('model_decision_stats').select('strategy_id,as_of,n_closed,n_open,n_wins,n_losses,batting_average,slugging_bps,win_bps,loss_bps,median_weight,n_unpriced,first_snapshot,last_snapshot,gap_days,n_beat_benchmark,excess_bps_total,n_type_i,type_i_bps,n_type_ii,type_ii_reason,avg_hold_days,n_trades_ytd'), 'decision stats'),
+    qSoft(sb.from('latest_holding_risk_return').select('security_id,period,as_of,start_date,end_date,total_return,sharpe,vol_ann,n_obs'), 'holding risk/return'),
+    qSoft(sb.from('latest_model_trailing_returns').select('strategy_id,period,as_of,sort_order,start_date,end_date,model_return,benchmark_return,excess_return,is_cagr,basis,unavailable_reason').order('sort_order'), 'trailing returns'),
+    qSoft(sb.from('latest_model_style_exposure').select('strategy_id,lens,as_of,bucket,label,sort_order,kind,model_weight,benchmark_weight').order('sort_order'), 'style exposure'),
+    qSoft(sb.from('latest_model_style_coverage').select('strategy_id,lens,as_of,basis,window_start,window_end,model_equity_weight,model_resolved,benchmark_resolved,unresolved'), 'style coverage'),
+    qSoft(sb.from('latest_model_monthly_returns').select('strategy_id,as_of,year,month,model_return,benchmark_return,excess_return,coverage,is_partial,in_gap,basis,unavailable_reason'), 'monthly returns'),
+    qSoft(sb.from('latest_model_trades').select('strategy_id,as_of,ticker,entry_date,exit_date,avg_weight,entry_weight,exit_weight,total_return,contribution_bps,excess_bps,status,sizing_verdict,starts_in_gap,pre_existing,unavailable_reason'), 'trade ledger'),
+    qSoft(sb.from('latest_position_decision_scores').select('strategy_id,as_of,ticker,window_key,sort_order,start_date,end_date,weight,position_return,benchmark_return,decision_bps,is_partial,starts_in_gap,unavailable_reason').order('sort_order'), 'position decision scores'),
+    qSoft(sb.from('latest_model_decision_stats').select('strategy_id,as_of,n_closed,n_open,n_wins,n_losses,batting_average,slugging_bps,win_bps,loss_bps,median_weight,n_unpriced,first_snapshot,last_snapshot,gap_days,n_beat_benchmark,excess_bps_total,n_type_i,type_i_bps,n_type_ii,type_ii_reason,avg_hold_days,n_trades_ytd'), 'decision stats'),
     qSoft(sb.from('annie_assessments').select('as_of,kind,strategy_id,ticker,headline,body_md,score,score_scale,confidence,sources,author').order('as_of', { ascending: false }), 'Annie assessments'),
+    qSoft(sb.from('latest_sven_rule_signals').select('as_of,ticker,rule_key,rule_no,rule_title,state,headline,detail,method,adapted').order('rule_no'), 'Raschke rules'),
+    qSoft(sb.from('latest_news_failure_readings').select('as_of,ticker,label,asset_class,window_days,n_releases,n_positive,n_negative,n_series,n_factors,agreement,price_change,made_new_high,made_new_low,verdict,headline,held_in'), 'news failure'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -201,7 +203,8 @@ async function load() {
     // Assessments are NOT filtered to the newest date: Annie's view in October and her view in
     // March are both worth keeping, and comparing a judgment with what happened afterwards is the
     // whole point of the page.
-    assessments: assessments || [] };
+    assessments: assessments || [],
+    svenRules: newest(svenRules), newsFailure: newest(newsFailure) };
 }
 
 // ---------- Views ----------
@@ -223,7 +226,7 @@ function route() {
   if (page === 'decisions') { location.replace('#annie'); return; }
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
-  const pages = { overview, stan, markets, views: viewsPage, signals, playground, agents, annie, briefs, inbox, status, sources };
+  const pages = { overview, stan, sven, markets, views: viewsPage, signals, playground, agents, annie, briefs, inbox, status, sources };
   $('#app').innerHTML = (pages[page] || overview)();
   if (page === 'stan' && arg) {
     // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
@@ -236,6 +239,7 @@ function route() {
   if (page === 'annie' && arg && arg.startsWith('steel-')) {
     $('#drawer').innerHTML = steelManDrawer(arg.slice(6)); $('#drawer').hidden = false; $('#scrim').hidden = false;
   }
+  if (page === 'sven' && arg) { $('#drawer').innerHTML = svenDrawer(arg); $('#drawer').hidden = false; $('#scrim').hidden = false; }
   if (page === 'markets' && arg) openChart(arg);
   if (page === 'overview' && arg) openExposureChart(arg);
   if (page === 'views' && arg) openMacroChart(arg);
@@ -987,6 +991,138 @@ function equitySvg(E) {
     <text x="${W - pad.r}" y="${H - 8}" font-size="10" fill="var(--muted)" text-anchor="end">${xs}</text>
     <text x="${(pad.l + W - pad.r) / 2}" y="${H - 8}" font-size="10" fill="var(--muted)" text-anchor="middle">Trades</text>
     ${hits}</svg>`;
+}
+
+// ---------- Sven: market internals ----------
+//
+// Two dashboards. The rule matrix is Linda Raschke's twelve technical rules evaluated nightly on
+// daily bars; the news-failure table asks whether an asset is responding to its own news. Both are
+// arithmetic — nothing on this page is written by an agent — and both carry what they cannot see.
+const RULE_STATE = {
+  bullish:       { dot: 'var(--pos)',   label: 'bullish' },
+  bearish:       { dot: 'var(--neg)',   label: 'bearish' },
+  neutral:       { dot: 'var(--muted)', label: 'neutral' },
+  not_evaluable: { dot: 'transparent',  label: 'not evaluable on daily bars' },
+};
+const GROUPS = [['US equity', 'US equity'], ['International', 'International'], ['Commodity', 'Commodity']];
+const SVEN_GROUP = { SPY: 'US equity', QQQ: 'US equity', IWM: 'US equity', DIA: 'US equity', EFA: 'International', EEM: 'International', GLD: 'Commodity', USO: 'Commodity' };
+const SVEN_LABEL = { SPY: 'S&P 500', QQQ: 'Nasdaq 100', IWM: 'Russell 2000', DIA: 'Dow Industrials', EFA: 'Developed ex-US', EEM: 'Emerging markets', GLD: 'Gold', USO: 'Crude oil', AGG: 'US aggregate bonds' };
+const FAILURE_STYLE = {
+  positive_failure: ['Positive news failure', 'var(--neg)', 'Good news that did not lift it — the warning to sell.'],
+  negative_failure: ['Negative news failure', 'var(--pos)', 'Bad news that did not sink it — a trend may be turning up.'],
+  confirming:       ['Confirming', 'var(--muted)', 'News and price agreed. The ordinary case, and not a signal.'],
+  none:             ['No read', 'var(--muted)', 'Nothing could be called from this window.'],
+  insufficient:     ['Insufficient', 'var(--muted)', 'Too little to call anything.'],
+};
+let newsWindow = 30;
+
+function sven() {
+  const rules = D.svenRules || [];
+  const news = D.newsFailure || [];
+  const n = v => v === null || v === undefined ? null : +v;
+
+  if (!rules.length && !news.length) {
+    return `<span class="eyebrow">Market internals</span><h1>Sven</h1>
+     <p class="sub">Raschke's rules across the major indices, and whether assets are responding to their own news.</p>
+     <div class="card"><div class="empty">Nothing computed yet. Run jobs/compute-raschke-rules.mjs and jobs/compute-news-failure.mjs.</div></div>`;
+  }
+
+  // ---- the rule matrix ----
+  const tickers = [...new Set(rules.map(r => r.ticker))];
+  const ruleCols = [...new Map(rules.map(r => [r.rule_key, r])).values()].sort((a, b) => a.rule_no - b.rule_no || a.rule_key.localeCompare(b.rule_key));
+  const asOf = rules.map(r => r.as_of).sort().pop();
+  const cellFor = (t, key) => rules.find(r => r.ticker === t && r.rule_key === key) || null;
+
+  const matrix = !tickers.length ? '' : `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Raschke rule matrix</h2>
+      <span style="font-size:12px;color:var(--muted)">${esc(asOf)} · ${ruleCols.length} rules × ${tickers.length} indices · click an index for the detail</span></div>
+    <div style="overflow-x:auto;margin-top:12px"><table style="min-width:720px"><thead><tr>
+      <th>Index</th>${ruleCols.map(c => `<th class="num" style="font-size:11px" title="${esc(c.rule_title)}">${c.rule_no}${/^r11/.test(c.rule_key) ? c.rule_key.slice(3, 4) : ''}</th>`).join('')}
+      <th class="num">Net</th></tr></thead><tbody>
+    ${GROUPS.map(([g]) => {
+      const rows = tickers.filter(t => SVEN_GROUP[t] === g);
+      if (!rows.length) return '';
+      return `<tr><td colspan="${ruleCols.length + 2}" style="padding-top:10px;color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase">${esc(g)}</td></tr>` +
+        rows.map(t => {
+          const mine = ruleCols.map(c => cellFor(t, c.rule_key));
+          const bull = mine.filter(r => r && r.state === 'bullish').length;
+          const bear = mine.filter(r => r && r.state === 'bearish').length;
+          const net = bull - bear;
+          return `<tr><td class="click" data-go="#sven/${esc(t)}" style="cursor:pointer"><b>${esc(t)}</b> <span style="color:var(--muted)">${esc(SVEN_LABEL[t] || '')}</span></td>
+            ${mine.map(r => {
+              if (!r) return '<td class="num">·</td>';
+              const st = RULE_STATE[r.state];
+              const tip = `${r.rule_no}. ${r.rule_title}\n${r.headline}${r.adapted ? '\n[adapted to daily bars]' : ''}`;
+              return `<td class="num" data-tip="${esc(tip)}" style="cursor:default">${r.state === 'not_evaluable'
+                ? '<span style="color:var(--line)">–</span>'
+                : `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${st.dot}"></span>`}${r.adapted ? '<sup style="color:var(--warn);font-size:9px">a</sup>' : ''}</td>`;
+            }).join('')}
+            <td class="num"><b style="color:${net > 0 ? 'var(--pos)' : net < 0 ? 'var(--neg)' : 'var(--muted)'}">${net > 0 ? '+' : ''}${net}</b></td></tr>`;
+        }).join('');
+    }).join('')}
+    </tbody></table></div>
+    <p class="note">Columns are Raschke's rules in her numbering; <b>11a–11d</b> are the four principles of price behaviour she lists under rule 11. A dot is the rule's read on that index today — green bullish, red bearish, grey neutral — and <b>Net</b> is bullish rules minus bearish. Hover a cell for what the rule says; click an index for all of it with the numbers.
+    Rules marked <sup style="color:var(--warn)">a</sup> are <b>adapted</b>: Raschke wrote for an intraday screen, and where a daily bar can carry the spirit of a rule but not the rule itself — a close in the top third of the range standing in for "the last hour" — the substitution is named rather than hidden. <b>Rules 3, 9 and 10 are not evaluable at all</b> and show a dash: they are entirely about when inside the session something happened, and a daily bar has no inside. Approximating them would be inventing the number the rule turns on.</p></div>`;
+
+  // ---- news failure ----
+  const wins = [...new Set(news.map(r => r.window_days))].sort((a, b) => a - b);
+  const rowsN = news.filter(r => r.window_days === newsWindow)
+    .sort((a, b) => {
+      const rank = v => v === 'positive_failure' || v === 'negative_failure' ? 0 : v === 'confirming' ? 1 : 2;
+      return rank(a.verdict) - rank(b.verdict) || String(a.ticker).localeCompare(String(b.ticker));
+    });
+  const failures = rowsN.filter(r => /failure$/.test(r.verdict));
+  const newsCard = !news.length ? '' : `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">News failure</h2>
+      <div class="tabs" style="margin:0">${wins.map(w => `<button class="tab" data-newswin="${w}" aria-selected="${w === newsWindow}">${w} days</button>`).join('')}</div></div>
+    ${failures.length ? `<div style="margin-top:10px;padding:10px 12px;border-left:3px solid var(--warn);background:var(--panel2);border-radius:8px;font-size:13px">
+      <b>${failures.length} asset${failures.length === 1 ? '' : 's'} not responding to ${failures.length === 1 ? 'its' : 'their'} own news</b> over ${newsWindow} days: ${failures.map(f => `${esc(f.ticker)} (${esc(FAILURE_STYLE[f.verdict][0].toLowerCase())})`).join(', ')}.</div>` : ''}
+    <div style="overflow-x:auto;margin-top:12px"><table style="min-width:860px"><thead><tr>
+      <th>Asset</th><th>Class</th><th>Verdict</th><th class="num">News flow</th><th class="num">Breadth</th>
+      <th class="num">Price</th><th>Held in</th></tr></thead><tbody>
+    ${rowsN.map(r => {
+      const st = FAILURE_STYLE[r.verdict] || FAILURE_STYLE.none;
+      const fail = /failure$/.test(r.verdict);
+      const ch = n(r.price_change);
+      return `<tr${fail ? ' style="background:var(--panel2)"' : ''}>
+        <td><b>${esc(r.ticker)}</b><br><small style="color:var(--muted)">${esc(r.label)}</small></td>
+        <td style="color:var(--muted)">${esc(r.asset_class || '—')}</td>
+        <td><span style="color:${st[1]};font-weight:${fail ? '700' : '400'}" title="${esc(st[2])}">${esc(st[0])}</span>
+          <br><small style="color:var(--muted);max-width:360px;display:inline-block">${esc(r.headline)}</small></td>
+        <td class="num">${r.n_releases ? `${r.n_positive}+ / ${r.n_negative}−<br><small style="color:var(--muted)">${n(r.agreement) === null ? '' : (n(r.agreement) * 100).toFixed(0) + '% one way'}</small>` : '<span style="color:var(--muted)">–</span>'}</td>
+        <td class="num" title="Distinct series and distinct factors behind the flow. Agreement alone cannot tell one story told eight times from eight stories that agree.">${r.n_series ?? '–'} series<br><small style="color:var(--muted)">${r.n_factors ?? '–'} factor${r.n_factors === 1 ? '' : 's'}</small></td>
+        <td class="num">${ch === null ? '<span style="color:var(--muted)">–</span>' : `<span style="color:${ch >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(ch * 100).toFixed(1)}%</span>`}
+          <br><small style="color:var(--muted)">${r.made_new_high ? 'new high' : r.made_new_low ? 'new low' : 'no new extreme'}</small></td>
+        <td style="color:var(--muted);font-size:12px">${(r.held_in || []).length ? esc((r.held_in || []).join(', ')) : '—'}</td></tr>`;
+    }).join('')}
+    </tbody></table></div>
+    <p class="note"><b>Good news is not a property of a release on its own</b> — a strong payroll print is good news for equities and bad news for bonds. Each release is scored by which way it moved its factor, multiplied by how that asset class loads on that factor, so both halves come from tables the desk already keeps rather than from a judgment made here.
+    A <b>positive news failure</b> is a stream of good news the asset did not rise on; a <b>negative news failure</b> is a stream of bad news it did not fall on. Neither is called on fewer than five releases, on a flow more split than 65/35, or on a single factor — one factor moving is one story told many times, and agreement cannot tell that from many stories agreeing, which is why breadth sits beside it.
+    Only weekly, monthly and quarterly series count: the daily ones here are market prices, not announcements. <b>Publication dates are assumed from frequency, not recorded</b> — a release covering August is treated as published a month later — because this desk stores the period an observation covers and not the day it came out.</p></div>`;
+
+  return `<span class="eyebrow">Market internals</span><h1>Sven</h1>
+   <p class="sub">Raschke's twelve rules across the major indices, and whether assets are responding to their own news.</p>
+   ${matrix}${newsCard}`;
+}
+
+// All twelve rules for one index, with the numbers and the method behind each.
+function svenDrawer(ticker) {
+  const rows = (D.svenRules || []).filter(r => r.ticker === ticker).sort((a, b) => a.rule_no - b.rule_no || a.rule_key.localeCompare(b.rule_key));
+  if (!rows.length) return `<button class="close" data-go="#sven">Close</button><h1>${esc(ticker)}</h1><div class="card"><div class="empty">No rule signals for this index.</div></div>`;
+  return `<button class="close" data-go="#sven">Close</button>
+   <span class="eyebrow">Raschke's rules · ${esc(rows[0].as_of)}</span><h1>${esc(ticker)} — ${esc(SVEN_LABEL[ticker] || '')}</h1>
+   ${rows.map(r => {
+     const st = RULE_STATE[r.state];
+     return `<div class="card" style="margin-bottom:10px;border-left:3px solid ${r.state === 'not_evaluable' ? 'var(--line)' : st.dot}">
+       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap">
+         <h2 style="margin:0;font-size:13px">${r.rule_no}. ${esc(r.rule_title)}</h2>
+         <span class="chip" style="color:${st.dot === 'transparent' ? 'var(--muted)' : st.dot}">${esc(st.label)}</span></div>
+       <p style="margin:8px 0 0">${esc(r.headline)}</p>
+       ${r.detail ? `<p style="margin:6px 0 0;color:var(--muted);font-size:12.5px;font-variant-numeric:tabular-nums">${esc(r.detail)}</p>` : ''}
+       ${r.method ? `<p class="note" style="margin-top:8px">${r.adapted ? '<b>Adapted to daily bars.</b> ' : ''}${esc(r.method)}</p>` : ''}</div>`;
+   }).join('')}`;
 }
 
 // ---------- Annie: the decision coach ----------
@@ -2719,6 +2855,13 @@ document.addEventListener('click', e => {
   monthlyTab = t.dataset.monthtab;
   const arg = (location.hash.split('/')[1] || '');
   if (arg) openModel(arg);
+});
+// News-failure window tabs on Sven's page.
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-newswin]');
+  if (!t) return;
+  newsWindow = +t.dataset.newswin;
+  $('#app').innerHTML = sven();
 });
 // Scorecard model tabs on Annie's page.
 document.addEventListener('click', e => {
