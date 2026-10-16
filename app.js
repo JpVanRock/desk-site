@@ -132,7 +132,9 @@ async function load() {
     qSoft(sb.from('trigger_rules').select('id,name,kind,enabled'), 'trigger rules'),
     qSoft(sb.from('source_signal_to_noise').select('source,category,window_label,n_scored,hit_rate,signal,noise,signal_to_noise,too_few_to_judge'), 'signal to noise'),
     qSoft(sb.from('latest_model_period_stats').select('strategy_id,period,as_of,start_date,end_date,model_return,benchmark_return,max_drawdown,benchmark_max_drawdown,upside_capture,downside_capture,beta_sp500,beta_r2,dividend_yield,min_coverage,window_starts_in_gap,unavailable_reason,method_note').order('as_of', { ascending: false }), 'model period stats'),
-    qSoft(sb.from('latest_model_contribution').select('strategy_id,period,as_of,ticker,name_raw,start_weight,end_weight,period_return,contribution_bps,status,priced').order('as_of', { ascending: false }), 'model contribution'),
+    // Eight models of holdings across ten periods is over a thousand rows in a SINGLE run, so
+    // the newest-run view is not enough on its own — this one has to page as well.
+    qAllSoft(() => sb.from('latest_model_contribution').select('strategy_id,period,as_of,ticker,name_raw,start_weight,end_weight,period_return,contribution_bps,status,priced').order('as_of', { ascending: false }), 'model contribution'),
     qSoft(sb.from('latest_model_factor_allocation').select('strategy_id,as_of,basis,long_growth,long_inflation,long_liquidity,short_growth,short_inflation,short_liquidity,unclassified,detail').order('as_of', { ascending: false }), 'model factor allocation'),
     qAllSoft(() => sb.from('model_value_series').select('strategy_id,as_of,value,benchmark_value,coverage').order('as_of', { ascending: true }), 'model value series'),
     qSoft(sb.from('holdings_snapshot_integrity').select('strategy_id,as_of,n_holdings,weight_total,weight_off,n_unmatched,n_suspect_names,gap_days_before').order('as_of', { ascending: true }), 'holdings integrity'),
