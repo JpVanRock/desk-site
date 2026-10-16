@@ -102,8 +102,8 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar] = await Promise.all([
-    q(sb.from('strategies').select('id,name,label,sort_order,benchmark').order('sort_order')),
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, firmMetrics, firmExposures, firmStress] = await Promise.all([
+    q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
     q(sb.from('asset_classes').select('id,slug,name,sort_order,primary_role,primary_role_is_draft').order('sort_order')),
@@ -122,7 +122,7 @@ async function load() {
     qSoft(sb.from('inbox_routing_log').select('file,source,received_at,routed_to,lens,reason,status,processed_at').order('processed_at', { ascending: false }).limit(200), 'routing log'),
     qSoft(sb.from('latest_holding_contributions').select('strategy_id,security_id,as_of,weight,risk_share,risk_ratio,corr_to_rest,max_corr,closest_peer_id,verdict,rationale').order('as_of', { ascending: false }), 'holding contributions'),
     qSoft(sb.from('stress_scenarios').select('id,slug,name,description,shocks').order('sort_order'), 'stress scenarios'),
-    qSoft(sb.from('latest_strategy_stress_results').select('strategy_id,scenario_id,as_of,factor_score,coverage,n_windows,mean_return,worst_return,best_return,replay_coverage,windows').order('as_of', { ascending: false }), 'stress results'),
+    qSoft(sb.from('latest_strategy_stress_results').select('strategy_id,scenario_id,as_of,factor_score,coverage,n_windows,mean_return,worst_return,best_return,replay_coverage,windows,factor_detail').order('as_of', { ascending: false }), 'stress results'),
     qSoft(sb.from('latest_strategy_performance').select('strategy_id,period,as_of,start_date,end_date,portfolio_return,peer_benchmark_return,policy_benchmark_return,coverage,max_drawdown,peer_max_drawdown,gold_return,btc_return,weighted_expense_ratio,expense_coverage,cpi_return,cpi_window_start,cpi_window_end,model_return_cpi_window').order('as_of', { ascending: false }), 'performance'),
     qSoft(sb.from('latest_strategy_attribution').select('strategy_id,period,as_of,asset_class_id,w_portfolio,w_benchmark,r_portfolio,r_benchmark,contribution,allocation_effect,selection_effect,interaction_effect,attributable').order('as_of', { ascending: false }), 'attribution'),
     qSoft(sb.from('latest_speed_limit_readings').select('as_of,category,score,light,weight,n_calls,n_recorded,target_beta_low,target_beta_high,sign_label').order('as_of', { ascending: false }), 'speed limit'),
@@ -158,6 +158,9 @@ async function load() {
     qSoft(sb.from('latest_beauty_contest_rankings').select('as_of,dimension,regime,rank,prefer,avoid,prefer_tkr,avoid_tkr,spread_1m,spread_3m,confirmed,headline,unavailable_reason'), 'beauty contest'),
     qSoft(sb.from('macro_beauty_readings').select('as_of,score,stance').order('as_of', { ascending: true }).limit(500), 'beauty history'),
     qSoft(sb.from('latest_model_var').select('as_of,strategy_id,scope,horizon_days,horizon_label,confidence,var_return,es_return,worst_return,n_obs,n_independent,window_start,window_end,unavailable_reason'), 'value at risk'),
+    qSoft(sb.from('latest_firm_metrics').select('as_of,period,metric,label,sort_order,value,unit,benchmark_value,n_obs,detail,unavailable_reason').order('sort_order'), 'firm metrics'),
+    qSoft(sb.from('latest_firm_exposures').select('as_of,ticker,name,asset_class,usd,firm_weight,n_models,models,largest_in,largest_wt').order('usd', { ascending: false }), 'firm exposures'),
+    qSoft(sb.from('latest_firm_stress_results').select('as_of,scenario_id,factor_score,by_factor,helps,hurts,coverage,aum_covered,n_models'), 'firm stress'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -177,7 +180,7 @@ async function load() {
       if (ld) { cov += w; ld.forEach((v, i) => { net[i] += w * (v ?? 0); }); }
       return { ticker: s.ticker || '?', name: s.name || '', weight: w, cls: slug, loading: ld, security_id: a.security_id };
     }).sort((a, b) => b.weight - a.weight);
-    return { id: st.id, name: st.name, label: st.label, benchmarkLabel: st.benchmark || null, holdings, total, net: net.map(x => +x.toFixed(3)), cov: total ? cov / total : 0,
+    return { id: st.id, name: st.name, label: st.label, benchmarkLabel: st.benchmark || null, aum: st.aum === null || st.aum === undefined ? null : +st.aum, equityWeight: st.equity_weight === null || st.equity_weight === undefined ? null : +st.equity_weight, holdings, total, net: net.map(x => +x.toFixed(3)), cov: total ? cov / total : 0,
       byClass: Object.entries(byClass).sort((a, b) => b[1] - a[1]), last: rows.map(r => r.effective_from).sort().pop() || null };
   });
   const classNames = Object.fromEntries(classes.map(c => [c.slug, c.name])); classNames.unclassified = 'Unclassified';
@@ -237,7 +240,8 @@ async function load() {
     assessments: assessments || [],
     svenRules: newest(svenRules), newsFailure: newest(newsFailure),
     beautyReading: beautyReading || [], beautyComponents: beautyComponents || [], macroRegime: macroRegime || [],
-    beautyRanks: beautyRanks || [], beautyHistory: beautyHistory || [], modelVar: modelVar || [] };
+    beautyRanks: beautyRanks || [], beautyHistory: beautyHistory || [], modelVar: modelVar || [],
+    firmMetrics: firmMetrics || [], firmExposures: firmExposures || [], firmStress: firmStress || [] };
 }
 
 // ---------- Views ----------
@@ -291,6 +295,92 @@ function sisyphus() {
   off.forEach(m => alerts.push(`<b>${esc(m.name)}</b>: latest weights sum to ${pct(m.total)}.`));
   M.filter(m => m.last && latest && m.last < latest).forEach(m => alerts.push(`<b>${esc(m.name)}</b>: last allocation ${m.last}, older than ${latest}.`));
   const run = D.run;
+  // ---- Firm-wide, weighted by AUM ----
+  const firmCard = (() => {
+    const met = D.firmMetrics || [];
+    const expo = D.firmExposures || [];
+    if (!met.length) return '';
+    const n = v => v === null || v === undefined ? null : +v;
+    const periods = [...new Set(met.map(m => m.period))].sort((a, b) => ['YTD', '1Y', '3Y', 'ITD'].indexOf(a) - ['YTD', '1Y', '3Y', 'ITD'].indexOf(b));
+    const at = (p, k) => met.find(m => m.period === p && m.metric === k) || null;
+    const ORDER = [...new Map(met.map(m => [m.metric, m])).values()].sort((a, b) => a.sort_order - b.sort_order);
+    const show = (r, v) => {
+      if (v === null || v === undefined) return '<span style="color:var(--muted)">–</span>';
+      if (r.unit === 'pct') return `${(v * 100).toFixed(2)}%`;
+      if (r.unit === 'x') return `${v.toFixed(2)}×`;
+      return v.toFixed(2);
+    };
+    const tone = (k, v) => v === null ? 'var(--muted)'
+      : ['max_drawdown', 'current_drawdown', 'worst_month'].includes(k) ? 'var(--neg)'
+      : ['return', 'excess', 'best_month'].includes(k) ? (v >= 0 ? 'var(--pos)' : 'var(--neg)') : 'var(--text)';
+    const aum = (D.models || []).filter(m => m.aum).reduce((a, m) => a + +m.aum, 0);
+    const unfunded = (D.models || []).filter(m => !m.aum);
+
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Firm-wide</h2>
+        <span style="font-size:12px;color:var(--muted)">$${(aum / 1e6).toFixed(0)}M across ${(D.models || []).filter(m => m.aum).length} funded models${unfunded.length ? ` · ${unfunded.map(m => esc(m.name.replace(/\s*\([^)]*\)/g, ''))).join(', ')} excluded, no AUM supplied` : ''}</span></div>
+      <div style="overflow-x:auto;margin-top:12px"><table style="min-width:620px"><thead><tr>
+        <th>Metric</th>${periods.map(p => `<th class="num">${esc(p)}</th>`).join('')}</tr></thead><tbody>
+      ${ORDER.map(r => `<tr><td${r.detail ? ` title="${esc(r.detail)}"` : ''}>${esc(r.label)}${r.detail ? '<sup style="color:var(--muted)">·</sup>' : ''}</td>
+        ${periods.map(p => { const c = at(p, r.metric); const v = c ? n(c.value) : null;
+          return `<td class="num" style="color:${tone(r.metric, v)}"${c && c.benchmark_value !== null ? ` title="benchmark ${(+c.benchmark_value * 100).toFixed(2)}%"` : ''}>${show(r, v)}${c && c.benchmark_value !== null ? `<br><small style="color:var(--muted)">${(+c.benchmark_value * 100).toFixed(2)}%</small>` : ''}</td>`;
+        }).join('')}</tr>`).join('')}
+      </tbody></table></div>
+      <p class="note">Every figure is the <b>AUM-weighted composite</b> of the funded models, measured against the same blend of their own benchmarks — so the firm is judged against the sum of its mandates rather than one index nobody runs to. Grey second lines are the benchmark. Hover a metric for what it is and where it misleads: <b>down capture</b> rests on far fewer observations than up capture in a rising market, <b>information ratio</b> is least stable exactly when it looks most impressive, and <b>Sharpe</b> is excess of BIL rather than of zero because using zero flatters every book through a period when bills paid 4–5%.</p>
+      ${!expo.length ? '' : `<div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
+        <div class="eyebrow" style="margin-bottom:8px">Largest firm exposures</div>
+        <table><thead><tr><th>Position</th><th>Class</th><th class="num">Firm dollars</th><th class="num">% of firm</th><th class="num">Models</th><th>Largest single weight</th></tr></thead><tbody>
+        ${expo.slice(0, 12).map(e => `<tr><td><b>${esc(e.ticker)}</b></td>
+          <td style="color:var(--muted)">${esc(e.asset_class || '—')}</td>
+          <td class="num">$${(+e.usd / 1e6).toFixed(1)}M</td>
+          <td class="num"><b>${(+e.firm_weight * 100).toFixed(1)}%</b></td>
+          <td class="num" title="${esc((e.models || []).join(', '))}">${e.n_models}</td>
+          <td style="color:var(--muted)">${pct(+e.largest_wt)} in ${esc(e.largest_in || '—')}</td></tr>`).join('')}
+        </tbody></table>
+        <p class="note">A name held at a modest weight in several models is a larger firm exposure than its largest single weight suggests, and no per-model view shows that. ${expo[0] ? `${esc(expo[0].ticker)} is ${(+expo[0].firm_weight * 100).toFixed(1)}% of the firm across ${expo[0].n_models} models while never exceeding ${pct(+expo[0].largest_wt)} in any one of them.` : ''}</p></div>`}
+    </div>`;
+  })();
+
+  // ---- Stress scenarios, with the factor split the owner asked for ----
+  const stressCard = (() => {
+    // Anchored to the largest book by AUM rather than whichever model sorts first — the default
+    // was Fixed Income Core, the smallest and the one with four snapshots to its name, which is
+    // the least representative thing the card could have shown.
+    const first = (D.models || []).slice().sort((a, b) => (+b.aum || 0) - (+a.aum || 0))[0];
+    const res = (D.stressByStrategy || {})[first?.id] || [], scen = D.scenarios || [];
+    if (!res.length || !scen.length) return '';
+    const models = D.models || [];
+    const byScen = scen.slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    const fnum = v => v === null || v === undefined ? '–' : `${+v >= 0 ? '+' : ''}${(+v).toFixed(2)}`;
+    const ftone = v => v === null || v === undefined ? 'var(--muted)' : +v > 0.02 ? 'var(--pos)' : +v < -0.02 ? 'var(--neg)' : 'var(--muted)';
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Stress scenarios</h2>
+        <span style="font-size:12px;color:var(--muted)">${esc((first || {}).name || '')}${first && first.aum ? ` · $${(+first.aum / 1e6).toFixed(0)}M, the largest book` : ''}</span></div>
+      <p class="note" style="margin:0 0 12px">Ten shocks, each expressed in the desk's own factor units. The score is net exposure times the shock — a <b>directional ranking, not a predicted return</b>; nothing here claims the book falls a given percent. What it does say is which sleeve carries a model and which one is being hurt, which a single score hides.</p>
+      <div style="overflow-x:auto"><table style="min-width:900px"><thead><tr>
+        <th>Scenario</th><th class="num">Growth</th><th class="num">Inflation</th><th class="num">Liquidity</th>
+        <th class="num">Net</th><th>Helped by</th><th>Hurt by</th></tr></thead><tbody>
+      ${byScen.map(sc => {
+        const r = res.find(x => x.scenario_id === sc.id);
+        if (!r) return '';
+        const f = (r.factor_detail || {}).by_factor || {};
+        const helps = ((r.factor_detail || {}).helps || []).slice(0, 3).map(x => x.ticker);
+        const hurts = ((r.factor_detail || {}).hurts || []).slice(0, 3).map(x => x.ticker);
+        const sh = sc.shocks || {};
+        return `<tr><td title="${esc(sc.description || '')}"><b>${esc(sc.name)}</b><br><small style="color:var(--muted)">G ${fnum(sh.growth)} · I ${fnum(sh.inflation)} · L ${fnum(sh.liquidity_cost)}</small></td>
+          <td class="num" style="color:${ftone(f.growth)}">${fnum(f.growth)}</td>
+          <td class="num" style="color:${ftone(f.inflation)}">${fnum(f.inflation)}</td>
+          <td class="num" style="color:${ftone(f.liquidity_cost)}">${fnum(f.liquidity_cost)}</td>
+          <td class="num"><b style="color:${ftone(r.factor_score)}">${fnum(r.factor_score)}</b></td>
+          <td style="color:var(--pos);font-size:12px">${helps.length ? esc(helps.join(', ')) : '—'}</td>
+          <td style="color:var(--neg);font-size:12px">${hurts.length ? esc(hurts.join(', ')) : '—'}</td></tr>`;
+      }).join('')}
+      </tbody></table></div>
+      <p class="note">Shown for ${esc((first || {}).name || 'the largest book')}, the largest book by AUM; every model carries its own scores. The three factor columns are the same arithmetic as the net score, kept split: a model can come through a stagflation shock because its inflation sleeve carries it while its growth sleeve is being hurt, and the net figure alone would not say so. One scenario is deliberately benign — a stress set whose members all point the same way tests one thing repeatedly, and having no exposure to a good outcome is also a position. Hover a scenario for what it describes.</p></div>`;
+  })();
+
   // ---- Value at Risk: the left tail, book-wide and per model ----
   //
   // Historical, not parametric. A normal curve understates exactly the tail this exists to
@@ -349,7 +439,9 @@ function sisyphus() {
 
   return `<span class="eyebrow">Sisyphus · the desk at a glance</span><h1>Sisyphus</h1>
   <p class="sub">Eight models, viewed as net long or short growth, inflation and the cost of liquidity.</p>
-  ${varCard}
+  ${firmCard}
+   ${varCard}
+   ${stressCard}
   <div class="kpis">
    <div class="card kpi"><span class="eyebrow">Models</span><b>${M.length}</b><small>10/90 to 80/20</small></div>
    <div class="card kpi"><span class="eyebrow">Latest allocation</span><b style="font-size:20px">${esc(latest || '—')}</b><small>most recent trade date</small></div>
