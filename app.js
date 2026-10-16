@@ -344,11 +344,9 @@ function sisyphus() {
 
   // ---- Stress scenarios, with the factor split the owner asked for ----
   const stressCard = (() => {
-    // Anchored to the largest book by AUM rather than whichever model sorts first — the default
-    // was Fixed Income Core, the smallest and the one with four snapshots to its name, which is
-    // the least representative thing the card could have shown.
-    const first = (D.models || []).slice().sort((a, b) => (+b.aum || 0) - (+a.aum || 0))[0];
-    const res = (D.stressByStrategy || {})[first?.id] || [], scen = D.scenarios || [];
+    // Firm level, AUM-weighted across every funded model. Reading one model's row as "the firm"
+    // over-weights whichever model is shown and ignores the rest of the money.
+    const res = D.firmStress || [], scen = D.scenarios || [];
     if (!res.length || !scen.length) return '';
     const models = D.models || [];
     const byScen = scen.slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
@@ -357,7 +355,7 @@ function sisyphus() {
     return `<div class="card" style="margin-bottom:14px">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
         <h2 style="margin:0">Stress scenarios</h2>
-        <span style="font-size:12px;color:var(--muted)">${esc((first || {}).name || '')}${first && first.aum ? ` · $${(+first.aum / 1e6).toFixed(0)}M, the largest book` : ''}</span></div>
+        <span style="font-size:12px;color:var(--muted)">firm-wide, AUM-weighted${res[0] ? ` · ${(+res[0].coverage * 100).toFixed(0)}% of the book carries a factor loading` : ''}</span></div>
       <p class="note" style="margin:0 0 12px">Ten shocks, each expressed in the desk's own factor units. The score is net exposure times the shock — a <b>directional ranking, not a predicted return</b>; nothing here claims the book falls a given percent. What it does say is which sleeve carries a model and which one is being hurt, which a single score hides.</p>
       <div style="overflow-x:auto"><table style="min-width:900px"><thead><tr>
         <th>Scenario</th><th class="num">Growth</th><th class="num">Inflation</th><th class="num">Liquidity</th>
@@ -365,20 +363,20 @@ function sisyphus() {
       ${byScen.map(sc => {
         const r = res.find(x => x.scenario_id === sc.id);
         if (!r) return '';
-        const f = (r.factor_detail || {}).by_factor || {};
-        const helps = ((r.factor_detail || {}).helps || []).slice(0, 3).map(x => x.ticker);
-        const hurts = ((r.factor_detail || {}).hurts || []).slice(0, 3).map(x => x.ticker);
+        const f = r.by_factor || {};
+        const helps = (r.helps || []).slice(0, 3);
+        const hurts = (r.hurts || []).slice(0, 3);
         const sh = sc.shocks || {};
         return `<tr><td title="${esc(sc.description || '')}"><b>${esc(sc.name)}</b><br><small style="color:var(--muted)">G ${fnum(sh.growth)} · I ${fnum(sh.inflation)} · L ${fnum(sh.liquidity_cost)}</small></td>
           <td class="num" style="color:${ftone(f.growth)}">${fnum(f.growth)}</td>
           <td class="num" style="color:${ftone(f.inflation)}">${fnum(f.inflation)}</td>
           <td class="num" style="color:${ftone(f.liquidity_cost)}">${fnum(f.liquidity_cost)}</td>
           <td class="num"><b style="color:${ftone(r.factor_score)}">${fnum(r.factor_score)}</b></td>
-          <td style="color:var(--pos);font-size:12px">${helps.length ? esc(helps.join(', ')) : '—'}</td>
-          <td style="color:var(--neg);font-size:12px">${hurts.length ? esc(hurts.join(', ')) : '—'}</td></tr>`;
+          <td style="color:var(--pos);font-size:12px">${helps.length ? helps.map(x => `${esc(x.ticker)} <span style="color:var(--muted)">$${(+x.usd / 1e6).toFixed(0)}M</span>`).join(', ') : '—'}</td>
+          <td style="color:var(--neg);font-size:12px">${hurts.length ? hurts.map(x => `${esc(x.ticker)} <span style="color:var(--muted)">$${(+x.usd / 1e6).toFixed(0)}M</span>`).join(', ') : '—'}</td></tr>`;
       }).join('')}
       </tbody></table></div>
-      <p class="note">Shown for ${esc((first || {}).name || 'the largest book')}, the largest book by AUM; every model carries its own scores. The three factor columns are the same arithmetic as the net score, kept split: a model can come through a stagflation shock because its inflation sleeve carries it while its growth sleeve is being hurt, and the net figure alone would not say so. One scenario is deliberately benign — a stress set whose members all point the same way tests one thing repeatedly, and having no exposure to a good outcome is also a position. Hover a scenario for what it describes.</p></div>`;
+      <p class="note">Weighted by AUM across every funded model, so a name held small in a large book counts for more than the same name held large in a small one — and helped and hurt are ranked in firm dollars for the same reason. The three factor columns are the same arithmetic as the net score, kept split: a model can come through a stagflation shock because its inflation sleeve carries it while its growth sleeve is being hurt, and the net figure alone would not say so. One scenario is deliberately benign — a stress set whose members all point the same way tests one thing repeatedly, and having no exposure to a good outcome is also a position. Hover a scenario for what it describes.</p></div>`;
   })();
 
   // ---- Value at Risk: the left tail, book-wide and per model ----
