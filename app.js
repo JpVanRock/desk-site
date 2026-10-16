@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, firmMetrics, firmExposures, firmStress] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -159,6 +159,7 @@ async function load() {
     qSoft(sb.from('latest_beauty_contest_rankings').select('as_of,dimension,regime,rank,prefer,avoid,prefer_tkr,avoid_tkr,spread_1m,spread_3m,confirmed,headline,unavailable_reason'), 'beauty contest'),
     qSoft(sb.from('macro_beauty_readings').select('as_of,score,stance').order('as_of', { ascending: true }).limit(500), 'beauty history'),
     qSoft(sb.from('latest_model_var').select('as_of,strategy_id,scope,horizon_days,horizon_label,confidence,var_return,es_return,worst_return,n_obs,n_independent,window_start,window_end,unavailable_reason'), 'value at risk'),
+    qSoft(sb.from('latest_tail_risk_estimates').select('as_of,scope,strategy_id,method,episode,episode_label,window_start,window_end,estimate,benchmark_est,coverage,detail,note'), 'tail risk'),
     qSoft(sb.from('latest_firm_metrics').select('as_of,period,metric,label,sort_order,value,unit,benchmark_value,n_obs,detail,unavailable_reason').order('sort_order'), 'firm metrics'),
     qSoft(sb.from('latest_firm_exposures').select('as_of,ticker,name,asset_class,usd,firm_weight,n_models,models,largest_in,largest_wt').order('usd', { ascending: false }), 'firm exposures'),
     qSoft(sb.from('latest_firm_stress_results').select('as_of,scenario_id,factor_score,by_factor,helps,hurts,coverage,aum_covered,n_models'), 'firm stress'),
@@ -241,7 +242,7 @@ async function load() {
     assessments: assessments || [], tradeReviews: tradeReviews || [],
     svenRules: newest(svenRules), newsFailure: newest(newsFailure),
     beautyReading: beautyReading || [], beautyComponents: beautyComponents || [], macroRegime: macroRegime || [],
-    beautyRanks: beautyRanks || [], beautyHistory: beautyHistory || [], modelVar: modelVar || [],
+    beautyRanks: beautyRanks || [], beautyHistory: beautyHistory || [], modelVar: modelVar || [], tailRisk: tailRisk || [],
     firmMetrics: firmMetrics || [], firmExposures: firmExposures || [], firmStress: firmStress || [] };
 }
 
@@ -380,6 +381,58 @@ function sisyphus() {
       <p class="note">Weighted by AUM across every funded model, so a name held small in a large book counts for more than the same name held large in a small one — and helped and hurt are ranked in firm dollars for the same reason. The three factor columns are the same arithmetic as the net score, kept split: a model can come through a stagflation shock because its inflation sleeve carries it while its growth sleeve is being hurt, and the net figure alone would not say so. One scenario is deliberately benign — a stress set whose members all point the same way tests one thing repeatedly, and having no exposure to a good outcome is also a position. Hover a scenario for what it describes.</p></div>`;
   })();
 
+  // ---- Tail risk: what a crisis would actually do, which VaR cannot say ----
+  const tailCard = (() => {
+    const all = D.tailRisk || [];
+    if (!all.length) return '';
+    const n = v => v === null || v === undefined ? null : +v;
+    const scopes = [...new Set(all.map(r => r.scope))];
+    const ordered = ['Firm', ...scopes.filter(s => s !== 'Firm')];
+    const eps = [...new Map(all.filter(r => r.method === 'crisis_replay').map(r => [r.episode, r])).values()];
+    const pc = v => v === null ? '<span style="color:var(--muted)">–</span>' : `<span style="color:var(--neg)">${(v * 100).toFixed(1)}%</span>`;
+    const firmRho = all.find(r => r.scope === 'Firm' && r.method === 'stressed_correlation');
+    const firmWorst = all.filter(r => r.scope === 'Firm' && r.method === 'crisis_replay')
+      .reduce((a, b) => (a && +a.estimate < +b.estimate) ? a : b, null);
+    const var99 = (D.modelVar || []).find(r => r.scope === 'Book-wide' && r.horizon_days === 21 && Math.abs(+r.confidence - 0.99) < 1e-9);
+
+    return `<div class="card" style="margin-bottom:14px;border-left:3px solid var(--warn)">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Tail risk — what a crisis would actually do</h2>
+        <span style="font-size:12px;color:var(--muted)">estimates from asset-class proxies, not a replay of the funds</span></div>
+      <p class="note" style="margin:8px 0 14px"><b>The VaR above cannot answer this, and the gap is not small.</b> The series it is computed from begins 2022-10-31 — within days of the market bottom — and contains no crisis at all; the worst single day in it is −2.4%. Its 99% monthly reading of ${var99 && var99.var_return !== null ? `${(+var99.var_return * 100).toFixed(1)}%` : '—'} is a claim about the worst month of a four-year bull run.${firmWorst ? ` Run today's weights through the acute weeks of 2008 instead and the firm estimates <b style="color:var(--neg)">${(+firmWorst.estimate * 100).toFixed(1)}%</b>.` : ''} Today's book cannot be replayed directly: eleven of its twenty-eight positions did not exist before 2022.</p>
+      <div class="kpis" style="grid-template-columns:repeat(3,1fr)">
+        ${firmWorst ? `<div class="card kpi" title="${esc(firmWorst.note || '')}">
+          <span class="eyebrow">Worst crisis replay · firm</span>
+          <b style="font-size:26px;color:var(--neg)">${(+firmWorst.estimate * 100).toFixed(1)}%</b>
+          <small>${esc(firmWorst.episode_label)}, ${esc(firmWorst.window_start)} to ${esc(firmWorst.window_end)}</small></div>` : ''}
+        ${firmRho ? `<div class="card kpi" title="${esc(firmRho.note || '')}">
+          <span class="eyebrow">Correlations to 1 · 99% month</span>
+          <b style="font-size:26px;color:var(--neg)">${(+firmRho.estimate * 100).toFixed(1)}%</b>
+          <small>at ${((firmRho.detail || {}).stressed_vol * 100).toFixed(1)}% volatility, against ${(((firmRho.detail || {}).actual_vol || 0) * 100).toFixed(1)}% today</small></div>` : ''}
+        ${firmRho && (firmRho.detail || {}).diversification_ratio ? `<div class="card kpi" title="The book's actual volatility as a share of its correlation-1 limit. The gap to 1 is the risk reduction that depends on correlations holding — and a left-tail event is precisely when they do not.">
+          <span class="eyebrow">Diversification relied on</span>
+          <b style="font-size:26px">${((1 - +firmRho.detail.diversification_ratio) * 100).toFixed(0)}%</b>
+          <small>of the firm's risk reduction is correlation, not cash</small></div>` : ''}
+      </div>
+      <div style="overflow-x:auto;margin-top:14px"><table style="min-width:860px"><thead><tr>
+        <th>Scope</th>${eps.map(e => `<th class="num" title="${esc(e.window_start + ' to ' + e.window_end)}">${esc(e.episode_label)}</th>`).join('')}
+        <th class="num">ρ→1 month</th><th class="num">Covered</th></tr></thead><tbody>
+      ${ordered.map(sc => {
+        const rho = all.find(r => r.scope === sc && r.method === 'stressed_correlation');
+        const any = all.find(r => r.scope === sc);
+        return `<tr${sc === 'Firm' ? ' style="background:var(--panel2)"' : ''}>
+          <td>${sc === 'Firm' ? `<b>${esc(sc)}</b>` : esc(sc.replace(/\s*\([^)]*\)/g, ''))}</td>
+          ${eps.map(e => { const r = all.find(x => x.scope === sc && x.method === 'crisis_replay' && x.episode === e.episode);
+            return `<td class="num">${r ? pc(n(r.estimate)) : '<span style="color:var(--muted)">–</span>'}</td>`; }).join('')}
+          <td class="num"><b>${rho ? pc(n(rho.estimate)) : '–'}</b></td>
+          <td class="num" style="color:${any && +any.coverage < 0.9 ? 'var(--warn)' : 'var(--muted)'}" title="Alternatives carry no crisis proxy and are excluded.">${any ? (+any.coverage * 100).toFixed(0) + '%' : '–'}</td></tr>`;
+      }).join('')}
+      </tbody></table></div>
+      <p class="note"><b>Crisis replay</b> maps today's weights onto the liquid proxy for each asset class — SPY, AGG, GLD, DBC, BIL, which carry twenty years of history — and runs them through the real episode with the correlations that actually prevailed. It is <i>not</i> a replay of the actual funds, which track their proxies imperfectly and in a crisis probably worse, since several are materially less liquid than an index ETF.
+      <b>ρ→1</b> forces every pairwise correlation to one, the arithmetic limit where diversification contributes nothing, and reports a 99% one-month loss at that volatility with no drift credited.
+      <b>Covered</b> is the share of the book the estimate can see. <b>Alternatives are excluded and deliberately not given a proxy</b>: they are bought precisely on the claim that they do not go to one with everything else, so mapping them to equities would assume the claim is false and mapping them to cash would assume it is true. Both would invent the answer to the question being asked, and the uncovered share is itself the finding — whether that sleeve holds up is the untested part of the book.</p></div>`;
+  })();
+
   // ---- Value at Risk: the left tail, book-wide and per model ----
   //
   // Historical, not parametric. A normal curve understates exactly the tail this exists to
@@ -440,6 +493,7 @@ function sisyphus() {
   <p class="sub">Eight models, viewed as net long or short growth, inflation and the cost of liquidity.</p>
   ${firmCard}
    ${varCard}
+   ${tailCard}
    ${stressCard}
   <div class="kpis">
    <div class="card kpi"><span class="eyebrow">Models</span><b>${M.length}</b><small>10/90 to 80/20</small></div>
