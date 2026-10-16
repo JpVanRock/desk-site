@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -157,6 +157,7 @@ async function load() {
     qSoft(sb.from('latest_macro_regime_readings').select('as_of,regime,growth_z,inflation_z,conviction,n_growth,n_inflation,data_as_of,stale_days'), 'macro regime'),
     qSoft(sb.from('latest_beauty_contest_rankings').select('as_of,dimension,regime,rank,prefer,avoid,prefer_tkr,avoid_tkr,spread_1m,spread_3m,confirmed,headline,unavailable_reason'), 'beauty contest'),
     qSoft(sb.from('macro_beauty_readings').select('as_of,score,stance').order('as_of', { ascending: true }).limit(500), 'beauty history'),
+    qSoft(sb.from('latest_model_var').select('as_of,strategy_id,scope,horizon_days,horizon_label,confidence,var_return,es_return,worst_return,n_obs,n_independent,window_start,window_end,unavailable_reason'), 'value at risk'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -236,7 +237,7 @@ async function load() {
     assessments: assessments || [],
     svenRules: newest(svenRules), newsFailure: newest(newsFailure),
     beautyReading: beautyReading || [], beautyComponents: beautyComponents || [], macroRegime: macroRegime || [],
-    beautyRanks: beautyRanks || [], beautyHistory: beautyHistory || [] };
+    beautyRanks: beautyRanks || [], beautyHistory: beautyHistory || [], modelVar: modelVar || [] };
 }
 
 // ---------- Views ----------
@@ -290,8 +291,65 @@ function sisyphus() {
   off.forEach(m => alerts.push(`<b>${esc(m.name)}</b>: latest weights sum to ${pct(m.total)}.`));
   M.filter(m => m.last && latest && m.last < latest).forEach(m => alerts.push(`<b>${esc(m.name)}</b>: last allocation ${m.last}, older than ${latest}.`));
   const run = D.run;
+  // ---- Value at Risk: the left tail, book-wide and per model ----
+  //
+  // Historical, not parametric. A normal curve understates exactly the tail this exists to
+  // describe, so the figures are the empirical percentiles of the book's own past returns. The
+  // independent-observation count is shown beside the monthly readings on purpose: a 99% monthly
+  // VaR drawn from 43 independent months is one observation deep in the tail.
+  const varCard = (() => {
+    const rows = D.modelVar || [];
+    if (!rows.length) {
+      return `<div class="card" style="margin-bottom:14px"><h2>Value at Risk</h2>
+        <div class="empty">Not computed yet. Run jobs/compute-var.mjs.</div></div>`;
+    }
+    const HOR = [[1, 'Daily'], [5, 'Weekly'], [21, 'Monthly']];
+    const at = (scope, h, c) => rows.find(r => r.scope === scope && r.horizon_days === h && Math.abs(+r.confidence - c) < 1e-9) || null;
+    const scopes = [...new Set(rows.map(r => r.scope))];
+    const others = scopes.filter(s => s !== 'Book-wide');
+    const pc = v => v === null || v === undefined ? '<span style="color:var(--muted)">–</span>'
+      : `<span style="color:var(--neg)">${(+v * 100).toFixed(2)}%</span>`;
+    const book = h => HOR.find(x => x[0] === h);
+
+    const headline = `<div class="kpis" style="grid-template-columns:repeat(3,1fr);margin-top:12px">
+      ${HOR.map(([h, label]) => {
+        const r95 = at('Book-wide', h, 0.95), r99 = at('Book-wide', h, 0.99);
+        return `<div class="card kpi" title="${esc(r99 && r99.unavailable_reason ? r99.unavailable_reason : `${r99 ? r99.n_obs : 0} overlapping ${label.toLowerCase()} windows, about ${r99 ? r99.n_independent : 0} independent. Worst in the sample ${r99 && r99.worst_return !== null ? (+r99.worst_return * 100).toFixed(2) + '%' : '—'}.`)}">
+          <span class="eyebrow">${esc(label)} · book-wide</span>
+          <b style="font-size:26px;color:var(--neg)">${r95 && r95.var_return !== null ? (+r95.var_return * 100).toFixed(2) + '%' : '—'}</b>
+          <small>at 95% · ${r99 && r99.var_return !== null ? (+r99.var_return * 100).toFixed(2) + '%' : '—'} at 99%</small></div>`;
+      }).join('')}</div>`;
+
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Value at Risk — the left tail</h2>
+        <span style="font-size:12px;color:var(--muted)">${esc(rows[0].window_start || '')} to ${esc(rows[0].window_end || '')}</span></div>
+      ${headline}
+      <div style="overflow-x:auto;margin-top:14px"><table style="min-width:820px"><thead><tr>
+        <th>Scope</th><th>Horizon</th><th class="num">VaR 95%</th><th class="num">Shortfall 95%</th>
+        <th class="num">VaR 99%</th><th class="num">Shortfall 99%</th><th class="num">Worst</th><th class="num">Sample</th>
+      </tr></thead><tbody>
+      ${['Book-wide', ...others].map(scope => HOR.map(([h, label], i) => {
+        const a = at(scope, h, 0.95), b = at(scope, h, 0.99);
+        const thin = b && b.n_independent !== null && +b.n_independent < 60;
+        return `<tr${scope === 'Book-wide' ? ' style="background:var(--panel2)"' : ''}>
+          <td>${i === 0 ? `<b>${esc(scope)}</b>` : '<span style="color:var(--muted)">·</span>'}</td>
+          <td>${esc(label)}</td>
+          <td class="num">${pc(a?.var_return)}</td><td class="num">${pc(a?.es_return)}</td>
+          <td class="num"><b>${pc(b?.var_return)}</b></td><td class="num">${pc(b?.es_return)}</td>
+          <td class="num" style="color:var(--muted)">${b && b.worst_return !== null ? (+b.worst_return * 100).toFixed(2) + '%' : '–'}</td>
+          <td class="num" style="color:${thin ? 'var(--warn)' : 'var(--muted)'}" title="${esc(`${b ? b.n_obs : 0} overlapping windows, about ${b ? b.n_independent : 0} independent`)}">${b ? b.n_independent : '–'}${thin ? '<sup>·</sup>' : ''}</td></tr>`;
+      }).join('')).join('')}
+      </tbody></table></div>
+      <p class="note"><b>Historical, not parametric.</b> These are the empirical percentiles of each book's own past returns — the 5th worst period in a hundred and the 1st worst — with no normal curve assumed. That is deliberate: a normal curve understates exactly the tail this measure exists to describe, and the cost is that it can only show tails the sample actually contains.
+      <b>Shortfall</b> is the average loss in the periods worse than VaR. VaR says how bad the threshold is and nothing about what lies past it, so when the two diverge the shortfall is the number to read.
+      Weekly and monthly use overlapping windows, because non-overlapping ones would leave about 200 weeks and 47 months — too few to read a 99th percentile from at all. <b>Sample</b> is the effective independent count, and a figure under 60 is marked: a 99% monthly reading drawn from 43 independent months is one observation deep in the tail.
+      <b>Book-wide is equal-weighted across the models</b>, because this desk records no capital figure per model. It is a real portfolio — the same amount in each — not a guess at how the money is actually split.</p></div>`;
+  })();
+
   return `<span class="eyebrow">Sisyphus · the desk at a glance</span><h1>Sisyphus</h1>
   <p class="sub">Eight models, viewed as net long or short growth, inflation and the cost of liquidity.</p>
+  ${varCard}
   <div class="kpis">
    <div class="card kpi"><span class="eyebrow">Models</span><b>${M.length}</b><small>10/90 to 80/20</small></div>
    <div class="card kpi"><span class="eyebrow">Latest allocation</span><b style="font-size:20px">${esc(latest || '—')}</b><small>most recent trade date</small></div>
