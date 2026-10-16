@@ -49,7 +49,9 @@ async function enter(session) {
   if (!session) return showGate('in');
   const approved = session.user?.app_metadata?.desk_member === true;
   if (!approved) { await sb.auth.signOut(); return showGate('in', 'This account has not been approved for the desk yet. Ask JP.'); }
-  $('#who').textContent = session.user.email;
+  // The signed-in address used to sit in a badge beside Sign out. It was taking header width
+  // the mark needed, and it is still one hover away rather than gone.
+  $('#signout').title = `Signed in as ${session.user.email}`;
   $('#gate').hidden = true; $('#shell').hidden = false;
   $('#app').innerHTML = '<div class="empty">Loading…</div>';
   try { D = await load(); } catch (ex) { $('#app').innerHTML = `<div class="empty">Could not load data: ${esc(ex.message)}</div>`; return; }

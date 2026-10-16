@@ -23,14 +23,12 @@ body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system
    rather than the mark being squeezed to fit the header. */
 .logo{color:#F0EFEC;display:block;flex:none}
 :root[data-theme="light"] .logo{color:#111111}
-.logo-header{height:128px;width:81px}
+.logo-header{height:136px;width:86px}
 .logo-gate{height:88px;width:56px;margin:0 auto 4px}
-.top{position:sticky;top:0;z-index:5;display:flex;align-items:flex-start;gap:28px;padding:20px 28px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
-.brand{display:flex;gap:14px;align-items:center}
-.top .brand{flex-direction:column;align-items:flex-start;gap:10px}
-.top .brand .logo{order:2}.brand b{display:block;font-size:24px;letter-spacing:.2px;line-height:1.15}.brand small{color:var(--muted);font-size:13px;letter-spacing:.9px;text-transform:uppercase}
-nav{display:flex;gap:4px;flex:1;flex-wrap:wrap;align-content:flex-start;padding-top:2px}nav a{color:var(--muted);text-decoration:none;font-size:16px;padding:12px 14px;border-radius:10px}nav a:hover{color:var(--text)}nav a.on{color:var(--text);background:var(--panel2)}
-.tools{display:flex;gap:10px;align-items:center;padding-top:2px}
+.top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:28px;padding:16px 28px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.brand{display:flex;gap:16px;align-items:center}.brand b{display:block;font-size:24px;letter-spacing:.2px;line-height:1.15}.brand small{color:var(--muted);font-size:13px;letter-spacing:.9px;text-transform:uppercase}
+nav{display:flex;gap:4px;flex:1;flex-wrap:wrap}nav a{color:var(--muted);text-decoration:none;font-size:16px;padding:12px 14px;border-radius:10px}nav a:hover{color:var(--text)}nav a.on{color:var(--text);background:var(--panel2)}
+.tools{display:flex;gap:10px;align-items:center}
 button#theme{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:10px;width:42px;height:42px;font-size:17px;cursor:pointer}
 .badge{font:600 12px/1 ui-monospace,Menlo,monospace;letter-spacing:.8px;padding:8px 11px;border-radius:6px;border:1px solid var(--line);color:var(--muted)}
 .badge.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
