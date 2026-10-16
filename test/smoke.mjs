@@ -446,7 +446,59 @@ if (!argRoute) {
     '[adam] a leg awaiting data rendered a 0 score; it must render a dash');
 
   // -------------------------------------------------------------------------
-  // 11. Sven: every index carries every rule, and the news window switches.
+  // 11. Sisyphus stress: the universe lists, and the cap that sets their length.
+  // -------------------------------------------------------------------------
+  currentRoute = 'sisyphus';
+  await go('#sisyphus');
+  const sis = app();
+  if (sis.includes('Stress scenarios')) {
+    const rows = await fetch(`${SUPABASE_URL}/rest/v1/latest_firm_stress_results?select=scenario_id,universe_helps,universe_hurts,universe_meta`, { headers: REST }).then(r => r.json());
+    need(rows.length > 0, '[stress] no firm stress rows');
+    let bad = [];
+    for (const r of rows) {
+      const m = r.universe_meta || {};
+      const uh = r.universe_helps || [], uu = r.universe_hurts || [];
+      // The 12% cap is what sets the list length. If a list is longer than the cap allows, the
+      // card is showing names the desk could not all fund, which is the opposite of the point.
+      if (uh.length > m.list_length) bad.push(`helps list is ${uh.length} long, cap allows ${m.list_length}`);
+      if (uu.length > m.list_length) bad.push(`hurts list is ${uu.length} long, cap allows ${m.list_length}`);
+      // Sorted, signed, and disjoint: a name cannot both help and hurt the same shock.
+      for (let i = 1; i < uh.length; i++) if (+uh[i].score > +uh[i - 1].score) bad.push('helps not sorted descending');
+      for (let i = 1; i < uu.length; i++) if (+uu[i].score < +uu[i - 1].score) bad.push('hurts not sorted ascending');
+      if (uh.some(x => +x.score <= 0)) bad.push('a name in helps has a non-positive score');
+      if (uu.some(x => +x.score >= 0)) bad.push('a name in hurts has a non-negative score');
+      const overlap = uh.map(x => x.ticker).filter(t => uu.some(y => y.ticker === t));
+      if (overlap.length) bad.push(`${overlap.join(',')} appears in both helps and hurts`);
+      // Expressibility must agree with the list it is derived from.
+      const expect = Math.min(1, m.n_helps * m.max_position);
+      if (Math.abs(expect - m.help_coverage) > 1e-6) bad.push(`help_coverage ${m.help_coverage} does not match ${m.n_helps} names x ${m.max_position}`);
+      if (m.max_position !== 0.12) bad.push(`single-position cap is ${m.max_position}, expected 0.12`);
+      // A beta that survived the significance gate must be a real number, and one that did not
+      // must be null rather than 0 -- the two mean different things and 0 would rank.
+      for (const x of [...uh, ...uu]) {
+        const bs = Object.values(x.betas || {});
+        if (!bs.length) bad.push(`${x.ticker} has no betas`);
+        if (bs.some(v => v !== null && !Number.isFinite(+v))) bad.push(`${x.ticker} has a non-finite beta`);
+        if (!bs.some(v => v !== null)) bad.push(`${x.ticker} scored with no significant beta`);
+        if (!(x.n_weeks >= m.min_weeks)) bad.push(`${x.ticker} fitted on ${x.n_weeks} weeks, minimum is ${m.min_weeks}`);
+        if (Math.abs(+x.score) > 25) bad.push(`${x.ticker} scores ${x.score}%/wk, which is not a fund`);
+      }
+      // The universe is the universe, not the book. If every listed name is held, the column has
+      // silently reverted to current holdings -- the exact bug this replaced.
+      if (uh.length > 2 && uh.every(x => x.held) && uu.length > 2 && uu.every(x => x.held)) bad.push('every listed name is held; the universe ranking has reverted to holdings');
+    }
+    bad = [...new Set(bad)];
+    say(` ok  stress universe        -> ${rows.length} scenarios, ${rows[0].universe_meta.n_scored} securities scored, ${bad.length} problems`);
+    for (const b of bad) errors.push(`[stress] ${b}`);
+    // And the card must actually render them rather than the old dollar lists.
+    need(sis.includes('Expressible'), '[stress] the Expressible column is missing from the card');
+    need(!/Helped by[\s\S]{0,400}\$\d+M/.test(sis), '[stress] helped-by still renders firm dollars, so it is still ranking holdings');
+    const anyTicker = (rows[0].universe_helps || [])[0];
+    if (anyTicker) need(sis.includes(anyTicker.ticker), `[stress] card does not show ${anyTicker.ticker}, the top universe name`);
+  }
+
+  // -------------------------------------------------------------------------
+  // 12. Sven: every index carries every rule, and the news window switches.
   // -------------------------------------------------------------------------
   currentRoute = 'sven';
   await go('#sven');

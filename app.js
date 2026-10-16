@@ -155,14 +155,16 @@ async function load() {
     qSoft(sb.from('latest_news_failure_readings').select('as_of,ticker,label,asset_class,window_days,n_releases,n_positive,n_negative,n_series,n_factors,agreement,price_change,made_new_high,made_new_low,verdict,headline,held_in'), 'news failure'),
     qSoft(sb.from('macro_beauty_readings').select('as_of,score,stance,n_live,n_total,headline').order('as_of', { ascending: false }).limit(1), 'beauty reading'),
     qSoft(sb.from('latest_macro_beauty_components').select('as_of,component,label,score,status,headline,measure,value_text,source,how_to_supply,data_as_of'), 'beauty components'),
-    qSoft(sb.from('latest_macro_regime_readings').select('as_of,regime,growth_z,inflation_z,conviction,n_growth,n_inflation,data_as_of,stale_days'), 'macro regime'),
+    qSoft(sb.from('latest_macro_regime_readings').select('as_of,regime,growth_z,inflation_z,conviction,n_growth,n_inflation,data_as_of,stale_days,liquidity_z,n_liquidity,rate_driver,term_premium_z,breakeven_z'), 'macro regime'),
     qSoft(sb.from('latest_beauty_contest_rankings').select('as_of,dimension,regime,rank,prefer,avoid,prefer_tkr,avoid_tkr,spread_1m,spread_3m,confirmed,headline,unavailable_reason'), 'beauty contest'),
     qSoft(sb.from('macro_beauty_readings').select('as_of,score,stance').order('as_of', { ascending: true }).limit(500), 'beauty history'),
     qSoft(sb.from('latest_model_var').select('as_of,strategy_id,scope,horizon_days,horizon_label,confidence,var_return,es_return,worst_return,n_obs,n_independent,window_start,window_end,unavailable_reason'), 'value at risk'),
     qSoft(sb.from('latest_tail_risk_estimates').select('as_of,scope,strategy_id,method,episode,episode_label,window_start,window_end,estimate,benchmark_est,coverage,detail,note'), 'tail risk'),
     qSoft(sb.from('latest_firm_metrics').select('as_of,period,metric,label,sort_order,value,unit,benchmark_value,n_obs,detail,unavailable_reason').order('sort_order'), 'firm metrics'),
     qSoft(sb.from('latest_firm_exposures').select('as_of,ticker,name,asset_class,usd,firm_weight,n_models,models,largest_in,largest_wt').order('usd', { ascending: false }), 'firm exposures'),
-    qSoft(sb.from('latest_firm_stress_results').select('as_of,scenario_id,factor_score,by_factor,helps,hurts,coverage,aum_covered,n_models'), 'firm stress'),
+    // helps/hurts (current holdings, in firm dollars) are deliberately not fetched: the card ranks
+    // the whole universe now, and the held-only lists were the thing being replaced.
+    qSoft(sb.from('latest_firm_stress_results').select('as_of,scenario_id,factor_score,by_factor,coverage,aum_covered,n_models,universe_helps,universe_hurts,universe_meta'), 'firm stress'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -353,32 +355,44 @@ function sisyphus() {
     const models = D.models || [];
     const byScen = scen.slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
     const fnum = v => v === null || v === undefined ? '–' : `${+v >= 0 ? '+' : ''}${(+v).toFixed(2)}`;
+    const um = res[0] && res[0].universe_meta ? res[0].universe_meta : null;
     const ftone = v => v === null || v === undefined ? 'var(--muted)' : +v > 0.02 ? 'var(--pos)' : +v < -0.02 ? 'var(--neg)' : 'var(--muted)';
     return `<div class="card" style="margin-bottom:14px">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
         <h2 style="margin:0">Stress scenarios</h2>
         <span style="font-size:12px;color:var(--muted)">firm-wide, AUM-weighted${res[0] ? ` · ${(+res[0].coverage * 100).toFixed(0)}% of the book carries a factor loading` : ''}</span></div>
       <p class="note" style="margin:0 0 12px">Ten shocks, each expressed in the desk's own factor units. The score is net exposure times the shock — a <b>directional ranking, not a predicted return</b>; nothing here claims the book falls a given percent. What it does say is which sleeve carries a model and which one is being hurt, which a single score hides.</p>
-      <div style="overflow-x:auto"><table style="min-width:900px"><thead><tr>
+      <p class="note" style="margin:0 0 12px"><b>Helped by</b> and <b>hurt by</b> range over the entire investable universe${um ? ` — all ${um.n_scored} securities the desk could buy, not the ${um.n_held_in_universe} it currently holds` : ''}. A name the firm already owns is marked <span style="color:var(--fg)">●</span>; the rest are candidates. <b>Expressible</b> is what the desk's 12% single-position limit leaves of the idea: no name can hold more than 12%, so a book built only from the names that help a scenario reaches 12% times however many of them there are. Nine is the first count that fills a book, which is why the lists stop at nine. Where the figure falls short of 100% the universe cannot express the scenario at all, and the shortfall is the finding — that much of the book has to sit in the shock rather than against it.</p>
+      <div style="overflow-x:auto"><table style="min-width:1060px"><thead><tr>
         <th>Scenario</th><th class="num">Growth</th><th class="num">Inflation</th><th class="num">Liquidity</th>
-        <th class="num">Net</th><th>Helped by</th><th>Hurt by</th></tr></thead><tbody>
+        <th class="num">Net</th><th class="num">Expressible</th><th>Helped by</th><th>Hurt by</th></tr></thead><tbody>
       ${byScen.map(sc => {
         const r = res.find(x => x.scenario_id === sc.id);
         if (!r) return '';
         const f = r.by_factor || {};
-        const helps = (r.helps || []).slice(0, 3);
-        const hurts = (r.hurts || []).slice(0, 3);
+        const uh = r.universe_helps || [], uu = r.universe_hurts || [];
         const sh = sc.shocks || {};
+        const m = r.universe_meta || {};
+        // Four names fit the column; the title carries all nine with the fit behind each, because
+        // a beta is worth what its R-squared says it is worth and the cell has no room to say so.
+        const cell = (list, tone) => {
+          if (!list.length) return '<span style="color:var(--muted)">—</span>';
+          const full = list.map(x => `${x.ticker}${x.held ? ' (held)' : ''}  ${(+x.score >= 0 ? '+' : '') + (+x.score).toFixed(2)}%/wk, R² ${x.r2 === null ? 'n/a' : (+x.r2).toFixed(2)}, ${x.n_weeks}w`).join('\n');
+          return `<span title="${esc(full)}" style="color:${tone};font-size:12px">${list.slice(0, 4).map(x => `${x.held ? '<span style="color:var(--fg)">●</span>' : ''}${esc(x.ticker)}`).join(', ')}${list.length > 4 ? ` <span style="color:var(--muted)">+${list.length - 4}</span>` : ''}</span>`;
+        };
+        const cov = m.help_coverage;
         return `<tr><td title="${esc(sc.description || '')}"><b>${esc(sc.name)}</b><br><small style="color:var(--muted)">G ${fnum(sh.growth)} · I ${fnum(sh.inflation)} · L ${fnum(sh.liquidity_cost)}</small></td>
           <td class="num" style="color:${ftone(f.growth)}">${fnum(f.growth)}</td>
           <td class="num" style="color:${ftone(f.inflation)}">${fnum(f.inflation)}</td>
           <td class="num" style="color:${ftone(f.liquidity_cost)}">${fnum(f.liquidity_cost)}</td>
           <td class="num"><b style="color:${ftone(r.factor_score)}">${fnum(r.factor_score)}</b></td>
-          <td style="color:var(--pos);font-size:12px">${helps.length ? helps.map(x => `${esc(x.ticker)} <span style="color:var(--muted)">$${(+x.usd / 1e6).toFixed(0)}M</span>`).join(', ') : '—'}</td>
-          <td style="color:var(--neg);font-size:12px">${hurts.length ? hurts.map(x => `${esc(x.ticker)} <span style="color:var(--muted)">$${(+x.usd / 1e6).toFixed(0)}M</span>`).join(', ') : '—'}</td></tr>`;
+          <td class="num" style="font-size:12px;color:${cov === undefined || cov === null ? 'var(--muted)' : +cov >= 0.999 ? 'var(--muted)' : 'var(--neg)'}" title="${uh.length} name${uh.length === 1 ? '' : 's'} in the universe measurably help this scenario, capped at 12% each.">${cov === undefined || cov === null ? '–' : (+cov * 100).toFixed(0) + '%'}</td>
+          <td>${cell(uh, 'var(--pos)')}</td>
+          <td>${cell(uu, 'var(--neg)')}</td></tr>`;
       }).join('')}
       </tbody></table></div>
-      <p class="note">Weighted by AUM across every funded model, so a name held small in a large book counts for more than the same name held large in a small one — and helped and hurt are ranked in firm dollars for the same reason. The three factor columns are the same arithmetic as the net score, kept split: a model can come through a stagflation shock because its inflation sleeve carries it while its growth sleeve is being hurt, and the net figure alone would not say so. One scenario is deliberately benign — a stress set whose members all point the same way tests one thing repeatedly, and having no exposure to a good outcome is also a position. Hover a scenario for what it describes.</p></div>`;
+      <p class="note">Weighted by AUM across every funded model, so a name held small in a large book counts for more than the same name held large in a small one. The three factor columns are the same arithmetic as the net score, kept split: a model can come through a stagflation shock because its inflation sleeve carries it while its growth sleeve is being hurt, and the net figure alone would not say so. One scenario is deliberately benign — a stress set whose members all point the same way tests one thing repeatedly, and having no exposure to a good outcome is also a position. Hover a scenario for what it describes, or a ticker list for every name in it with the fit behind it.</p>
+      ${um ? `<p class="note" style="color:var(--muted)">Universe ranking: each security's weekly excess return regressed on three priced factor legs — growth ${esc(um.legs.growth)}, inflation ${esc(um.legs.inflation)}, liquidity ${esc(um.legs.liquidity_cost)} — and scored as beta × shock × the leg's own weekly volatility, so the figure is an expected weekly excess return rather than an index. ${um.n_scored} of ${um.n_universe} securities cleared the ${um.min_weeks}-week minimum (${um.n_short_history} too short). A leg whose beta sits inside two standard errors of zero is not counted, which is why a fund can appear on neither list: no measurable exposure is a finding, not a score of zero. Returns-based throughout — these are estimated exposures, never a holdings look-through${(um.truncated || []).length ? `, and ${esc((um.truncated || []).map(x => x.split(' ')[0]).join(', '))} is fitted only on history after a corrupt price break` : ''}.</p>` : ''}</div>`;
   })();
 
   // ---- Tail risk: what a crisis would actually do, which VaR cannot say ----
@@ -1354,6 +1368,13 @@ function adam() {
   // ---- the regime quadrant ----
   const quad = !regime ? '' : (() => {
     const g = +regime.growth_z, i = +regime.inflation_z;
+    const lq = regime.liquidity_z === null || regime.liquidity_z === undefined ? null : +regime.liquidity_z;
+    const DRIVER = {
+      term_premium: ['term premium', 'Long rates are rising because investors want more compensation to hold duration, not because they expect more inflation. An inflation-hedged book is least prepared for this one.'],
+      breakevens: ['breakevens', 'Long rates are rising on expected inflation rather than on the price of duration risk. Real assets and breakeven-linked holdings are the ones that answer it.'],
+      mixed: ['mixed', 'Term premium and breakevens are moving together, so the move in long rates does not separate into a real-rate story or an inflation story.'],
+    };
+    const drv = regime.rate_driver ? DRIVER[regime.rate_driver] : null;
     const S = 300, cx = S / 2, cy = S / 2, k = 55;   // 55px per standard deviation
     const x = Math.max(16, Math.min(S - 16, cx + Math.max(-2.4, Math.min(2.4, g)) * k));
     const y = Math.max(16, Math.min(S - 16, cy - Math.max(-2.4, Math.min(2.4, i)) * k));
@@ -1386,8 +1407,13 @@ function adam() {
             Growth <b style="color:${g >= 0 ? 'var(--pos)' : 'var(--neg)'}">${g >= 0 ? '+' : ''}${g.toFixed(2)}σ</b> across ${regime.n_growth} series<br>
             Inflation <b style="color:${i >= 0 ? 'var(--neg)' : 'var(--pos)'}">${i >= 0 ? '+' : ''}${i.toFixed(2)}σ</b> across ${regime.n_inflation} series<br>
             Conviction <b>${(+regime.conviction).toFixed(2)}</b></div>
+          ${lq === null ? '' : `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-variant-numeric:tabular-nums;font-size:13px">
+            Cost of liquidity <b style="color:${lq >= 0 ? 'var(--neg)' : 'var(--pos)'}">${lq >= 0 ? '+' : ''}${lq.toFixed(2)}σ</b> across ${regime.n_liquidity} series
+            <span style="color:var(--muted)"> · ${lq >= 0 ? 'getting dearer' : 'getting cheaper'}</span>
+            ${drv ? `<br>Long rates driven by <b title="${esc(drv[1])}">${esc(drv[0])}</b>${regime.term_premium_z !== null && regime.breakeven_z !== null ? ` <span style="color:var(--muted)">(term premium ${+regime.term_premium_z >= 0 ? '+' : ''}${(+regime.term_premium_z).toFixed(2)}σ vs breakevens ${+regime.breakeven_z >= 0 ? '+' : ''}${(+regime.breakeven_z).toFixed(2)}σ)</span>` : ''}` : ''}</div>`}
         </div></div>
-      <p class="note">Each series is reduced to how its recent change compares with its own history of that change, signed so a fall in unemployment reads as growth rising, then averaged within its factor. <b>Conviction is the distance from the centre</b>, where the four quadrants meet: ${+regime.conviction < 0.5 ? `at ${(+regime.conviction).toFixed(2)} this reading sits close enough to the boundary that the quadrant is nearly a coin toss, and it should be read as a lean rather than a call.` : 'a reading far from the centre is a regime; one near it is a coin toss wearing a regime\'s name.'}${regime.stale_days > 45 ? ` <b>The newest observation is ${regime.stale_days} days old</b> — the macro feed stops whenever FRED_API_KEY is missing from the nightly run, so this is a historical reading rather than a current one.` : ''}</p></div>`;
+      <p class="note">Each series is reduced to how its recent change compares with its own history of that change, signed so a fall in unemployment reads as growth rising, then averaged within its factor. <b>Conviction is the distance from the centre</b>, where the four quadrants meet: ${+regime.conviction < 0.5 ? `at ${(+regime.conviction).toFixed(2)} this reading sits close enough to the boundary that the quadrant is nearly a coin toss, and it should be read as a lean rather than a call.` : 'a reading far from the centre is a regime; one near it is a coin toss wearing a regime\'s name.'}${regime.stale_days > 45 ? ` <b>The newest observation is ${regime.stale_days} days old</b>, so this is a historical reading rather than a current one. The macro feed no longer depends on an API key — it falls back to FRED's public CSV export — so a stale reading now means a network failure, a FRED outage, or a withdrawn series, and the nightly log names which.` : ''}
+      ${lq === null ? '' : `<b>The quadrant is growth against inflation only.</b> The cost of liquidity is measured and reported beside it rather than added as a third axis: the forty-two factor preference table below is keyed to these four quadrants, and a third dimension would orphan it. It still moves the risk score, at half the weight of the quadrant itself, because a book facing liquidity getting dearer is not in the same position as one facing an easing of it, whatever quadrant they share. Separating term premium from breakevens is the reason the leg was added — the inflation average alone cannot say whether a rising ten-year is the market pricing inflation or demanding to be paid for duration, and those call for opposite holdings.`}</p></div>`;
   })();
 
   // ---- the full preference table for this regime ----
