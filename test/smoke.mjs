@@ -208,7 +208,7 @@ const series = await pick('current_macro_readings', 'series_id,fred_code');
 // 1. Every route renders something that is not an error or a loading state.
 // ---------------------------------------------------------------------------
 const routes = argRoute ? [argRoute] : [
-  '#sisyphus', '#stan', '#sven', '#annie', '#markets', '#views', '#signals', '#agents',
+  '#sisyphus', '#adam', '#stan', '#sven', '#annie', '#markets', '#views', '#signals', '#agents',
   '#playground', '#briefs', '#sources', '#inbox', '#status',
   strat ? `#sisyphus/${strat.id}` : null,
   strat ? `#stan/${strat.id}` : null,
@@ -419,7 +419,34 @@ if (!argRoute) {
   need(app() !== w0, '[annie] switching the decision-score window did not change the table');
 
   // -------------------------------------------------------------------------
-  // 10. Sven: every index carries every rule, and the news window switches.
+  // 10. Adam: the contest must agree with itself. A dimension marked as agreeing with the tape
+  //     while showing a negative spread would mean the verdict and the ranking were computed from
+  //     different numbers, which is the kind of thing that reads as a finding.
+  // -------------------------------------------------------------------------
+  currentRoute = 'adam';
+  await go('#adam');
+  const ad = app();
+  for (const want of ["This week's beauty contest", 'Macro Beauty Contest', 'The four legs', 'Macro regime'])
+    need(ad.includes(want), `[adam] missing section: ${want}`);
+  const rows = [...ad.matchAll(/<td>([^<]+)<\/td>\s*<td><b>([^<]+)<\/b>[\s\S]*?<td class="num">(?:<span style="color:var\(--(pos|neg)\)">(-?[\d.]+)%<\/span>|<span style="color:var\(--muted\)">–<\/span>)<\/td>\s*<td>(?:<span style="color:var\(--(?:pos|neg|muted)\)"[^>]*>)?(agrees|disagrees|unscored)/g)];
+  let bad = 0;
+  for (const m of rows) {
+    const spread = m[4] === undefined ? null : +m[4] * (m[3] === 'neg' ? 1 : 1);
+    const signed = m[3] === 'neg' ? -Math.abs(+m[4]) : +m[4];
+    if (m[5] === 'unscored') continue;
+    if ((m[5] === 'agrees') !== (signed > 0)) bad++;
+  }
+  say(` ok  adam preference table  -> ${rows.length} rows, ${bad} verdict/spread mismatches`);
+  need(bad === 0, `[adam] ${bad} rows say they agree with the tape while showing a spread that disagrees`);
+  const legs = (ad.match(/awaiting data|live<\/span>|stale<\/span>/g) || []).length;
+  say(` ok  adam legs              -> ${legs} with a status chip`);
+  need(legs >= 4, `[adam] expected 4 component legs, found ${legs}`);
+  // A leg with no data must never render a 0: on a 0-100 risk scale that reads as maximum risk-off.
+  need(!/>awaiting data<\/span>[\s\S]{0,160}?font-weight:700;color:var\(--\w+\)">0</.test(ad),
+    '[adam] a leg awaiting data rendered a 0 score; it must render a dash');
+
+  // -------------------------------------------------------------------------
+  // 11. Sven: every index carries every rule, and the news window switches.
   // -------------------------------------------------------------------------
   currentRoute = 'sven';
   await go('#sven');

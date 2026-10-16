@@ -52,6 +52,27 @@ tbody tr.click{cursor:pointer}tbody tr.click:hover{background:var(--panel2)}
 .eqscroll::-webkit-scrollbar-thumb{background:var(--line);border-radius:99px}
 .eqscroll > div:first-child{border-top:0;padding-top:0}
 @media (max-width:860px){ .eqwrap{grid-template-columns:1fr !important} .eqscroll{max-height:none;overflow:visible} }
+/* The beauty-contest podium. Three cards, the winner raised — the contest is about who others
+   pick, and a ranked list does not say "these three" the way a podium does. */
+.podium{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;align-items:end}
+.pod{border:1px solid var(--line);border-radius:12px;padding:14px;background:var(--panel2);position:relative}
+.pod1{border-color:color-mix(in srgb,var(--pos) 55%,transparent);padding-top:22px}
+.pod2{padding-top:16px}
+.podrank{position:absolute;top:-11px;left:14px;width:24px;height:24px;border-radius:50%;background:var(--panel);
+  border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font:700 12px/1 ui-monospace,Menlo,monospace}
+.pod1 .podrank{background:var(--pos);color:#06130d;border-color:transparent}
+.poddim{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.podwin{font-size:19px;font-weight:700;margin-top:2px;line-height:1.2}
+.podover{font-size:12px;color:var(--muted);margin-top:1px}
+.podspread{font-size:22px;font-weight:700;margin-top:10px;font-variant-numeric:tabular-nums}
+.podspread small{font-size:11px;font-weight:400;color:var(--muted);display:block;margin-top:1px}
+.podtkr{font:11px/1 ui-monospace,Menlo,monospace;color:var(--muted);margin-top:8px}
+@media (max-width:720px){ .podium{grid-template-columns:1fr} .pod1,.pod2{padding-top:14px} }
+/* The risk dial under the headline reading. */
+.dialtrack{position:relative;height:10px;border-radius:99px;
+  background:linear-gradient(90deg,var(--neg) 0%,var(--flat) 50%,var(--pos) 100%);opacity:.85}
+.dialmark{position:absolute;top:-4px;width:4px;height:18px;border-radius:2px;transform:translateX(-2px);
+  box-shadow:0 0 0 2px var(--panel)}
 /* Streak chips. Deliberately small and square: five of them read as a sequence at a glance,
    which a row of words would not. */
 .stk{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:4px;

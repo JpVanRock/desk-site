@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, svenRules, newsFailure] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -150,6 +150,11 @@ async function load() {
     qSoft(sb.from('annie_assessments').select('as_of,kind,strategy_id,ticker,headline,body_md,score,score_scale,confidence,sources,author').order('as_of', { ascending: false }), 'Annie assessments'),
     qSoft(sb.from('latest_sven_rule_signals').select('as_of,ticker,rule_key,rule_no,rule_title,state,headline,detail,method,adapted').order('rule_no'), 'Raschke rules'),
     qSoft(sb.from('latest_news_failure_readings').select('as_of,ticker,label,asset_class,window_days,n_releases,n_positive,n_negative,n_series,n_factors,agreement,price_change,made_new_high,made_new_low,verdict,headline,held_in'), 'news failure'),
+    qSoft(sb.from('macro_beauty_readings').select('as_of,score,stance,n_live,n_total,headline').order('as_of', { ascending: false }).limit(1), 'beauty reading'),
+    qSoft(sb.from('latest_macro_beauty_components').select('as_of,component,label,score,status,headline,measure,value_text,source,how_to_supply,data_as_of'), 'beauty components'),
+    qSoft(sb.from('latest_macro_regime_readings').select('as_of,regime,growth_z,inflation_z,conviction,n_growth,n_inflation,data_as_of,stale_days'), 'macro regime'),
+    qSoft(sb.from('latest_beauty_contest_rankings').select('as_of,dimension,regime,rank,prefer,avoid,prefer_tkr,avoid_tkr,spread_1m,spread_3m,confirmed,headline,unavailable_reason'), 'beauty contest'),
+    qSoft(sb.from('macro_beauty_readings').select('as_of,score,stance').order('as_of', { ascending: true }).limit(500), 'beauty history'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -227,7 +232,9 @@ async function load() {
     // March are both worth keeping, and comparing a judgment with what happened afterwards is the
     // whole point of the page.
     assessments: assessments || [],
-    svenRules: newest(svenRules), newsFailure: newest(newsFailure) };
+    svenRules: newest(svenRules), newsFailure: newest(newsFailure),
+    beautyReading: beautyReading || [], beautyComponents: beautyComponents || [], macroRegime: macroRegime || [],
+    beautyRanks: beautyRanks || [], beautyHistory: beautyHistory || [] };
 }
 
 // ---------- Views ----------
@@ -253,7 +260,7 @@ function route() {
   if (page === 'overview') { location.replace('#sisyphus' + (arg ? '/' + arg : '')); return; }
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
-  const pages = { sisyphus, stan, sven, markets, views: viewsPage, signals, playground, agents, annie, briefs, inbox, status, sources };
+  const pages = { sisyphus, adam, stan, sven, markets, views: viewsPage, signals, playground, agents, annie, briefs, inbox, status, sources };
   $('#app').innerHTML = (pages[page] || sisyphus)();
   if (page === 'stan' && arg) {
     // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
@@ -1018,6 +1025,202 @@ function equitySvg(E) {
     <text x="${W - pad.r}" y="${H - 8}" font-size="10" fill="var(--muted)" text-anchor="end">${xs}</text>
     <text x="${(pad.l + W - pad.r) / 2}" y="${H - 8}" font-size="10" fill="var(--muted)" text-anchor="middle">Trades</text>
     ${hits}</svg>`;
+}
+
+// ---------- Adam: the Macro Beauty Contest ----------
+//
+// Keynes's contest is about picking what others will pick, not what deserves to win. So the page
+// puts two things side by side: what the REGIME says should be favoured, from the owner's
+// forty-two factor chart, and what the MARKET is already paying for. Agreement is a candidate
+// others are already voting for. Disagreement is the row worth reading, and it is not hidden — a
+// contest that only ever confirms itself is a mirror.
+const REGIME_LOOK = {
+  goldilocks: { label: 'Goldilocks', tone: 'var(--pos)',  blurb: 'Growth rising, inflation falling. The risk-on quadrant with no price pressure.' },
+  reflation:  { label: 'Reflation',  tone: 'var(--flat)', blurb: 'Growth rising, inflation rising. Risk-on, but with price pressure building.' },
+  inflation:  { label: 'Inflation',  tone: 'var(--neg)',  blurb: 'Growth falling, inflation rising. The stagflationary quadrant.' },
+  deflation:  { label: 'Deflation',  tone: 'var(--neg)',  blurb: 'Growth falling, inflation falling. Defensive assets over risk.' },
+};
+const STANCE_LOOK = {
+  risk_on:  ['Risk On',  'var(--pos)'],
+  neutral:  ['Neutral',  'var(--flat)'],
+  risk_off: ['Risk Off', 'var(--neg)'],
+};
+
+function adam() {
+  const n = v => v === null || v === undefined ? null : +v;
+  const reading = (D.beautyReading || [])[0] || null;
+  const comps = D.beautyComponents || [];
+  const regime = (D.macroRegime || [])[0] || null;
+  const ranks = D.beautyRanks || [];
+  const hist = D.beautyHistory || [];
+
+  if (!reading && !regime && !ranks.length) {
+    return `<span class="eyebrow">Macro</span><h1>Adam</h1>
+     <p class="sub">The Macro Beauty Contest.</p>
+     <div class="card"><div class="empty">Nothing computed yet. Run jobs/compute-macro-regime.mjs and jobs/compute-beauty-contest.mjs.</div></div>`;
+  }
+
+  // ---- the winners, at the top ----
+  const scored = ranks.filter(r => r.rank !== null).slice().sort((a, b) => a.rank - b.rank);
+  const winners = scored.filter(r => r.confirmed);
+  const against = scored.filter(r => r.confirmed === false);
+  const unscored = ranks.filter(r => r.rank === null);
+  const pc = v => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : ''}${(+v * 100).toFixed(1)}%`;
+
+  const podium = !winners.length ? '' : `<div class="podium">
+    ${winners.slice(0, 3).map((w, i) => `<div class="pod pod${i + 1}">
+      <div class="podrank">${i + 1}</div>
+      <div class="poddim">${esc(w.dimension)}</div>
+      <div class="podwin">${esc(w.prefer)}</div>
+      <div class="podover">over ${esc(w.avoid)}</div>
+      <div class="podspread" style="color:var(--pos)">${pc(w.spread_3m ?? w.spread_1m)}<small> 3 months</small></div>
+      ${w.prefer_tkr ? `<div class="podtkr">${esc(w.prefer_tkr)} vs ${esc(w.avoid_tkr)}</div>` : ''}
+    </div>`).join('')}</div>`;
+
+  const contestCard = `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">This week's beauty contest</h2>
+      <span style="font-size:12px;color:var(--muted)">${regime ? esc(regime.as_of) : ''} · ${winners.length} of ${scored.length} dimensions have the tape agreeing with the regime</span></div>
+    ${!regime ? '<div class="empty">No regime reading, so there is nothing to run the contest against.</div>' : `
+    <p class="note" style="margin:8px 0 14px">The regime is <b style="color:${REGIME_LOOK[regime.regime].tone}">${esc(REGIME_LOOK[regime.regime].label)}</b>, and these are the dimensions where the market is <b>already paying</b> for what it prefers. Keynes's point was that the contest rewards picking what others pick — a preference the tape has not started confirming is a judgment, not a candidate.</p>
+    ${podium}
+    ${winners.length > 3 ? `<table style="margin-top:14px"><thead><tr><th class="num">#</th><th>Dimension</th><th>Favoured</th><th class="num">1 month</th><th class="num">3 months</th></tr></thead><tbody>
+      ${winners.slice(3).map(w => `<tr><td class="num">${w.rank}</td><td>${esc(w.dimension)}</td>
+        <td><b>${esc(w.prefer)}</b> <span style="color:var(--muted)">over ${esc(w.avoid)}</span></td>
+        <td class="num" style="color:${(n(w.spread_1m) ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(w.spread_1m)}</td>
+        <td class="num" style="color:var(--pos)">${pc(w.spread_3m)}</td></tr>`).join('')}
+      </tbody></table>` : ''}
+    ${!against.length ? '' : `<div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
+      <div class="eyebrow" style="margin-bottom:8px">Where the regime and the tape disagree</div>
+      <table><thead><tr><th>Dimension</th><th>Regime prefers</th><th class="num">1 month</th><th class="num">3 months</th></tr></thead><tbody>
+      ${against.map(w => `<tr><td>${esc(w.dimension)}</td>
+        <td><b>${esc(w.prefer)}</b> <span style="color:var(--muted)">over ${esc(w.avoid)}</span></td>
+        <td class="num" style="color:${(n(w.spread_1m) ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(w.spread_1m)}</td>
+        <td class="num" style="color:var(--neg)">${pc(w.spread_3m)}</td></tr>`).join('')}
+      </tbody></table>
+      <p class="note">These are the rows worth reading. Either the regime call is early, or it is wrong, and a contest that only ever confirmed itself would be a mirror. ${regime && +regime.conviction < 0.5 ? `<b>Conviction on the regime is ${(+regime.conviction).toFixed(2)}</b>, which is close enough to the boundary between quadrants that disagreement here is unsurprising.` : ''}</p></div>`}
+    ${!unscored.length ? '' : `<p class="note" style="margin-top:12px"><b>${unscored.length} dimension${unscored.length === 1 ? '' : 's'} could not be scored against the tape</b> — ${unscored.map(u => esc(u.dimension)).join(', ')}. The regime still states a preference; there is simply no tracked proxy to test it with, and filling that in from the chart would make the framework unfalsifiable.</p>`}`}
+  </div>`;
+
+  // ---- the headline reading ----
+  const score = reading ? n(reading.score) : null;
+  const [stLabel, stTone] = reading && reading.stance ? STANCE_LOOK[reading.stance] : ['Not yet reading', 'var(--muted)'];
+  const dialPos = score === null ? 50 : score;
+  const gauge = `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Macro Beauty Contest</h2>
+      <span style="font-size:12px;color:var(--muted)">${reading ? `${reading.n_live} of ${reading.n_total} legs live` : ''}${regime ? ' · as of ' + esc(regime.as_of) : ''}</span></div>
+    <div style="display:flex;align-items:center;gap:28px;flex-wrap:wrap;margin-top:14px">
+      <div style="min-width:150px">
+        <div style="font-size:52px;font-weight:700;line-height:1;color:${stTone}">${score === null ? '—' : score.toFixed(0)}</div>
+        <div style="font-size:17px;font-weight:600;color:${stTone};margin-top:4px">${esc(stLabel)}</div>
+      </div>
+      <div style="flex:1;min-width:260px">
+        <div class="dialtrack"><div class="dialmark" style="left:${dialPos}%;background:${score === null ? 'var(--line)' : stTone}"></div></div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:6px">
+          <span>Risk Off</span><span>Neutral</span><span>Risk On</span></div>
+      </div>
+    </div>
+    <p class="note">${reading ? esc(reading.headline) : 'No reading computed yet.'}</p></div>`;
+
+  // ---- the four legs ----
+  const legCard = c => {
+    const s = n(c.score);
+    const live = c.status === 'live', stale = c.status === 'stale';
+    const tone = s === null ? 'var(--muted)' : s >= 60 ? 'var(--pos)' : s <= 40 ? 'var(--neg)' : 'var(--flat)';
+    return `<div class="card">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px">
+        <h2 style="margin:0;font-size:13px">${esc(c.label)}</h2>
+        <span class="chip" style="color:${live ? 'var(--pos)' : stale ? 'var(--warn)' : 'var(--muted)'}">${live ? 'live' : stale ? 'stale' : 'awaiting data'}</span></div>
+      <div style="font-size:34px;font-weight:700;color:${tone};margin:8px 0 2px">${s === null ? '—' : s.toFixed(0)}</div>
+      <div style="font-size:13px;margin-bottom:8px">${esc(c.headline)}</div>
+      ${c.value_text ? `<div style="font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums">${esc(c.value_text)}</div>` : ''}
+      ${c.measure ? `<p class="note" style="margin-top:8px">${esc(c.measure)}</p>` : ''}
+      ${c.how_to_supply ? `<p class="note" style="margin-top:6px;color:var(--warn)">${esc(c.how_to_supply)}</p>` : ''}
+      <div style="font-size:11px;color:var(--muted);margin-top:8px">Source: ${esc(c.source)}${c.data_as_of ? ` · data to ${esc(c.data_as_of)}` : ''}</div></div>`;
+  };
+  const order = ['global_liquidity', 'macro_regime', 'positioning', 'move_index'];
+  const legs = `<div class="card" style="margin-bottom:14px">
+    <h2>The four legs</h2>
+    <p class="note" style="margin:0 0 12px">Equally weighted; the headline is their mean. A leg with no data scores <b>null, never zero</b> — a zero on a 0-100 risk scale reads as maximum risk-off, which is the most misleading thing an empty leg could say.</p>
+    <div class="dashgrid" style="grid-template-columns:repeat(auto-fit,minmax(255px,1fr))">
+      ${order.map(k => comps.find(c => c.component === k)).filter(Boolean).map(legCard).join('')}</div></div>`;
+
+  // ---- the regime quadrant ----
+  const quad = !regime ? '' : (() => {
+    const g = +regime.growth_z, i = +regime.inflation_z;
+    const S = 300, cx = S / 2, cy = S / 2, k = 55;   // 55px per standard deviation
+    const x = Math.max(16, Math.min(S - 16, cx + Math.max(-2.4, Math.min(2.4, g)) * k));
+    const y = Math.max(16, Math.min(S - 16, cy - Math.max(-2.4, Math.min(2.4, i)) * k));
+    const lab = (tx, ty, t, on) => `<text x="${tx}" y="${ty}" font-size="11" text-anchor="middle" fill="${on ? REGIME_LOOK[t.toLowerCase()].tone : 'var(--muted)'}" font-weight="${on ? 700 : 400}">${t}</text>`;
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Macro regime</h2>
+        <span style="font-size:12px;color:var(--muted)">data to ${esc(regime.data_as_of || '—')}${regime.stale_days > 45 ? ` · ${regime.stale_days} days old` : ''}</span></div>
+      <div style="display:flex;gap:24px;align-items:center;flex-wrap:wrap;margin-top:10px">
+        <svg viewBox="0 0 ${S} ${S}" style="width:300px;max-width:100%;height:auto;flex:none">
+          <rect x="0" y="0" width="${cx}" height="${cy}" fill="var(--panel2)" opacity=".5"/>
+          <rect x="${cx}" y="0" width="${cx}" height="${cy}" fill="var(--panel2)" opacity=".8"/>
+          <rect x="0" y="${cy}" width="${cx}" height="${cy}" fill="var(--panel2)" opacity=".3"/>
+          <rect x="${cx}" y="${cy}" width="${cx}" height="${cy}" fill="var(--panel2)" opacity=".6"/>
+          <line x1="${cx}" y1="0" x2="${cx}" y2="${S}" stroke="var(--line)"/>
+          <line x1="0" y1="${cy}" x2="${S}" y2="${cy}" stroke="var(--line)"/>
+          ${lab(cx / 2, 22, 'Inflation', regime.regime === 'inflation')}
+          ${lab(cx + cx / 2, 22, 'Reflation', regime.regime === 'reflation')}
+          ${lab(cx / 2, S - 12, 'Deflation', regime.regime === 'deflation')}
+          ${lab(cx + cx / 2, S - 12, 'Goldilocks', regime.regime === 'goldilocks')}
+          <text x="${S - 4}" y="${cy - 6}" font-size="10" text-anchor="end" fill="var(--muted)">growth →</text>
+          <text x="${cx + 6}" y="12" font-size="10" fill="var(--muted)">inflation ↑</text>
+          <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="${REGIME_LOOK[regime.regime].tone}"/>
+          <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="13" fill="none" stroke="${REGIME_LOOK[regime.regime].tone}" stroke-opacity=".4"/>
+        </svg>
+        <div style="flex:1;min-width:240px">
+          <div style="font-size:24px;font-weight:700;color:${REGIME_LOOK[regime.regime].tone}">${esc(REGIME_LOOK[regime.regime].label)}</div>
+          <p style="margin:4px 0 10px;color:var(--muted);font-size:13px">${esc(REGIME_LOOK[regime.regime].blurb)}</p>
+          <div style="font-variant-numeric:tabular-nums;font-size:13px">
+            Growth <b style="color:${g >= 0 ? 'var(--pos)' : 'var(--neg)'}">${g >= 0 ? '+' : ''}${g.toFixed(2)}σ</b> across ${regime.n_growth} series<br>
+            Inflation <b style="color:${i >= 0 ? 'var(--neg)' : 'var(--pos)'}">${i >= 0 ? '+' : ''}${i.toFixed(2)}σ</b> across ${regime.n_inflation} series<br>
+            Conviction <b>${(+regime.conviction).toFixed(2)}</b></div>
+        </div></div>
+      <p class="note">Each series is reduced to how its recent change compares with its own history of that change, signed so a fall in unemployment reads as growth rising, then averaged within its factor. <b>Conviction is the distance from the centre</b>, where the four quadrants meet: ${+regime.conviction < 0.5 ? `at ${(+regime.conviction).toFixed(2)} this reading sits close enough to the boundary that the quadrant is nearly a coin toss, and it should be read as a lean rather than a call.` : 'a reading far from the centre is a regime; one near it is a coin toss wearing a regime\'s name.'}${regime.stale_days > 45 ? ` <b>The newest observation is ${regime.stale_days} days old</b> — the macro feed stops whenever FRED_API_KEY is missing from the nightly run, so this is a historical reading rather than a current one.` : ''}</p></div>`;
+  })();
+
+  // ---- the full preference table for this regime ----
+  const prefTable = !ranks.length ? '' : `<div class="card" style="margin-bottom:14px">
+    <h2>Preferences under ${esc(regime ? REGIME_LOOK[regime.regime].label : '')}</h2>
+    <p class="note" style="margin:0 0 10px">The owner's forty-two factor chart, for the quadrant the data is currently in. It is a framework the desk has adopted, not a measurement — stored as data so the chart and this page cannot drift apart.</p>
+    <table><thead><tr><th>Dimension</th><th>Favoured</th><th>Against</th><th class="num">3-month spread</th><th>Tape</th></tr></thead><tbody>
+    ${ranks.slice().sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99)).map(r => `<tr>
+      <td>${esc(r.dimension)}</td>
+      <td><b>${esc(r.prefer)}</b>${r.prefer_tkr ? ` <span class="chip">${esc(r.prefer_tkr)}</span>` : ''}</td>
+      <td style="color:var(--muted)">${esc(r.avoid)}${r.avoid_tkr ? ` <span class="chip">${esc(r.avoid_tkr)}</span>` : ''}</td>
+      <td class="num">${r.spread_3m === null ? '<span style="color:var(--muted)">–</span>' : `<span style="color:${+r.spread_3m >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(r.spread_3m)}</span>`}</td>
+      <td>${r.confirmed === null ? `<span style="color:var(--muted)" title="${esc(r.unavailable_reason || '')}">unscored</span>`
+        : r.confirmed ? '<span style="color:var(--pos)">agrees</span>' : '<span style="color:var(--neg)">disagrees</span>'}</td></tr>`).join('')}
+    </tbody></table></div>`;
+
+  // ---- history ----
+  const histCard = `<div class="card" style="margin-bottom:14px">
+    <h2>History</h2>
+    ${hist.length < 2
+      ? `<div class="empty">${hist.length ? 'One reading so far, taken ' + esc(hist[0].as_of) + '. The chart needs a run of them.' : 'No readings yet.'} The contest is evaluated on every nightly run and kept, so this fills in on its own.</div>`
+      : (() => {
+        const W = 760, Hh = 150, pad = { l: 34, r: 10, t: 10, b: 20 };
+        const pts = hist.filter(h => h.score !== null).slice().sort((a, b) => a.as_of.localeCompare(b.as_of));
+        if (pts.length < 2) return '<div class="empty">Not enough published readings to draw a line — the headline is withheld while fewer than half the legs are live.</div>';
+        const X = i => pad.l + (i / (pts.length - 1)) * (W - pad.l - pad.r);
+        const Y = v => pad.t + (1 - v / 100) * (Hh - pad.t - pad.b);
+        return `<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto">
+          ${[0, 40, 60, 100].map(v => `<line x1="${pad.l}" y1="${Y(v)}" x2="${W - pad.r}" y2="${Y(v)}" stroke="var(--line)"/><text x="${pad.l - 5}" y="${Y(v) + 3.5}" font-size="10" text-anchor="end" fill="var(--muted)">${v}</text>`).join('')}
+          <path d="${pts.map((p, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(+p.score).toFixed(1)}`).join('')}" fill="none" stroke="var(--accent)" stroke-width="2"/>
+          <text x="${pad.l}" y="${Hh - 5}" font-size="10" fill="var(--muted)">${esc(pts[0].as_of)}</text>
+          <text x="${W - pad.r}" y="${Hh - 5}" font-size="10" text-anchor="end" fill="var(--muted)">${esc(pts.at(-1).as_of)}</text></svg>`;
+      })()}
+    <p class="note">Every nightly run writes a reading and keeps it, so the contest can be graded later against what the market actually did. That is the point of keeping it rather than only showing today.</p></div>`;
+
+  return `<span class="eyebrow">Macro</span><h1>Adam</h1>
+   <p class="sub">The Macro Beauty Contest — what the regime favours, and what the market is already paying for.</p>
+   ${contestCard}${gauge}${legs}${quad}${prefTable}${histCard}`;
 }
 
 // ---------- Sven: market internals ----------
