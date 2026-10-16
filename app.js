@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, firmMetrics, firmExposures, firmStress] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, firmMetrics, firmExposures, firmStress] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -150,6 +150,7 @@ async function load() {
     qSoft(sb.from('latest_position_decision_scores').select('strategy_id,as_of,ticker,window_key,sort_order,start_date,end_date,weight,position_return,benchmark_return,decision_bps,is_partial,starts_in_gap,unavailable_reason').order('sort_order'), 'position decision scores'),
     qSoft(sb.from('latest_model_decision_stats').select('strategy_id,as_of,n_closed,n_open,n_wins,n_losses,batting_average,slugging_bps,win_bps,loss_bps,median_weight,n_unpriced,first_snapshot,last_snapshot,gap_days,n_beat_benchmark,excess_bps_total,n_type_i,type_i_bps,n_type_ii,type_ii_reason,avg_hold_days,n_trades_ytd'), 'decision stats'),
     qSoft(sb.from('annie_assessments').select('as_of,kind,strategy_id,ticker,headline,body_md,score,score_scale,confidence,sources,author').order('as_of', { ascending: false }), 'Annie assessments'),
+    qSoft(sb.from('latest_annie_trade_reviews').select('strategy_id,as_of,ticker,entry_date,exit_date,held_return,held_excess_bps,days_since_exit,after_return,after_bench,after_excess,held_instead_bps,better_ticker,better_return,better_gain_bps,n_alternatives,exit_verdict,entry_verdict,headline,lesson,unavailable_reason'), 'trade reviews'),
     qSoft(sb.from('latest_sven_rule_signals').select('as_of,ticker,rule_key,rule_no,rule_title,state,headline,detail,method,adapted').order('rule_no'), 'Raschke rules'),
     qSoft(sb.from('latest_news_failure_readings').select('as_of,ticker,label,asset_class,window_days,n_releases,n_positive,n_negative,n_series,n_factors,agreement,price_change,made_new_high,made_new_low,verdict,headline,held_in'), 'news failure'),
     qSoft(sb.from('macro_beauty_readings').select('as_of,score,stance,n_live,n_total,headline').order('as_of', { ascending: false }).limit(1), 'beauty reading'),
@@ -237,7 +238,7 @@ async function load() {
     // Assessments are NOT filtered to the newest date: Annie's view in October and her view in
     // March are both worth keeping, and comparing a judgment with what happened afterwards is the
     // whole point of the page.
-    assessments: assessments || [],
+    assessments: assessments || [], tradeReviews: tradeReviews || [],
     svenRules: newest(svenRules), newsFailure: newest(newsFailure),
     beautyReading: beautyReading || [], beautyComponents: beautyComponents || [], macroRegime: macroRegime || [],
     beautyRanks: beautyRanks || [], beautyHistory: beautyHistory || [], modelVar: modelVar || [],
@@ -1918,6 +1919,85 @@ function annie() {
       <p class="note">${medianWeight === null ? '' : `<b>Sizing is judged against this model's median position of ${pct(medianWeight)}</b>: a winner held well below it was too small, a loser held well above it was too large, and within a quarter either way is about right. `}Contribution is accumulated at the weight actually held in each stretch, not average size times the whole-period return, because a position trimmed before a fall contributed less than its full-size return implies — and that gap is the entire sizing question.${divergent.length ? ` <b>${divergent.length} trade${divergent.length === 1 ? '' : 's'} here exited profitable but contributed negatively, or the reverse</b> (${divergent.slice(0, 4).map(t => esc(t.ticker)).join(', ')}${divergent.length > 4 ? '…' : ''}); when those two disagree the path is the story, not the entry and exit.` : ''} Faded rows were already held on the first day of the records, so their return is measured from where the file starts rather than from a decision. Exits are dated at the snapshot where the position was first absent, which is on or after the day it was sold.</p></div>`;
   })();
 
+  // ---- The compliance audit: every closed trade, graded after the fact ----
+  //
+  // The point is to grade the DECISION, not the outcome. A sale that looked wrong for a month and
+  // right for a year is not two different decisions, so the evidence is kept separate rather than
+  // collapsed into a score: what the position did since, what the benchmark did over the same
+  // stretch, and which tracked alternative would have done better over the holding period.
+  const reviewCard = (() => {
+    // isOverall is local to the scorecard closure; the scorecard's tab selection is module-level.
+    const isOverall = annieModel === 'overall';
+    const all = (D.tradeReviews || []).filter(r => isOverall || r.strategy_id === annieModel);
+    if (!all.length) {
+      return `<div class="card" style="margin-bottom:14px"><h2>Trade review</h2>
+        <div class="empty">No reviews computed yet. Run jobs/compute-trade-reviews.mjs.</div></div>`;
+    }
+    const V = {
+      sold_too_early: ['Sold too early', 'var(--neg)'],
+      good_exit:      ['Good exit',      'var(--pos)'],
+      neutral_exit:   ['Neutral',        'var(--muted)'],
+      unscored:       ['Unscored',       'var(--muted)'],
+    };
+    const cnt = k => all.filter(r => r.exit_verdict === k).length;
+    const scored = all.filter(r => r.held_instead_bps !== null);
+    const med = a => { if (!a.length) return null; const s = a.slice().sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+    const earlyBps = scored.filter(r => r.exit_verdict === 'sold_too_early').map(r => +r.held_instead_bps);
+    const goodBps = scored.filter(r => r.exit_verdict === 'good_exit').map(r => +r.held_instead_bps);
+    const pc = v => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : ''}${(+v * 100).toFixed(1)}%`;
+    const bp = v => v === null || v === undefined ? '–' : `${+v >= 0 ? '+' : ''}${(+v).toFixed(0)}`;
+
+    // Biggest lessons first: the exits that cost the most, then the ones that saved the most.
+    const ranked = scored.slice().sort((a, b) => Math.abs(+b.held_instead_bps) - Math.abs(+a.held_instead_bps)).slice(0, 25);
+    const kpi = (lab, val, sub, title) => `<div class="card kpi" title="${esc(title)}">
+      <span class="eyebrow">${esc(lab)}</span><b style="font-size:24px">${val}</b><small>${esc(sub)}</small></div>`;
+
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Trade review — the compliance audit</h2>
+        <span style="font-size:12px;color:var(--muted)">${all.length} closed trades graded${isOverall ? ' across every model' : ''}</span></div>
+      <div class="kpis" style="grid-template-columns:repeat(4,1fr);margin-top:12px">
+        ${kpi('Sold too early', `<span style="color:var(--neg)">${cnt('sold_too_early')}</span>`,
+              `median ${bp(med(earlyBps))} bps left behind`,
+              'Positions sold that have since beaten the benchmark. The exit cost the model what holding would have added.')}
+        ${kpi('Good exits', `<span style="color:var(--pos)">${cnt('good_exit')}</span>`,
+              `median ${bp(med(goodBps))} bps saved`,
+              'Positions sold that have since trailed the benchmark. The exit saved the model what holding would have cost.')}
+        ${kpi('Neutral', `${cnt('neutral_exit')}`, 'tracked the benchmark within 2%',
+              'The sale neither helped nor hurt against the benchmark since.')}
+        ${kpi('Not yet reviewable', `${cnt('unscored')}`, 'too recent, or no price history',
+              'Sold inside the last three weeks, or with no usable price series since. A review needs hindsight before it is saying anything.')}
+      </div>
+      <p class="note">${cnt('sold_too_early') > cnt('good_exit') * 1.3
+        ? `<b>Sold-too-early outnumbers good exits ${cnt('sold_too_early')} to ${cnt('good_exit')}.</b> That is a pattern rather than a run of bad luck, and it is the one this audit exists to find: the desk cuts positions that go on to work. It is the mirror of the sizing finding — winners held small, and sold early.`
+        : `Exits split ${cnt('good_exit')} good to ${cnt('sold_too_early')} early.`}
+      Every verdict is measured <b>against the benchmark since the sale</b>, not against zero: selling into a falling market is not skill if everything fell, and holding through a rally is not an error if the position merely kept up.</p>
+      <div style="overflow-x:auto;margin-top:12px"><table style="min-width:900px"><thead><tr>
+        <th>Position</th><th>Held</th><th class="num">While held</th><th>Exit</th>
+        <th class="num">Since the sale</th><th class="num">Holding instead</th><th>The better decision</th>
+      </tr></thead><tbody>
+      ${ranked.map(r => {
+        const v = V[r.exit_verdict] || V.unscored;
+        const cost = r.held_instead_bps === null ? null : +r.held_instead_bps;
+        return `<tr>
+          <td><b>${esc(r.ticker)}</b><br><small style="color:var(--muted)">${esc(((D.models || []).find(m => m.id === r.strategy_id) || {}).name || '').replace(/\s*\([^)]*\)/g, '')}</small></td>
+          <td style="color:var(--muted);white-space:nowrap;font-size:12px">${esc(r.entry_date)}<br>→ ${esc(r.exit_date)}</td>
+          <td class="num"${r.held_excess_bps !== null ? ` title="${esc(`${bp(r.held_excess_bps)} bps against the benchmark while held`)}"` : ''}>${r.held_return === null ? '–' : `<span style="color:${+r.held_return >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(r.held_return)}</span>`}</td>
+          <td><span style="color:${v[1]};font-weight:${r.exit_verdict === 'sold_too_early' || r.exit_verdict === 'good_exit' ? '600' : '400'}">${v[0]}</span>
+            <br><small style="color:var(--muted)">${r.days_since_exit === null ? '' : r.days_since_exit + 'd ago'}</small></td>
+          <td class="num" title="${esc(r.headline || '')}">${r.after_excess === null ? '<span style="color:var(--muted)">–</span>'
+            : `<span style="color:${+r.after_excess >= 0 ? 'var(--neg)' : 'var(--pos)'}">${pc(r.after_excess)}</span><br><small style="color:var(--muted)">vs bench</small>`}</td>
+          <td class="num"><b style="color:${cost === null ? 'var(--muted)' : cost > 0 ? 'var(--neg)' : 'var(--pos)'}">${bp(cost)}</b><br><small style="color:var(--muted)">bps</small></td>
+          <td style="max-width:300px;font-size:12px">${r.better_ticker
+            ? `<b>${esc(r.better_ticker)}</b> <span style="color:var(--muted)">${pc(r.better_return)}</span>${r.better_gain_bps !== null && +r.better_gain_bps > 10 ? `<br><span style="color:var(--warn)">+${(+r.better_gain_bps).toFixed(0)} bps forgone</span>` : '<br><span style="color:var(--muted)">instrument choice was sound</span>'}`
+            : '<span style="color:var(--muted)">no tracked alternative</span>'}</td></tr>`;
+      }).join('')}
+      </tbody></table></div>
+      <p class="note">Ranked by how much the exit was worth, largest first — the costly ones and the saves both. <b>Holding instead</b> is what keeping the position at its exit weight would have added to the model since the sale, in basis points; positive means the exit cost that much.
+      <b>The better decision is picked with hindsight on purpose.</b> It is the best-performing security the desk already tracks in the same asset class over that holding period — a real comparison, since the desk could have bought it and the prices are real. It is <i>not</i> a claim the alternative was knowable at the time, and reading it as one would turn every review into a reprimand for not being clairvoyant. The useful version is the pattern: where the same bet in a different vehicle would repeatedly have done better, the lesson is about instrument choice rather than about the call.
+      Figures are not summed across trades — they run over different, overlapping periods in different models, and adding them would produce a number that describes nothing.</p></div>`;
+  })();
+
   // ---- the written sections ----
   const KINDS = [
     ['reflexivity', 'Reflexivity', 'Soros\'s two-way feedback: does the price move the fundamentals here, or only reflect them? A position where belief changes the thing being believed in behaves differently from one where it does not.',
@@ -1968,6 +2048,7 @@ function annie() {
    ${hunting}
    ${positions}
    ${journal}
+   ${reviewCard}
    ${note('Open decisions', open, 'Nothing open. Annie records a decision before it is made, not after.')}
    ${written}
    <p class="note">Everything above the written sections is arithmetic: the trades come from dated holdings snapshots and the returns from adjusted closing prices, computed by <code>jobs/compute-decision-ledger.mjs</code>. Everything in the written sections is judgment formed by reading something, and each one carries the date it was formed and what it was formed from. The two are kept apart on purpose — a batting average and a steel man are not the same kind of claim, and a page that styles them alike invites them to be trusted alike.</p>`;
