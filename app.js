@@ -171,7 +171,7 @@ async function load() {
     qSoft(sb.from('latest_model_geo_coverage').select('strategy_id,as_of,basis,model_equity_weight,model_resolved,benchmark_resolved,unresolved,window_start,window_end'), 'model geography coverage'),
     qSoft(sb.from('latest_factor_fingerprint').select('scope,strategy_id,as_of,factor,label,model_beta,benchmark_beta,active_beta,sort_order'), 'factor fingerprint'),
     qSoft(sb.from('latest_factor_fingerprint_coverage').select('scope,strategy_id,as_of,model_equity_weight,model_resolved,benchmark_resolved,unresolved,window_start,window_end'), 'factor fingerprint coverage'),
-    qSoft(sb.from('latest_model_tax_efficiency').select('strategy_id,as_of,year,st_gain_bps,st_loss_bps,lt_gain_bps,lt_loss_bps,n_st,n_lt,bps_from_trims'), 'tax efficiency'),
+    qSoft(sb.from('latest_model_tax_efficiency').select('strategy_id,as_of,year,st_gain_bps,st_loss_bps,lt_gain_bps,lt_loss_bps,n_st,n_lt,bps_from_trims,n_sales,n_full_exits,n_trims'), 'tax efficiency'),
     qSoft(sb.from('latest_model_tax_coverage').select('strategy_id,as_of,first_snapshot,last_snapshot,n_lots_opened,n_sales,n_partial_sales,opening_lot_bps,unpriced_sales'), 'tax coverage'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
@@ -2038,7 +2038,11 @@ function annie() {
           st_gain_bps: a.st_gain_bps + +r.st_gain_bps, st_loss_bps: a.st_loss_bps + +r.st_loss_bps,
           lt_gain_bps: a.lt_gain_bps + +r.lt_gain_bps, lt_loss_bps: a.lt_loss_bps + +r.lt_loss_bps,
           n_st: a.n_st + r.n_st, n_lt: a.n_lt + r.n_lt, trims: a.trims + +r.bps_from_trims,
-        }), { st_gain_bps: 0, st_loss_bps: 0, lt_gain_bps: 0, lt_loss_bps: 0, n_st: 0, n_lt: 0, trims: 0 });
+          // Counts are totals even on Overall: these are decisions the desk made, and a decision
+          // taken in one model is still one decision. Only the basis-point figures are averaged,
+          // because those are shares of a model's own value.
+          n_sales: a.n_sales + r.n_sales, n_full_exits: a.n_full_exits + r.n_full_exits, n_trims: a.n_trims + r.n_trims,
+        }), { st_gain_bps: 0, st_loss_bps: 0, lt_gain_bps: 0, lt_loss_bps: 0, n_st: 0, n_lt: 0, trims: 0, n_sales: 0, n_full_exits: 0, n_trims: 0 });
         for (const f of ['st_gain_bps', 'st_loss_bps', 'lt_gain_bps', 'lt_loss_bps']) agg[f] /= k;
         agg.trims /= k;
         return { year: y, ...agg, tax: netTax(agg, rate), models: rows.length };
@@ -2057,9 +2061,9 @@ function annie() {
       const bars = perYear.map(p => {
         const hST = Math.round((p.st_gain_bps / maxBar) * 64);
         const hLT = Math.round((p.lt_gain_bps / maxBar) * 64);
-        const tip = `${p.year}: ${p.lt_gain_bps.toFixed(0)} bps of long-term gains and ${p.st_gain_bps.toFixed(0)} short-term, less ${(p.lt_loss_bps + p.st_loss_bps).toFixed(0)} bps of losses. Tax at ${rate.note} comes to ${p.tax.total.toFixed(0)} bps.`;
+        const tip = `${p.year}: ${(p.lt_gain_bps / 100).toFixed(2)}% of long-term gains and ${(p.st_gain_bps / 100).toFixed(2)}% short-term, less ${((p.lt_loss_bps + p.st_loss_bps) / 100).toFixed(2)}% of losses, from ${p.n_sales} sell decisions. Tax at ${rate.note} comes to ${(p.tax.total / 100).toFixed(2)}%.`;
         return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:52px" title="${esc(tip)}">
-          <small style="font-size:11px;font-weight:700;color:var(--neg);font-variant-numeric:tabular-nums">−${p.tax.total.toFixed(0)}</small>
+          <small style="font-size:11px;font-weight:700;color:var(--neg);font-variant-numeric:tabular-nums">−${(p.tax.total / 100).toFixed(2)}%</small>
           <div style="width:100%;height:68px;display:flex;align-items:flex-end;gap:3px">
             <div style="flex:1;height:${hLT}px;background:var(--pos);border-radius:2px 2px 0 0;min-height:2px"></div>
             <div style="flex:1;height:${hST}px;background:var(--flat);border-radius:2px 2px 0 0;min-height:2px"></div>
@@ -2069,13 +2073,14 @@ function annie() {
 
       const rows = perYear.map(p => {
         const net = p.tax.st + p.tax.lt;
+        const pc2 = v => (v / 100).toFixed(2) + '%';
         return `<tr><td><b>${p.year}</b></td>
-          <td class="num" style="color:var(--pos)">${p.lt_gain_bps.toFixed(0)}</td>
-          <td class="num" style="color:var(--flat)">${p.st_gain_bps.toFixed(0)}</td>
-          <td class="num" style="color:var(--muted)">−${(p.lt_loss_bps + p.st_loss_bps).toFixed(0)}</td>
-          <td class="num">${net >= 0 ? '' : '−'}${Math.abs(net).toFixed(0)}</td>
-          <td class="num"><b style="color:var(--neg)">−${p.tax.total.toFixed(0)}</b></td>
-          <td class="num" style="color:var(--muted)">${p.n_lt + p.n_st}</td></tr>`;
+          <td class="num" style="color:var(--pos)">${pc2(p.lt_gain_bps)}</td>
+          <td class="num" style="color:var(--flat)">${pc2(p.st_gain_bps)}</td>
+          <td class="num" style="color:var(--muted)">−${pc2(p.lt_loss_bps + p.st_loss_bps)}</td>
+          <td class="num">${net >= 0 ? '' : '−'}${pc2(Math.abs(net))}</td>
+          <td class="num"><b style="color:var(--neg)">−${pc2(p.tax.total)}</b></td>
+          <td class="num" style="color:var(--muted)" title="${p.n_full_exits} full exits and ${p.n_trims} trims, reaching back through ${p.n_lt + p.n_st} tax lots.">${p.n_sales}<br><small>${p.n_trims} trims</small></td></tr>`;
       }).join('');
 
       const toggle = `<div class="tabs" style="margin:0">${Object.entries(TAX_RATES).map(([k, v]) =>
@@ -2087,31 +2092,32 @@ function annie() {
 
       return `<div class="card" style="margin-top:14px">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
-          <h2 style="margin:0">Tax efficiency</h2>${toggle}</div>
+          <h2 style="margin:0">${isOverall ? 'Tax Drag <span style="font-weight:400;font-size:13px;color:var(--muted)">(estimated across all models)</span>' : 'Estimated Tax Drag'}</h2>${toggle}</div>
         <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start;margin-top:14px">
           <div style="flex:none;min-width:190px">
             <div class="eyebrow">Tax impact</div>
-            <div style="font-size:30px;font-weight:700;color:${grade[1]};line-height:1.1">−${avgTax.toFixed(0)} <span style="font-size:15px;font-weight:600">bps/yr</span></div>
+            <div style="font-size:30px;font-weight:700;color:${grade[1]};line-height:1.1">−${(avgTax / 100).toFixed(2)}<span style="font-size:19px">%</span> <span style="font-size:15px;font-weight:600">/yr</span></div>
             <div style="font-size:12px;color:var(--muted);margin-top:2px">${esc(grade[0])} · ${esc(rate.note)}</div>
             <div style="margin-top:12px;font-size:13px">
               <div><b style="color:var(--pos)">${ltShare === null ? '—' : (ltShare * 100).toFixed(0) + '%'}</b> <span style="color:var(--muted)">of gains were long-term</span></div>
-              <div style="margin-top:3px"><b>${nSales}</b> <span style="color:var(--muted)">realisations, ${nPartial} of them partial</span></div>
-              <div style="margin-top:3px"><b>−${totalTax.toFixed(0)}</b> <span style="color:var(--muted)">bps over ${perYear.length} year${perYear.length === 1 ? '' : 's'}</span></div>
+              <div style="margin-top:3px"><b>${nSales}</b> <span style="color:var(--muted)">sell decisions, ${nPartial} of them trims</span></div>
+              <div style="margin-top:3px"><b>−${(totalTax / 100).toFixed(2)}%</b> <span style="color:var(--muted)">over ${perYear.length} year${perYear.length === 1 ? '' : 's'}</span></div>
             </div>
           </div>
           <div style="flex:1;min-width:230px">
             <div style="font-size:12px;color:var(--muted);margin-bottom:6px">
               <span style="display:inline-block;width:9px;height:9px;background:var(--pos);border-radius:2px;margin-right:4px"></span>long-term gains
               <span style="display:inline-block;width:9px;height:9px;background:var(--flat);border-radius:2px;margin:0 4px 0 10px"></span>short-term
-              <span style="color:var(--neg);margin-left:10px">−bps = tax</span></div>
+              <span style="color:var(--neg);margin-left:10px">− = tax owed</span></div>
             <div style="display:flex;align-items:flex-end;gap:8px">${bars}</div>
           </div>
         </div>
         <div style="overflow-x:auto;margin-top:16px"><table style="min-width:520px"><thead><tr>
           <th>Year</th><th class="num">LT gains</th><th class="num">ST gains</th><th class="num">Losses</th>
-          <th class="num">Net taxable</th><th class="num">Tax</th><th class="num">Events</th>
+          <th class="num">Net taxable</th><th class="num">Tax</th><th class="num">Sell decisions</th>
         </tr></thead><tbody>${rows}</tbody></table></div>
-        <p class="note">Every figure is <b>basis points of the model's own value</b>, measured by FIFO lot across the whole recorded trade history${cov[0] ? ` (${esc(cov[0].first_snapshot)} onward)` : ''}. <b>Partial sales count</b>: ${nPartial} of ${nSales} realisations here were trims rather than exits, and a round-trip ledger cannot see a trim at all — it only knows a position was present and then absent. One sale can produce both a short-term and a long-term result, because it consumes lots of different ages, which is what happens in a real account.
+        <p class="note">Every figure is a <b>percentage of the model's own value</b>, measured by FIFO lot across the whole recorded trade history${cov[0] ? ` (${esc(cov[0].first_snapshot)} onward)` : ''}. <b>Partial sales count</b>: ${nPartial} of ${nSales} sell decisions here were trims rather than exits, and a round-trip ledger cannot see a trim at all — it only knows a position was present and then absent. One sale can produce both a short-term and a long-term result, because it reaches back through lots of different ages, which is what happens in a real account.
+        <b>Sell decisions is not the same count as trades</b>, and the two are not meant to agree. The Trades box above counts entries plus exits and cannot see a trim; this counts every recorded fall in a weight, to zero or not. In ${perYear.at(-1).year} that is ${perYear.at(-1).n_sales} sell decisions — ${perYear.at(-1).n_full_exits} full exits and ${perYear.at(-1).n_trims} trims — against the ${perYear.at(-1).n_lt + perYear.at(-1).n_st} tax lots they reached back through. Only sells create a liability, so purchases are not counted here at all.
         Losses are netted the way the rule actually works — short against short, long against long, and a leftover loss of either character against a remaining gain of the other — so this is tax that would have been owed, not tax on gross gains.
         ${isOverall ? '<b>Overall averages the models that have a ledger, each counting once.</b> These are basis points of a single model&#39;s own value, so adding eight of them together would describe a portfolio nobody holds. ' : ''}
         <b>Three things make this an understatement rather than a precise bill.</b> Gains are measured on adjusted closes, so distributions are folded into price appreciation — in a real account a dividend is taxable the year it is paid, usually at the higher rate, and it does not wait for a sale. ${openingBps > 0 ? `About ${openingBps.toFixed(0)} bps of what is realised here came from positions already held when the records begin, whose basis and holding period are the first snapshot's rather than the true purchase; their real holding period is longer, so a few of these may be graded short-term when they were not. ` : ''}And weights are targets at allocation dates, so lot sizes are intended rather than executed quantities. Nothing here is tax advice or a filing figure.

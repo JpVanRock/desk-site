@@ -513,7 +513,7 @@ if (!argRoute) {
 
   // Tax efficiency: the arithmetic, the netting, and the bracket toggle.
   {
-    const eff = await fetch(`${SUPABASE_URL}/rest/v1/latest_model_tax_efficiency?select=strategy_id,year,st_gain_bps,st_loss_bps,lt_gain_bps,lt_loss_bps,n_st,n_lt,bps_from_trims`, { headers: REST }).then(r => r.json());
+    const eff = await fetch(`${SUPABASE_URL}/rest/v1/latest_model_tax_efficiency?select=strategy_id,year,st_gain_bps,st_loss_bps,lt_gain_bps,lt_loss_bps,n_st,n_lt,bps_from_trims,n_sales,n_full_exits,n_trims`, { headers: REST }).then(r => r.json());
     const cov = await fetch(`${SUPABASE_URL}/rest/v1/latest_model_tax_coverage?select=strategy_id,n_sales,n_partial_sales,opening_lot_bps`, { headers: REST }).then(r => r.json());
     const bad = [];
     for (const r of eff) {
@@ -541,17 +541,44 @@ if (!argRoute) {
     say(` ok  tax efficiency         -> ${eff.length} model-years, ${cov.reduce((a, c) => a + c.n_partial_sales, 0)} partial sales counted, ${[...new Set(bad)].length} problems`);
     for (const b of [...new Set(bad)]) errors.push(`[tax] ${b}`);
 
-    need(a0.includes('Tax efficiency'), '[tax] the card is missing from Annie');
-    need(a0.indexOf('Decision errors') < a0.indexOf('Tax efficiency'), '[tax] the card is not below the decision errors section');
+    // Overall and the per-model tabs carry different titles.
+    need(a0.includes('Tax Drag') && a0.includes('estimated across all models'), '[tax] the Overall title is wrong');
+    need(a0.indexOf('Decision errors') < a0.indexOf('Tax Drag'), '[tax] the card is not below the decision errors section');
+    need(!a0.includes('Tax efficiency'), '[tax] the old Tax efficiency title is still rendered on Overall');
+    {
+      const modelTab = tabIds0.find(t => t !== 'overall');
+      await click('[data-anniemodel]', { anniemodel: modelTab });
+      const mh = app();
+      need(mh.includes('Estimated Tax Drag'), '[tax] a model tab does not carry the Estimated Tax Drag title');
+      need(!mh.includes('estimated across all models'), '[tax] a model tab is using the Overall title');
+      await click('[data-anniemodel]', { anniemodel: 'overall' });
+    }
+    // Sell decisions must split into exits plus trims, and never exceed the lots they consumed.
+    {
+      const bad2 = [];
+      for (const r of eff) {
+        if (r.n_full_exits + r.n_trims !== r.n_sales) bad2.push(`${r.year} ${r.n_sales} sales but ${r.n_full_exits}+${r.n_trims}`);
+        if (r.n_sales > 0 && r.n_st + r.n_lt < r.n_sales) bad2.push(`${r.year} ${r.n_sales} sales consuming only ${r.n_st + r.n_lt} lots`);
+      }
+      const totSales = eff.reduce((a, r) => a + r.n_sales, 0), totLots = eff.reduce((a, r) => a + r.n_st + r.n_lt, 0);
+      say(` ok  tax sell decisions     -> ${totSales} decisions across ${totLots} lots, ${[...new Set(bad2)].length} problems`);
+      for (const b of [...new Set(bad2)]) errors.push(`[tax] ${b}`);
+      // The column must show decisions, not the lot count that used to be there.
+      const shown = [...a0.matchAll(/<td class="num" style="color:var\(--muted\)" title="\d+ full exits[^"]*">(\d+)</g)].map(m => +m[1]);
+      const expect = [...new Set(eff.map(r => r.year))].sort().map(y => eff.filter(r => r.year === y).reduce((a, r) => a + r.n_sales, 0));
+      need(JSON.stringify(shown) === JSON.stringify(expect), `[tax] the sell-decision column reads ${shown.join('/')} but the ledger totals ${expect.join('/')}`);
+    }
     // Both rate sets must be stated on the page, and the toggle must change the figure.
     need(/15% long-term · 24% short-term/.test(a0), '[tax] the standard rates are not stated');
     need(/20% long-term · 37% short-term/.test(a0), '[tax] the HNW rates are not stated');
-    const stdDrag = (a0.match(/−([\d.]+) <span style="font-size:15px;font-weight:600">bps\/yr/) || [])[1];
+    const headline = h => (h.match(/−([\d.]+)<span style="font-size:19px">%<\/span> <span style="font-size:15px;font-weight:600">\/yr/) || [])[1];
+    const stdDrag = headline(a0);
     await click('[data-taxbracket]', { taxbracket: 'hnw' });
     const h1 = app();
-    const hnwDrag = (h1.match(/−([\d.]+) <span style="font-size:15px;font-weight:600">bps\/yr/) || [])[1];
-    say(` ok  tax bracket toggle     -> standard −${stdDrag} bps/yr, HNW −${hnwDrag} bps/yr`);
+    const hnwDrag = headline(h1);
+    say(` ok  tax bracket toggle     -> standard −${stdDrag}%/yr, HNW −${hnwDrag}%/yr`);
     need(stdDrag && hnwDrag, '[tax] could not read the headline drag on one of the brackets');
+    need(!/bps\/yr/.test(a0), '[tax] the headline is still in basis points');
     need(+hnwDrag > +stdDrag, `[tax] HNW (${hnwDrag}) is not heavier than standard (${stdDrag}), though both its rates are higher`);
     await click('[data-taxbracket]', { taxbracket: 'standard' });
   }
