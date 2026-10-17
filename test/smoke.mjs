@@ -209,7 +209,7 @@ const series = await pick('current_macro_readings', 'series_id,fred_code');
 // ---------------------------------------------------------------------------
 const routes = argRoute ? [argRoute] : [
   '#sisyphus', '#stan', '#adam', '#sven', '#annie', '#markets', '#views', '#signals', '#agents',
-  '#playground', '#briefs', '#sources', '#inbox', '#status',
+  '#briefs', '#sources', '#inbox', '#status',
   strat ? `#sisyphus/${strat.id}` : null,
   strat ? `#stan/${strat.id}` : null,
   sec ? `#markets/${sec.id}` : null,
@@ -245,11 +245,27 @@ if (!argRoute) {
   //    sitting in a bookmark, and without the redirect every stale link looks like a deleted page.
   // -------------------------------------------------------------------------
   currentRoute = 'legacy-hashes';
-  for (const [from, to, heading] of [['#overview', '#sisyphus', 'Decision'], ['#decisions', '#annie', 'Decision Coach']]) {
+  for (const [from, to, h1] of [['#overview', '#sisyphus', 'Sisyphus'], ['#decisions', '#annie', 'Decision Coach'], ['#playground', '#views', 'Views']]) {
     await go(from);
-    const ok = location.hash === to && (heading === 'Decision' ? /<h1>Sisyphus<\/h1>/.test(app()) : /<h1>Decision Coach<\/h1>/.test(app()));
+    const ok = location.hash === to && new RegExp(`<h1>${h1}</h1>`).test(app());
     say(` ok  ${from} -> ${location.hash}${ok ? '' : '  DID NOT REDIRECT'}`);
     need(ok, `[routing] ${from} did not redirect to ${to}`);
+  }
+  // The Playground lives inside Views now: one page, one name, and its controls still work there.
+  {
+    await go('#views');
+    const v = app();
+    need(v.includes('The Playground'), '[views] the Playground section is missing');
+    need(/data-pgmodel=/.test(v), '[views] the Playground model picker did not render');
+    need(!/<h1>The Playground<\/h1>/.test(v), '[views] the Playground still renders its own page heading');
+    const nav = readFileSync(join(SITE, 'index.html'), 'utf8');
+    need(!/href="#playground"/.test(nav), '[views] the nav still carries a Playground link');
+    // Its controls must still drive it from inside Views.
+    const models = [...v.matchAll(/data-pgmodel="([^"]+)"/g)].map(m => m[1]);
+    if (models.length > 1) {
+      await click('[data-pgmodel]', { pgmodel: models[1] });
+      need(app() !== v, '[views] switching the Playground model did not change the page');
+    }
   }
 
   // -------------------------------------------------------------------------

@@ -281,11 +281,14 @@ function route() {
   // It is also the hash anything bookmarked before today will carry, and it was the DEFAULT, so a
   // stale link is more likely here than anywhere else on the site.
   if (page === 'overview') { location.replace('#sisyphus' + (arg ? '/' + arg : '')); return; }
+  // The Playground is a section of Views now. The hash still resolves, so a saved link or an old
+  // bookmark lands where the content went rather than on an empty page.
+  if (page === 'playground') { location.replace('#views'); return; }
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
   // Keyed lookup, so this order is cosmetic rather than load-bearing — but it is kept in step
   // with the nav in index.html so the two read the same way.
-  const pages = { sisyphus, stan, adam, sven, markets, views: viewsPage, signals, playground, agents, annie, briefs, inbox, status, sources };
+  const pages = { sisyphus, stan, adam, sven, markets, views: viewsPage, signals, agents, annie, briefs, inbox, status, sources };
   $('#app').innerHTML = (pages[page] || sisyphus)();
   if (page === 'stan' && arg) {
     // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
@@ -1122,8 +1125,8 @@ function playground() {
 
   const dirty = classes.some(s => Math.abs((pgWeights[s] || 0) - (Object.fromEntries(m.byClass)[s] || 0)) > 1e-9);
 
-  return `<span class="eyebrow">Sandbox</span><h1>The Playground</h1>
-   <p class="sub">Change the mix and see where the exposures and the stress scores go. Nothing here is saved, and no allocation changes as a result.</p>
+  return `<h2 style="margin:26px 0 4px">The Playground</h2>
+   <p class="sub" style="margin-top:0">Change the mix and see where the exposures and the stress scores go. Nothing here is saved, and no allocation changes as a result.</p>
 
    <div class="card" style="margin-bottom:14px">
     <h2>Model</h2>
@@ -3912,7 +3915,7 @@ function viewsPage() {
      </tbody></table></div>`;
   }).join('');
 
-  return `<span class="eyebrow">Allocation model</span><h1>Views</h1><p class="sub">Exposure of each asset class, the desk's current stance where recorded, and the macro data behind it. Click a macro series for its chart.</p>
+  return `<span class="eyebrow">Allocation model</span><h1>Views</h1><p class="sub">Exposure of each asset class, the desk's current stance where recorded, the macro data behind it, and a sandbox for trying a different mix. Click a macro series for its chart.</p>
   <div class="card" style="margin-bottom:14px"><h2>Exposure matrix</h2><div class="mx"><div class="hd"></div>${D.factors.map(f => `<div class="hd">${esc(fname(f).toUpperCase())}</div>`).join('')}${rows}</div>
   <p class="note">Long +1, Flat 0, Short −1, Flat/Short −0.5. Subjective judgments.</p></div>
   <h2 style="margin:18px 0 10px">Stances</h2>
@@ -3920,7 +3923,8 @@ function viewsPage() {
   <h2 style="margin:18px 0 10px">Indexes</h2>
   ${indexSection()}
   <h2 style="margin:18px 0 10px">Macro data</h2>
-  ${macroSection || '<div class="empty">No macro data loaded yet.</div>'}`;
+  ${macroSection || '<div class="empty">No macro data loaded yet.</div>'}
+  ${playground()}`;
 }
 
 // Price action and trend for the benchmark/index securities, shown alongside the views they
