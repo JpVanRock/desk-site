@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -176,6 +176,10 @@ async function load() {
     qAllSoft(() => sb.from('latest_model_open_lots').select('strategy_id,ticker,security_id,lot_date,weight,cost_price,current_price,unrealised_bps,held_days,is_long_term,from_opening_book,basis_estimated'), 'open lots'),
     qSoft(sb.from('trade_journal').select('id,created_at,submitted_at,action,ticker,asset_class,rationale,setup,sizing,sizing_pct,horizon,loss_threshold,strategy_ids,tax_estimate,author').order('submitted_at', { ascending: false }).limit(200), 'trade journal'),
     qSoft(sb.from('trade_journal_verdicts').select('journal_id,agent,verdict,headline,rationale,requested_at,answered_at'), 'journal verdicts'),
+    qSoft(sb.from('latest_sandbox_target_allocation').select('id,strategy_id,submitted_at,holdings,note,author,mph_reading'), 'sandbox targets'),
+    qAllSoft(() => sb.from('latest_security_duration').select('security_id,duration_yrs,significant,r2'), 'security duration'),
+    qAllSoft(() => sb.from('latest_security_factor_fingerprint').select('security_id,betas,r_squared'), 'security fingerprint'),
+    qAllSoft(() => sb.from('latest_security_style_fit').select('security_id,lens,mix'), 'security style'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -261,7 +265,9 @@ async function load() {
     geoExposure: geoExposure || [], geoCoverage: geoCoverage || [],
     fingerprint: fingerprint || [], fingerprintCov: fingerprintCov || [],
     taxEff: taxEff || [], taxCov: taxCov || [],
-    openLots: openLots || [], journal: journal || [], journalVerdicts: journalVerdicts || [] };
+    openLots: openLots || [], journal: journal || [], journalVerdicts: journalVerdicts || [],
+    sandboxTargets: sandboxTargets || [], secDuration: secDuration || [], secFingerprint: secFingerprint || [],
+    secStyle: (secStyle || []).filter(r => r.lens === 'sector') };
 }
 
 // ---------- Views ----------
@@ -3133,8 +3139,21 @@ function modelDashboard(m) {
       </div></section>`;
   };
 
+  // A target submitted from the Sandbox replaces the target panel, and ONLY the target panel.
+  // Everything else in this drawer -- the actual holdings beside it, the statistics, the
+  // contribution, the drawdown, the fingerprint and the breakdown -- stays on what the model
+  // holds and what it has traded. A target is an intention; an intention must not restate
+  // performance, which is why this is a separate table rather than a write to target_allocations.
+  const sbTarget = (D.sandboxTargets || []).find(t => t.strategy_id === m.id) || null;
+  const targetPanelH = sbTarget
+    ? sbTarget.holdings.map(h => ({ ...h, cls: (D.markets.find(x => x.id === h.security_id) || {}).cls || null }))
+    : targetH;
+  const targetPanelAs = sbTarget
+    ? `Submitted ${String(sbTarget.submitted_at).slice(0, 10)} from the Sandbox${sbTarget.author ? ` by ${sbTarget.author}` : ''}`
+    : 'Current target weights';
+
   const allocGrid = `<div class="dashgrid" style="margin-bottom:18px">
-    ${panel('Target allocation', 'Current target weights', targetH, h => h.cls)}
+    ${panel('Target allocation', targetPanelAs, targetPanelH, h => h.cls)}
     ${panel('Actual holdings', actualH.length ? `Snapshot ${actualH[0].as_of}` : 'No snapshot loaded', actualH, h => clsOfSec(h.security_id))}
   </div>`;
 
@@ -4076,6 +4095,257 @@ function sandbox() {
       <button class="btn" data-sbanalyze="1" ${canSubmit ? '' : 'disabled'} style="${canSubmit ? '' : 'opacity:.5'};background:var(--panel2);color:var(--text)">Analyze Trade</button>
       ${missing.length ? `<small style="color:var(--muted)">Still needed: ${esc(missing.join(', '))}</small>` : ''}</div>
     <p class="note">Submitting files the entry with Gail, who keeps the catalogue. <b>Analyze</b> asks Annie, Adam, Sven and Kate to read the same entry through their own lens and return Go, Go Fish or No Go. They are agents, not scripts in this page: the request is recorded and the verdicts appear on Gail's tab when they run. A button that appeared to think while inventing four opinions in JavaScript would be the worst thing this desk could ship.</p>
+  </div>
+  ${sandboxAllocation()}`;
+}
+
+// ---------- Sandbox: the target allocation editor ----------
+//
+// A workbench, not a commitment. Test recomputes everything from the proposed weights; Submit
+// Final records the allocation and ONE thing reads it — the Target Allocation pie in a model's
+// drawer. Every statistic on this site carries on measuring what the models actually hold,
+// because a target is what the desk intends and an intention must not restate performance.
+let saModelId = null;
+let saRows = null;          // [{ticker, weight, security_id}] — the working copy
+let saTested = null;        // the last Test result; cleared whenever a weight changes
+let saBusy = false;
+let saMsg = null;
+let saNote = '';
+
+const saTotal = () => (saRows || []).reduce((a, r) => a + (+r.weight || 0), 0);
+function saLoad(m) {
+  saModelId = m.id;
+  // Seeded from a previous submission if there is one, otherwise from the model's live targets.
+  const prev = (D.sandboxTargets || []).find(t => t.strategy_id === m.id);
+  saRows = prev
+    ? prev.holdings.map(h => ({ ...h }))
+    : (m.holdings || []).map(h => ({ ticker: h.ticker || (D.markets.find(x => x.id === h.security_id) || {}).ticker || '?', weight: +h.weight, security_id: h.security_id }));
+  saTested = null; saMsg = null;
+}
+
+// Daily prices for the proposed names, fetched when Test is pressed rather than on page load:
+// the editor is one page of many and nobody should pay for its price history to read Sisyphus.
+const saPriceCache = new Map();
+async function saPrices(ids, from) {
+  const missing = ids.filter(id => !saPriceCache.has(id));
+  for (let i = 0; i < missing.length; i += 10) {
+    const chunk = missing.slice(i, i + 10);
+    const { data, error } = await sb.from('market_data')
+      .select('security_id,price_date,close,adj_close')
+      .in('security_id', chunk).gte('price_date', from).order('price_date', { ascending: true });
+    if (error) throw new Error(error.message);
+    for (const id of chunk) saPriceCache.set(id, []);
+    for (const r of data || []) saPriceCache.get(r.security_id).push(r);
+  }
+  return Object.fromEntries(ids.map(id => [id, saPriceCache.get(id) || []]));
+}
+
+// Rebuild a daily series from the proposed weights and measure it properly. Buy and hold from the
+// window start: the weights are a target, and a target that is rebalanced daily is a different
+// strategy from the one being proposed.
+function saSeries(rows, px, dates, rf) {
+  const out = [];
+  const base = {};
+  for (const r of rows) {
+    const b = px[r.security_id] || [];
+    const first = b.find(x => x.price_date >= dates[0]);
+    base[r.security_id] = first ? +(first.adj_close ?? first.close) : null;
+  }
+  const byDate = {};
+  for (const r of rows) {
+    byDate[r.security_id] = new Map((px[r.security_id] || []).map(x => [x.price_date, +(x.adj_close ?? x.close)]));
+  }
+  for (const d of dates) {
+    let v = 0, covered = 0;
+    for (const r of rows) {
+      const p = byDate[r.security_id]?.get(d), b = base[r.security_id];
+      if (!(p > 0) || !(b > 0)) continue;
+      v += (+r.weight) * (p / b);
+      covered += +r.weight;
+    }
+    if (covered > 0) out.push({ d, v: v / covered, covered });
+  }
+  return out;
+}
+function saStats(series, bench) {
+  if (series.length < 20) return null;
+  const ret = [], bret = [];
+  for (let i = 1; i < series.length; i++) {
+    ret.push(series[i].v / series[i - 1].v - 1);
+    const b0 = bench.find(x => x.d === series[i - 1].d), b1 = bench.find(x => x.d === series[i].d);
+    bret.push(b0 && b1 ? b1.v / b0.v - 1 : null);
+  }
+  const total = series.at(-1).v / series[0].v - 1;
+  const benchTotal = bench.length > 1 ? bench.at(-1).v / bench[0].v - 1 : null;
+  const mean = ret.reduce((a, b) => a + b, 0) / ret.length;
+  const sd = Math.sqrt(ret.reduce((a, b) => a + (b - mean) ** 2, 0) / (ret.length - 1));
+  // Drawdown with the peak reset at the window start, the same rule the model statistics use.
+  let peak = -Infinity, dd = 0;
+  for (const p of series) { if (p.v > peak) peak = p.v; dd = Math.min(dd, p.v / peak - 1); }
+  // Capture and beta only over days where both sides priced.
+  const pairs = ret.map((r, i) => [r, bret[i]]).filter(([, b]) => b !== null);
+  const up = pairs.filter(([, b]) => b > 0), down = pairs.filter(([, b]) => b < 0);
+  const sum = (a, i) => a.reduce((x, y) => x + y[i], 0);
+  const cap = a => a.length && sum(a, 1) !== 0 ? sum(a, 0) / sum(a, 1) : null;
+  let beta = null, r2 = null;
+  if (pairs.length > 20) {
+    const mb = sum(pairs, 1) / pairs.length, mr = sum(pairs, 0) / pairs.length;
+    let cov = 0, varb = 0, varr = 0;
+    for (const [r, b] of pairs) { cov += (r - mr) * (b - mb); varb += (b - mb) ** 2; varr += (r - mr) ** 2; }
+    beta = varb > 0 ? cov / varb : null;
+    r2 = varb > 0 && varr > 0 ? (cov * cov) / (varb * varr) : null;
+  }
+  return { total, benchTotal, vol: sd * Math.sqrt(252), maxDD: dd, upside: cap(up), downside: cap(down), beta, r2, n: series.length, coverage: Math.min(...series.map(s => s.covered)) };
+}
+
+// The editor itself, appended to the Sandbox page below the journal.
+function sandboxAllocation() {
+  const models = D.models || [];
+  if (!models.length) return '';
+  const m = models.find(x => x.id === saModelId) || models[0];
+  if (!saRows || saModelId !== m.id) saLoad(m);
+
+  const total = saTotal();
+  const off = Math.abs(total - 1) > 0.0005;
+  const mph = (D.modelSpeedLimit || []).find(r => r.strategy_id === m.id) || null;
+  const master = D.speedLimit && D.speedLimit[0] ? D.speedLimit[0] : null;
+  const prev = (D.sandboxTargets || []).find(t => t.strategy_id === m.id) || null;
+
+  const clsOf = tk => { const s = (D.markets || []).find(x => x.ticker === tk); return s ? s.cls : null; };
+  // The two pies are weighted sums, so they move the instant a weight does — no Test needed.
+  const byClass = {};
+  for (const r of saRows) {
+    const ov = (D.factorOverrides || []).find(o => o.security_id === r.security_id);
+    const mix = mixOf(ov);
+    if (mix) { for (const [c, share] of Object.entries(mix)) byClass[c] = (byClass[c] || 0) + (+r.weight) * share; continue; }
+    const c = clsOf(r.ticker) || 'unclassified';
+    byClass[c] = (byClass[c] || 0) + (+r.weight);
+  }
+  const CLASS_ORDER = [['equities', 'Equities'], ['bonds', 'Fixed Income'], ['commodities_real_assets', 'Commodities'], ['gold', 'Gold'], ['cash', 'Cash'], ['alternatives', 'Alternatives'], ['unclassified', 'Unclassified']];
+  const classSlices = CLASS_ORDER.map(([k, label]) => ({ k, label, v: byClass[k] || 0 })).filter(s => s.v > 0.0001);
+
+  // Factor pie: each class's weight split across the factors it is long, by the desk's own matrix.
+  const longs = { growth: 0, inflation: 0, liquidity: 0 }; let unclassified = 0;
+  for (const [c, w] of Object.entries(byClass)) {
+    const row = FA_MATRIX[c];
+    if (!row) { unclassified += w; continue; }
+    const lf = ['growth', 'inflation', 'liquidity'].filter(f => row[f] === 'L');
+    if (!lf.length) { unclassified += w; continue; }
+    for (const f of lf) longs[f] += w / lf.length;
+  }
+  const factorSlices = [
+    { k: 'growth', label: 'Growth', v: longs.growth }, { k: 'inflation', label: 'Inflation', v: longs.inflation },
+    { k: 'liquidity', label: 'Liquidity', v: longs.liquidity }, { k: 'unclassified', label: 'Unclassified', v: unclassified },
+  ].filter(s => s.v > 0.0001);
+
+  const pie = (slices, colors) => {
+    const sum = slices.reduce((a, s) => a + s.v, 0) || 1;
+    let acc = 0; const R = 58, C = 70;
+    const arcs = slices.map((s, i) => {
+      const a0 = acc / sum * 2 * Math.PI - Math.PI / 2; acc += s.v;
+      const a1 = acc / sum * 2 * Math.PI - Math.PI / 2;
+      const big = a1 - a0 > Math.PI ? 1 : 0;
+      const p = (a, r) => [C + r * Math.cos(a), C + r * Math.sin(a)];
+      const [x0, y0] = p(a0, R), [x1, y1] = p(a1, R);
+      return `<path d="M ${C} ${C} L ${x0.toFixed(1)} ${y0.toFixed(1)} A ${R} ${R} 0 ${big} 1 ${x1.toFixed(1)} ${y1.toFixed(1)} Z" fill="${colors[s.k] || 'var(--muted)'}" stroke="var(--panel)" stroke-width="1.5"><title>${esc(s.label)} ${(s.v / sum * 100).toFixed(1)}%</title></path>`;
+    }).join('');
+    return `<svg viewBox="0 0 140 140" style="width:140px;height:140px;flex:none">${arcs}</svg>`;
+  };
+  const legend = (slices, colors) => {
+    const sum = slices.reduce((a, s) => a + s.v, 0) || 1;
+    return `<div style="font-size:12px;line-height:1.8">${slices.map(s =>
+      `<div><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${colors[s.k] || 'var(--muted)'};margin-right:6px"></span>${esc(s.label)} <b>${(s.v / sum * 100).toFixed(1)}%</b></div>`).join('')}</div>`;
+  };
+  const FCOL = { growth: 'var(--growth)', inflation: 'var(--inflation)', liquidity: 'var(--liquidity)', unclassified: 'var(--unclass)' };
+
+  const rowsHtml = saRows.map((r, i) => `<tr>
+    <td><b>${esc(r.ticker)}</b>${r.security_id ? '' : '<br><small style="color:var(--warn)">unknown ticker</small>'}</td>
+    <td style="color:var(--muted);font-size:12px">${esc((CLASS_ORDER.find(c => c[0] === clsOf(r.ticker)) || [, '—'])[1])}</td>
+    <td class="num"><input data-sawt="${i}" type="number" step="0.5" min="0" max="100" value="${(+r.weight * 100).toFixed(1)}"
+      style="width:78px;padding:4px 7px;border-radius:5px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:13px;text-align:right"></td>
+    <td class="num"><span class="click" data-sadel="${i}" title="Remove this holding" style="cursor:pointer;color:var(--neg);font-weight:700">×</span></td></tr>`).join('');
+
+  const t = saTested;
+  const statLine = (lbl, v, fmt, title) => `<div title="${esc(title || '')}"><span style="color:var(--muted);font-size:12px">${esc(lbl)}</span><br><b style="font-variant-numeric:tabular-nums">${v === null || v === undefined ? '—' : fmt(v)}</b></div>`;
+  const pc1 = v => (v >= 0 ? '+' : '') + (v * 100).toFixed(1) + '%';
+  const statsBlock = !t ? `<div class="note" style="color:var(--muted)">Press <b>Test</b> to rebuild a daily series from these weights and measure it — return, capture, beta, drawdown and volatility over the year to date and the last twelve months.</div>`
+    : `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:12px 18px">
+        ${statLine('YTD return', t.ytd?.total, pc1, 'Buy and hold of these weights from the first trading day of the year')}
+        ${statLine('YTD vs bench', t.ytd && t.ytd.benchTotal !== null ? t.ytd.total - t.ytd.benchTotal : null, pc1, 'Against this model’s own benchmark over the same days')}
+        ${statLine('1Y return', t.oneY?.total, pc1, 'Buy and hold over the last twelve months')}
+        ${statLine('Max drawdown', t.oneY?.maxDD, pc1, 'Largest fall from a running peak inside the one-year window')}
+        ${statLine('Volatility', t.oneY?.vol, v => (v * 100).toFixed(1) + '%', 'Annualised standard deviation of daily returns over one year')}
+        ${statLine('Upside capture', t.oneY?.upside, v => (v * 100).toFixed(0) + '%', 'Return on the benchmark’s up days, divided by the benchmark’s')}
+        ${statLine('Downside capture', t.oneY?.downside, v => (v * 100).toFixed(0) + '%', 'Return on the benchmark’s down days, divided by the benchmark’s')}
+        ${statLine('Beta vs bench', t.oneY?.beta, v => v.toFixed(2) + '×', 'Least squares over one year. Read R² beside it.')}
+        ${statLine('R²', t.oneY?.r2, v => v.toFixed(2), 'Below 0.5 the beta is not describing risk posture')}
+        ${statLine('FI duration', t.duration, v => v.toFixed(2) + ' yrs', 'Weighted empirical duration of the fixed income sleeve, per unit of fixed income weight')}
+      </div>
+      <p class="note">Rebuilt from these weights as a <b>buy and hold</b> from each window’s first day — a target rebalanced daily would be a different strategy from the one proposed. ${t.ytd && t.ytd.coverage < 0.999 ? `Only ${(t.ytd.coverage * 100).toFixed(0)}% of the weight could be priced across the year; the rest is excluded and the figures renormalise over what remains. ` : ''}Gross of fees, no transaction costs, and not a backtest of a strategy — it is this one book held still.</p>`;
+
+  const fp = t?.fingerprint;
+  const fpBlock = !fp ? '' : `<h3 style="margin:18px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Factor fingerprint</h3>
+    <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:center">
+      ${factorRadar(fp.rows, 'Current', 'Proposed')}
+      <div style="flex:1;min-width:260px;overflow-x:auto"><table style="min-width:300px"><thead><tr><th>Factor</th><th class="num">Proposed</th><th class="num">Current</th><th class="num">Change</th></tr></thead><tbody>
+      ${fp.rows.map(r => { const d = r.model_beta !== null && r.benchmark_beta !== null ? r.model_beta - r.benchmark_beta : null;
+        return `<tr><td>${esc(r.label)}</td><td class="num">${r.model_beta === null ? '—' : (r.model_beta >= 0 ? '+' : '−') + Math.abs(r.model_beta).toFixed(2)}</td>
+        <td class="num" style="color:var(--muted)">${r.benchmark_beta === null ? '—' : (r.benchmark_beta >= 0 ? '+' : '−') + Math.abs(r.benchmark_beta).toFixed(2)}</td>
+        <td class="num" style="color:${d === null ? 'var(--muted)' : Math.abs(d) < 0.02 ? 'var(--muted)' : d > 0 ? 'var(--pos)' : 'var(--neg)'}">${d === null ? '—' : (d >= 0 ? '+' : '−') + Math.abs(d).toFixed(2)}</td></tr>`; }).join('')}
+      </tbody></table></div></div>
+    <p class="note">Each holding’s measured factor tilts, weighted by the proposed book and set against the model as it stands. Tilts are per unit of equity exposure, so a change here is a change of style rather than of how much equity is held. ${fp.coverage < 0.999 ? `Covers ${(fp.coverage * 100).toFixed(0)}% of the proposed equity; holdings without a fingerprint are left out rather than averaged in at zero.` : ''}</p>`;
+
+  const sec = t?.sectors;
+  const secBlock = !sec || !sec.rows.length ? '' : `<h3 style="margin:18px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Sector weighting</h3>
+    <div style="overflow-x:auto"><table style="min-width:360px"><thead><tr><th>Sector</th><th class="num">Share of equity</th></tr></thead><tbody>
+    ${sec.rows.map(r => `<tr><td>${esc(r.label)}</td><td class="num">${(r.v * 100).toFixed(1)}%</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="note">Returns-based, from each fund’s own sector fit, weighted by the proposed book and renormalised over the equity that could be placed${sec.coverage < 0.999 ? ` — ${(sec.coverage * 100).toFixed(0)}% of it` : ''}. Never a holdings look-through: no source connected here publishes what these funds own.</p>`;
+
+  return `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Target allocation</h2>
+      <span style="font-size:12px;color:var(--muted)">${mph ? `MPH ${esc(String(mph.light || '').toUpperCase())}${mph.target_low !== null ? ` · band ${(+mph.target_low).toFixed(2)}–${(+mph.target_high).toFixed(2)}×` : ''}` : ''}${master && master.light ? ` · master ${esc(String(master.light).toUpperCase())}` : ''}</span></div>
+    <p class="note" style="margin:4px 0 12px">Build a target against the current speed limit. <b>Test</b> measures it; <b>Submit Final</b> records it, and the only thing that changes is the Target Allocation pie in this model’s drawer — every statistic on the site carries on measuring what the model actually holds.</p>
+
+    <div class="tabs" style="margin:0 0 12px">${models.map(x =>
+      `<button class="tab" data-samodel="${esc(x.id)}" aria-selected="${x.id === m.id}">${esc(bareName(x.name))}</button>`).join('')}</div>
+
+    ${prev ? `<div class="note" style="margin-bottom:10px;color:var(--muted)">Last submitted ${esc(String(prev.submitted_at).slice(0, 16).replace('T', ' '))}${prev.author ? ` by ${esc(prev.author)}` : ''}. Editing starts from that submission.</div>` : ''}
+
+    <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start">
+      <div style="flex:1;min-width:330px;overflow-x:auto">
+        <table style="min-width:330px"><thead><tr><th>Ticker</th><th>Class</th><th class="num">Weight</th><th></th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+        <tfoot><tr><td colspan="2" style="color:var(--muted)">Total</td>
+          <td class="num"><b style="color:${off ? 'var(--warn)' : 'var(--pos)'}">${(total * 100).toFixed(1)}%</b></td><td></td></tr></tfoot></table>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
+          <input data-saticker type="text" placeholder="Add ticker" style="width:130px;padding:5px 9px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:13px;text-transform:uppercase">
+          <button class="btn" data-saadd="1" style="padding:5px 12px;font-size:13px">Add</button>
+          ${off ? `<small style="color:var(--warn)">Weights total ${(total * 100).toFixed(1)}%. A mix that does not add up is a legitimate thing to look at on the way to one that does, and nothing here silently renormalises it.</small>` : ''}
+        </div>
+      </div>
+      <div style="display:flex;gap:18px;flex-wrap:wrap">
+        <div><div class="eyebrow" style="margin-bottom:6px">Asset class</div>
+          <div style="display:flex;gap:10px;align-items:center">${pie(classSlices, CLASS_COLORS)}${legend(classSlices, CLASS_COLORS)}</div></div>
+        <div><div class="eyebrow" style="margin-bottom:6px">Factor</div>
+          <div style="display:flex;gap:10px;align-items:center">${pie(factorSlices, FCOL)}${legend(factorSlices, FCOL)}</div></div>
+      </div>
+    </div>
+
+    <h3 style="margin:18px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Portfolio statistics</h3>
+    ${statsBlock}
+    ${fpBlock}
+    ${secBlock}
+
+    ${saMsg ? `<div class="note" style="margin-top:10px;color:${saMsg.ok ? 'var(--pos)' : 'var(--neg)'}">${esc(saMsg.text)}</div>` : ''}
+    <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center">
+      <button class="btn" data-satest="1" ${saBusy ? 'disabled' : ''} style="background:var(--panel2);color:var(--text)">${saBusy ? 'Measuring…' : 'Test'}</button>
+      <button class="btn" data-safinal="1" ${saBusy ? 'disabled' : ''}>Submit Final</button>
+      <button class="btn" data-satune="1" ${saBusy ? 'disabled' : ''} style="background:var(--panel2);color:var(--text)">Agent Fine Tune</button>
+      <input data-sanote type="text" value="${esc(saNote)}" placeholder="Note for the record (optional)" style="flex:1;min-width:180px;padding:6px 9px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:13px">
+    </div>
+    <p class="note"><b>Submit Final</b> timestamps this allocation and the Target Allocation pie in this model’s drawer starts showing it. Nothing else moves: the factor pie on the actual book, the stress scores, duration, geography and every return figure stay on what the model holds, because a target is an intention and an intention must not restate performance. <b>Agent Fine Tune</b> asks Adam, Sven and Kate to propose changes with reasons; like the trade analysis, they run outside this page and their answer appears once they have.</p>
   </div>`;
 }
 
@@ -4527,6 +4797,186 @@ document.addEventListener('click', async e => {
     sbSaveMsg = { ok: false, text: `Could not file that entry: ${ex.message}. Nothing was saved.` };
   }
   $('#app').innerHTML = sandbox();
+});
+
+
+// ---------- Sandbox allocation editor ----------
+const saRedraw = () => { $('#app').innerHTML = sandbox(); };
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-samodel]'); if (!t) return;
+  saModelId = null; saRows = null; saMsg = null;
+  const m = (D.models || []).find(x => x.id === t.dataset.samodel);
+  if (m) saLoad(m);
+  saRedraw();
+});
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-sadel]'); if (!t) return;
+  saRows.splice(+t.dataset.sadel, 1);
+  saTested = null;                       // the measurement described the old book
+  saRedraw();
+});
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-saadd]'); if (!t) return;
+  const box = document.querySelector('[data-saticker]');
+  const tk = String(box?.value || '').trim().toUpperCase();
+  if (!tk) return;
+  if (saRows.some(r => r.ticker === tk)) { saMsg = { ok: false, text: `${tk} is already in this allocation.` }; return saRedraw(); }
+  const sec = (D.markets || []).find(x => x.ticker === tk);
+  // An unknown ticker is still added, flagged, and simply cannot be priced or classified. Refusing
+  // it would stop the owner sketching with a name the universe has not caught up with yet.
+  saRows.push({ ticker: tk, weight: 0, security_id: sec ? sec.id : null });
+  saMsg = sec ? null : { ok: false, text: `${tk} is not in the securities universe, so it cannot be priced or classified. Add it to data/universe.csv to measure it.` };
+  saTested = null;
+  saRedraw();
+});
+// Weights write state without redrawing, so the caret stays in the field being typed into.
+document.addEventListener('input', e => {
+  const t = e.target.closest('[data-sawt]'); if (!t) return;
+  const i = +t.dataset.sawt;
+  if (saRows[i]) saRows[i].weight = (parseFloat(t.value) || 0) / 100;
+  saTested = null;
+});
+document.addEventListener('input', e => {
+  const t = e.target.closest('[data-sanote]'); if (!t) return;
+  saNote = t.value;
+});
+// Leaving a weight field redraws, so the pies and the total catch up.
+document.addEventListener('change', e => {
+  const t = e.target.closest('[data-sawt]'); if (!t) return;
+  saRedraw();
+});
+
+// Test: rebuild a daily series from the proposed weights and measure it over two windows.
+document.addEventListener('click', async e => {
+  if (!e.target.closest('[data-satest]')) return;
+  const rows = saRows.filter(r => r.security_id && +r.weight > 0);
+  if (!rows.length) { saMsg = { ok: false, text: 'Nothing priceable to measure: every row needs a known ticker and a weight above zero.' }; return saRedraw(); }
+  saBusy = true; saMsg = null; saRedraw();
+  try {
+    const m = (D.models || []).find(x => x.id === saModelId);
+    const bench = (D.markets || []).find(x => x.ticker === (m?.benchmarkTicker || 'VSMGX')) || (D.markets || []).find(x => x.ticker === 'VSMGX');
+    const ids = [...new Set([...rows.map(r => r.security_id), bench?.id].filter(Boolean))];
+    const yr = new Date().getUTCFullYear();
+    const from = `${yr - 1}-10-01`;                   // enough for a one-year window plus a margin
+    const px = await saPrices(ids, from);
+    // The calendar comes from the benchmark where there is one, else the longest series present.
+    const src = (bench && px[bench.id]?.length) ? px[bench.id] : Object.values(px).sort((a, b) => b.length - a.length)[0] || [];
+    const all = src.map(r => r.price_date);
+    const ytdFrom = `${yr - 1}-12-31`;
+    const oneYFrom = all.at(-1) ? new Date(Date.parse(all.at(-1)) - 365 * 864e5).toISOString().slice(0, 10) : from;
+    const mk = start => {
+      const dates = all.filter(d => d >= start);
+      if (dates.length < 20) return null;
+      const series = saSeries(rows, px, dates, null);
+      const bseries = bench ? saSeries([{ security_id: bench.id, weight: 1 }], px, dates, null) : [];
+      return saStats(series, bseries);
+    };
+    // Duration and the fingerprint are weighted sums of figures already measured per security.
+    const dur = (() => {
+      const lots = D.secDuration || [];
+      let w = 0, wd = 0;
+      for (const r of rows) {
+        const d = lots.find(x => x.security_id === r.security_id);
+        if (!d || d.duration_yrs === null) continue;
+        const cls = (D.markets || []).find(x => x.id === r.security_id)?.cls;
+        const ov = (D.factorOverrides || []).find(o => o.security_id === r.security_id);
+        const mix = mixOf(ov);
+        const share = mix ? (+mix.bonds || 0) : (cls === 'bonds' ? 1 : 0);
+        if (share <= 0) continue;
+        w += (+r.weight) * share; wd += (+r.weight) * share * (+d.duration_yrs);
+      }
+      return w > 0 ? wd / w : null;
+    })();
+    const fingerprint = (() => {
+      const fps = D.secFingerprint || [];
+      const FAC = [['value', 'Value'], ['momentum', 'Momentum'], ['quality', 'Quality'], ['low_volatility', 'Low Volatility'], ['size', 'Size (small)']];
+      let cov = 0, tot = 0; const acc = {};
+      for (const r of rows) {
+        tot += +r.weight;
+        const f = fps.find(x => x.security_id === r.security_id);
+        if (!f || !f.betas) continue;
+        cov += +r.weight;
+        for (const [k] of FAC) acc[k] = (acc[k] || 0) + (+r.weight) * (+f.betas[k] || 0);
+      }
+      if (!(cov > 0)) return null;
+      const cur = (D.fingerprint || []).filter(x => x.scope === 'model' && x.strategy_id === saModelId);
+      return {
+        coverage: tot > 0 ? cov / tot : 0,
+        rows: FAC.map(([k, label], i) => ({
+          factor: k, label, sort_order: i,
+          model_beta: +(acc[k] / cov).toFixed(4),
+          benchmark_beta: cur.find(c => c.factor === k)?.model_beta ?? null,
+        })),
+      };
+    })();
+    const sectors = (() => {
+      const se = (D.styleExposure || []);
+      let cov = 0, tot = 0; const acc = {};
+      for (const r of rows) {
+        tot += +r.weight;
+        const mix = (D.secStyle || []).find(x => x.security_id === r.security_id);
+        if (!mix || !mix.mix) continue;
+        cov += +r.weight;
+        for (const [b, share] of Object.entries(mix.mix)) acc[b] = (acc[b] || 0) + (+r.weight) * share;
+      }
+      const sum = Object.values(acc).reduce((a, b) => a + b, 0);
+      if (!(sum > 0)) return null;
+      const label = b => (se.find(x => x.bucket === b) || {}).label || String(b).replace(/_/g, ' ');
+      return { coverage: tot > 0 ? cov / tot : 0, rows: Object.entries(acc).map(([b, v]) => ({ label: label(b), v: v / sum })).sort((a, b) => b.v - a.v) };
+    })();
+    saTested = { ytd: mk(ytdFrom), oneY: mk(oneYFrom), duration: dur, fingerprint, sectors };
+    if (!saTested.ytd && !saTested.oneY) saMsg = { ok: false, text: 'Not enough overlapping price history to measure these weights.' };
+  } catch (ex) {
+    saMsg = { ok: false, text: `Could not measure that: ${ex.message}` };
+  }
+  saBusy = false; saRedraw();
+});
+
+// Submit Final: records the allocation. Only the Target Allocation pie reads it.
+document.addEventListener('click', async e => {
+  if (!e.target.closest('[data-safinal]')) return;
+  const rows = saRows.filter(r => +r.weight > 0);
+  if (!rows.length) { saMsg = { ok: false, text: 'Nothing to submit: every row is at zero.' }; return saRedraw(); }
+  saBusy = true; saRedraw();
+  try {
+    const mph = (D.modelSpeedLimit || []).find(r => r.strategy_id === saModelId) || null;
+    const { error } = await sb.from('sandbox_target_allocation').insert({
+      strategy_id: saModelId,
+      holdings: rows.map(r => ({ ticker: r.ticker, weight: +(+r.weight).toFixed(6), security_id: r.security_id })),
+      note: saNote || null, author: 'desk',
+      mph_reading: mph ? { light: mph.light, target_low: mph.target_low, target_high: mph.target_high, actual_beta: mph.actual_beta } : null,
+    });
+    if (error) throw new Error(error.message);
+    saMsg = { ok: true, text: `Submitted. The Target Allocation pie in this model’s drawer now shows it; nothing else on the site moved.` };
+    D.sandboxTargets = null;   // reload on the next visit
+  } catch (ex) {
+    saMsg = { ok: false, text: `Could not submit that allocation: ${ex.message}. Nothing was saved.` };
+  }
+  saBusy = false; saRedraw();
+});
+
+// Agent Fine Tune: a request, like the trade analysis. The agents run outside this page.
+document.addEventListener('click', async e => {
+  if (!e.target.closest('[data-satune]')) return;
+  const rows = saRows.filter(r => +r.weight > 0);
+  if (!rows.length) { saMsg = { ok: false, text: 'Nothing to tune: every row is at zero.' }; return saRedraw(); }
+  saBusy = true; saRedraw();
+  try {
+    const { data, error } = await sb.from('trade_journal').insert({
+      action: 'rebalance', asset_class: null,
+      rationale: `Agent Fine Tune requested on a proposed allocation for ${bareName(((D.models || []).find(m => m.id === saModelId) || {}).name || '')}: ${rows.map(r => `${r.ticker} ${(+r.weight * 100).toFixed(1)}%`).join(', ')}.${saNote ? ` Note: ${saNote}` : ''}`,
+      setup: 'Risk-Based', strategy_ids: [saModelId], author: 'desk',
+      submitted_at: new Date().toISOString(),
+    }).select('id').single();
+    if (error) throw new Error(error.message);
+    const reqs = ['adam', 'sven', 'kate'].map(agent => ({ journal_id: data.id, agent }));
+    const { error: ve } = await sb.from('trade_journal_verdicts').insert(reqs);
+    if (ve) throw new Error(ve.message);
+    saMsg = { ok: true, text: 'Adam, Sven and Kate have been asked to tune this allocation. Their proposals appear on Gail’s tab once they run.' };
+  } catch (ex) {
+    saMsg = { ok: false, text: `Could not request a tune: ${ex.message}` };
+  }
+  saBusy = false; saRedraw();
 });
 
 // Donut and period toggles re-render the model drawer from data already loaded.
