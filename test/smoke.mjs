@@ -363,6 +363,38 @@ if (!argRoute) {
     say(` ok  monthly ${yr} annual    -> ${annual}% vs trailing YTD ${ytd}%`);
     need(Math.abs(ytd - annual) < 0.02, `[monthly] ${yr} annual ${annual}% does not match the trailing YTD ${ytd}% on the same card`);
   } else say(` ok  monthly/YTD cross-check skipped (ytd=${ytd} annual=${annual})`);
+  // The annual cell is coloured by its own sign; the months beside it by the benchmark. A red
+  // annual on a year that made money is what sent the owner looking in the first place.
+  {
+    const d = drawer();
+    const annuals = [...d.matchAll(/<td class="num" style="background:(var\(--\w+bg\)|transparent);font-weight:600;[^"]*"[^>]*>(-?[\d.]+)%/g)]
+      .map(m => ({ bg: m[1], v: +m[2] }));
+    const wrong = annuals.filter(a => a.bg !== 'transparent' && ((a.v >= 0) !== (a.bg === 'var(--winbg)')));
+    say(` ok  monthly annual colour -> ${annuals.length} annual cells, ${wrong.length} coloured against their sign`);
+    need(annuals.length > 0, '[monthly] no annual cells found');
+    for (const a of wrong) errors.push(`[monthly] an annual of ${a.v}% is shown ${a.bg === 'var(--winbg)' ? 'green' : 'red'}`);
+  }
+  // Every window must start where its name says. A YTD that begins in a prior year is a different
+  // question wearing the YTD label, which is how Fixed Income Core came to report 39.04%.
+  {
+    const ps = await fetch(`${SUPABASE_URL}/rest/v1/latest_model_period_stats?select=strategy_id,period,model_return,start_date,window_starts_in_gap&period=in.(YTD,1YR,3YR)`, { headers: REST }).then(r => r.json());
+    const yr = new Date().getUTCFullYear();
+    const bad = [];
+    for (const r of ps) {
+      if (!r.start_date) continue;
+      if (r.period === 'YTD' && r.start_date < `${yr - 1}-12-25`) bad.push(`YTD starts ${r.start_date}`);
+      if (r.period === '1YR' && r.start_date < `${yr - 1}-10-01`) bad.push(`1YR starts ${r.start_date}`);
+      if (r.period === '3YR' && r.start_date < `${yr - 3}-10-01`) bad.push(`3YR starts ${r.start_date}`);
+    }
+    // Two windows of different lengths cannot honestly return the same figure.
+    const byStrat = {};
+    for (const r of ps) { (byStrat[r.strategy_id] ||= {})[r.period] = r.model_return; }
+    for (const [sid, v] of Object.entries(byStrat)) {
+      if (v.YTD !== null && v.YTD !== undefined && v.YTD === v['3YR']) bad.push('YTD equals 3YR exactly, so one window was stretched');
+    }
+    say(` ok  period windows        -> ${ps.length} windows, ${[...new Set(bad)].length} starting outside their own span`);
+    for (const b of [...new Set(bad)]) errors.push(`[period] ${b}`);
+  }
   await click('[data-monthtab]', { monthtab: 'excess' });
   need(drawer() !== d1, '[monthly] switching to the Vs. Benchmark tab did not change the grid');
 

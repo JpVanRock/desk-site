@@ -3189,14 +3189,20 @@ function modelDashboard(m) {
           return `<td class="num" style="color:var(--muted)"${why ? ` title="${esc(why)}"` : ''}>–</td>`;
         }
         const v = +r[key];
-        // No excess means no verdict, so no colour — an uncoloured cell is a figure without a
-        // benchmark behind it, not a flat month.
+        // Two different rules, and the difference is deliberate. A MONTH is coloured against the
+        // benchmark, which is the owner's rule and the question the grid was built to answer: did
+        // this month beat the index. The ANNUAL cell is coloured by its own sign — did the year
+        // make money — because that is the question a year asks, and a red figure beside a
+        // positive annual return reads as a loss however the note explains it.
         const ex = r.excess_return === null || r.excess_return === undefined ? null : +r.excess_return;
-        const bg = ex === null ? 'transparent' : ex >= 0 ? 'var(--winbg)' : 'var(--losebg)';
+        const basis = isAnnual ? v : ex;
+        const bg = basis === null ? 'transparent' : basis >= 0 ? 'var(--winbg)' : 'var(--losebg)';
         const tips = [
           r.is_partial ? 'Part of a month only — the series begins or ends inside it.' : '',
           r.in_gap ? 'Inside the stretch with no holdings snapshot: the weights were carried forward unchanged through this month.' : '',
-          ex === null ? 'No benchmark figure for this month, so there is no verdict to colour.' : `${ex >= 0 ? 'Ahead of' : 'Behind'} the benchmark by ${Math.abs(ex * 100).toFixed(2)}%.`,
+          isAnnual
+            ? `${v >= 0 ? 'Made' : 'Lost'} ${Math.abs(v * 100).toFixed(2)}% over the year${ex === null ? '' : `, ${ex >= 0 ? 'ahead of' : 'behind'} the benchmark by ${Math.abs(ex * 100).toFixed(2)}%`}.`
+            : ex === null ? 'No benchmark figure for this month, so there is no verdict to colour.' : `${ex >= 0 ? 'Ahead of' : 'Behind'} the benchmark by ${Math.abs(ex * 100).toFixed(2)}%.`,
         ].filter(Boolean).join(' ');
         return `<td class="num" style="background:${bg};${isAnnual ? 'font-weight:600;' : ''}${r.is_partial ? 'font-style:italic;' : ''}" title="${esc(tips)}">${(v * 100).toFixed(2)}%${r.in_gap ? '<sup style="color:var(--warn)">·</sup>' : ''}</td>`;
       };
@@ -3214,7 +3220,7 @@ function modelDashboard(m) {
         </tr></thead><tbody>
         ${years.map(y => `<tr><td><b>${y}</b></td>${cell(at(y, 0), true)}${MON.map((_, i) => cell(at(y, i + 1), false)).join('')}</tr>`).join('')}
         </tbody></table></div>
-        <p class="note"><b>Green is a month the model beat ${esc(benchLabel)}; red is a month it did not</b> — not whether the month made money, which is a different question and the one a reader usually assumes. The colour means the same thing on all three tabs, so the Benchmark tab still shows which months the model took. Annual is that year's own months compounded, and a year missing any month is withheld rather than compounded over the hole.${anyPartial ? ' Italic figures are part-months, where the series begins or ends inside them.' : ''}${anyGap ? ` Months marked <sup style="color:var(--warn)">·</sup> fell inside the stretch with no holdings snapshot — the prices are real, but the weights were carried forward unchanged, so a run of green there is a book nobody rebalanced rather than a decision that worked.` : ''} Hover any cell for its margin over the benchmark.</p>`;
+        <p class="note"><b>The annual column is coloured by its own sign</b> — green where the year made money, red where it lost it — because that is the question a year asks. The months beside it keep the benchmark rule: <b>green is a month the model beat ${esc(benchLabel)}; red is a month it did not</b> — not whether the month made money, which is a different question and the one a reader usually assumes. The colour means the same thing on all three tabs, so the Benchmark tab still shows which months the model took. Annual is that year's own months compounded, and a year missing any month is withheld rather than compounded over the hole.${anyPartial ? ' Italic figures are part-months, where the series begins or ends inside them.' : ''}${anyGap ? ` Months marked <sup style="color:var(--warn)">·</sup> fell inside the stretch with no holdings snapshot — the prices are real, but the weights were carried forward unchanged, so a run of green there is a book nobody rebalanced rather than a decision that worked.` : ''} Hover any cell for its margin over the benchmark.</p>`;
     })();
 
     return `<div class="card" style="margin-top:18px">
