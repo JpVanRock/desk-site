@@ -208,7 +208,7 @@ const series = await pick('current_macro_readings', 'series_id,fred_code');
 // 1. Every route renders something that is not an error or a loading state.
 // ---------------------------------------------------------------------------
 const routes = argRoute ? [argRoute] : [
-  '#sisyphus', '#adam', '#stan', '#sven', '#annie', '#markets', '#views', '#signals', '#agents',
+  '#sisyphus', '#stan', '#adam', '#sven', '#annie', '#markets', '#views', '#signals', '#agents',
   '#playground', '#briefs', '#sources', '#inbox', '#status',
   strat ? `#sisyphus/${strat.id}` : null,
   strat ? `#stan/${strat.id}` : null,
@@ -506,6 +506,17 @@ if (!argRoute) {
     '[adam] a leg awaiting data rendered a 0 score; it must render a dash');
 
   // -------------------------------------------------------------------------
+  // 10a. Nav order. Stan sits between Sisyphus and Adam; the page map matches the nav.
+  // -------------------------------------------------------------------------
+  {
+    const nav = readFileSync(join(SITE, 'index.html'), 'utf8');
+    const order = [...nav.matchAll(/<a href="#([a-z]+)">/g)].map(m => m[1]);
+    const want = ['sisyphus', 'stan', 'adam', 'sven', 'annie'];
+    say(` ok  nav order              -> ${order.slice(0, 5).join(' · ')}`);
+    need(want.every((w, i) => order[i] === w), `[nav] expected ${want.join(' · ')}, found ${order.slice(0, 5).join(' · ')}`);
+  }
+
+  // -------------------------------------------------------------------------
   // 10b. Volatility match on the unclassified holdings, and the FI duration tile.
   // -------------------------------------------------------------------------
   currentRoute = 'classify-vol';
@@ -551,6 +562,50 @@ if (!argRoute) {
       need(!(md[0].coverage > 1.000001), '[duration] coverage exceeds 100% of fixed income weight');
       need(md[0].n_priced <= md[0].n_fi_holdings, '[duration] more holdings priced than exist');
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // 10c. Factor fingerprint: five factors, signed tilts, on both the model and the firm.
+  // -------------------------------------------------------------------------
+  {
+    const fp = await fetch(`${SUPABASE_URL}/rest/v1/latest_factor_fingerprint?select=scope,strategy_id,factor,label,model_beta,benchmark_beta,active_beta,sort_order`, { headers: REST }).then(r => r.json());
+    const WANT = ['value', 'momentum', 'quality', 'low_volatility', 'size'];
+    const bad = [];
+    const scopes = [...new Set(fp.map(r => `${r.scope}|${r.strategy_id || ''}`))];
+    for (const key of scopes) {
+      const [scope, sid] = key.split('|');
+      const rs = fp.filter(r => r.scope === scope && (r.strategy_id || '') === sid);
+      const factors = rs.map(r => r.factor).sort();
+      if (JSON.stringify(factors) !== JSON.stringify([...WANT].sort())) bad.push(`${key} has factors ${factors.join(',')}`);
+      for (const r of rs) {
+        // Active must be exactly model minus benchmark, or the column is its own opinion.
+        if (r.model_beta !== null && r.benchmark_beta !== null && r.active_beta !== null) {
+          if (Math.abs((+r.model_beta - +r.benchmark_beta) - +r.active_beta) > 0.0002) bad.push(`${key} ${r.factor}: active ${r.active_beta} != ${r.model_beta} - ${r.benchmark_beta}`);
+        }
+        // A style tilt past 1.5 is the regression describing something other than style.
+        for (const k of ['model_beta', 'benchmark_beta']) if (r[k] !== null && Math.abs(+r[k]) > 1.5) bad.push(`${key} ${r.factor} ${k} is ${r[k]}`);
+      }
+    }
+    // The point of a tilt is that it can be negative. If nothing anywhere is, the sign has been
+    // lost somewhere between the regression and the table -- which is exactly the bug the old
+    // non-negative allocation had, and the reason this replaced it.
+    if (fp.length && !fp.some(r => r.model_beta !== null && +r.model_beta < 0)) bad.push('no negative tilt anywhere; the sign is being dropped');
+    need(fp.some(r => r.scope === 'firm'), '[fingerprint] no firm-wide fingerprint');
+    need(fp.some(r => r.scope === 'model'), '[fingerprint] no per-model fingerprint');
+    say(` ok  factor fingerprint     -> ${scopes.length} scopes x ${WANT.length} factors, ${[...new Set(bad)].length} problems`);
+    for (const b of [...new Set(bad)]) errors.push(`[fingerprint] ${b}`);
+
+    // Rendered in both places the owner asked for: under the monthly grid in the model drawer,
+    // and above Value at Risk on Sisyphus.
+    await go('#stan/' + strat.id);
+    const dm = drawer();
+    need(dm.includes('Factor fingerprint'), '[fingerprint] missing from the model drawer');
+    need(dm.indexOf('Monthly returns') < dm.indexOf('Factor fingerprint'), '[fingerprint] is not below the monthly return grid');
+    need(/aria-label="Factor fingerprint"/.test(dm), '[fingerprint] the radar did not render in the model drawer');
+    await go('#sisyphus');
+    const sp = app();
+    need(sp.includes('Factor fingerprint — firm-wide equity'), '[fingerprint] missing from Sisyphus');
+    need(sp.indexOf('Factor fingerprint') < sp.indexOf('Value at Risk'), '[fingerprint] is not above the Value at Risk section');
   }
 
   // -------------------------------------------------------------------------

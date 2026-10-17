@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -169,6 +169,8 @@ async function load() {
     qSoft(sb.from('latest_model_duration').select('strategy_id,as_of,fi_duration,fi_weight,total_duration,n_fi_holdings,n_priced,n_unmeasured,n_insignificant,coverage'), 'model duration'),
     qAllSoft(() => sb.from('latest_model_geo_exposure').select('strategy_id,as_of,scope,code,label,region,model_weight,benchmark_weight'), 'model geography'),
     qSoft(sb.from('latest_model_geo_coverage').select('strategy_id,as_of,basis,model_equity_weight,model_resolved,benchmark_resolved,unresolved,window_start,window_end'), 'model geography coverage'),
+    qSoft(sb.from('latest_factor_fingerprint').select('scope,strategy_id,as_of,factor,label,model_beta,benchmark_beta,active_beta,sort_order'), 'factor fingerprint'),
+    qSoft(sb.from('latest_factor_fingerprint_coverage').select('scope,strategy_id,as_of,model_equity_weight,model_resolved,benchmark_resolved,unresolved,window_start,window_end'), 'factor fingerprint coverage'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -251,7 +253,8 @@ async function load() {
     beautyRanks: beautyRanks || [], beautyHistory: beautyHistory || [], modelVar: modelVar || [], tailRisk: tailRisk || [],
     firmMetrics: firmMetrics || [], firmExposures: firmExposures || [], firmStress: firmStress || [],
     blendFit: blendFit || [], modelDuration: modelDuration || [],
-    geoExposure: geoExposure || [], geoCoverage: geoCoverage || [] };
+    geoExposure: geoExposure || [], geoCoverage: geoCoverage || [],
+    fingerprint: fingerprint || [], fingerprintCov: fingerprintCov || [] };
 }
 
 // ---------- Views ----------
@@ -277,7 +280,9 @@ function route() {
   if (page === 'overview') { location.replace('#sisyphus' + (arg ? '/' + arg : '')); return; }
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
-  const pages = { sisyphus, adam, stan, sven, markets, views: viewsPage, signals, playground, agents, annie, briefs, inbox, status, sources };
+  // Keyed lookup, so this order is cosmetic rather than load-bearing — but it is kept in step
+  // with the nav in index.html so the two read the same way.
+  const pages = { sisyphus, stan, adam, sven, markets, views: viewsPage, signals, playground, agents, annie, briefs, inbox, status, sources };
   $('#app').innerHTML = (pages[page] || sisyphus)();
   if (page === 'stan' && arg) {
     // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
@@ -512,6 +517,7 @@ function sisyphus() {
   return `<span class="eyebrow">Sisyphus · the desk at a glance</span><h1>Sisyphus</h1>
   <p class="sub">Eight models, viewed as net long or short growth, inflation and the cost of liquidity.</p>
   ${firmCard}
+   ${fingerprintCard('firm', null, 'Firm', 'Blended benchmark', 'Factor fingerprint — firm-wide equity')}
    ${varCard}
    ${tailCard}
    ${stressCard}
@@ -2385,6 +2391,251 @@ const STAT_HOW = {
 // Renders the dashboard body for ONE model. Lives in the model drawer rather than on a page of
 // its own: the drawer is already per-model, so a selector would be a second way to do the same
 // thing. Returns cards only — the caller supplies the heading and the holdings table.
+// ---------- Factor fingerprint ----------
+//
+// Five axes, plotted as a radar so the SHAPE is the fingerprint: two books with the same average
+// tilt but different distributions look different here, which a row of numbers hides. The zero
+// ring is drawn, because every one of these can be negative and a radar without it reads as if
+// the centre were zero — it is not, it is the bottom of the scale.
+function factorRadar(rows, benchLabel, modelLabel) {
+  const vals = rows.flatMap(r => [r.model_beta, r.benchmark_beta]).filter(v => v !== null && v !== undefined).map(v => Math.abs(+v));
+  const M = Math.max(0.30, ...vals);                 // symmetric scale, never tighter than +/-0.30
+  const S = 300, cx = S / 2, cy = S / 2 + 6, R = 104;
+  const n = rows.length;
+  const ang = i => (-Math.PI / 2) + (i * 2 * Math.PI / n);
+  const rad = v => R * ((+v + M) / (2 * M));
+  const pt = (i, v) => [cx + rad(v) * Math.cos(ang(i)), cy + rad(v) * Math.sin(ang(i))];
+  const poly = (key, color, fill) => {
+    const got = rows.map(r => r[key]).every(v => v !== null && v !== undefined);
+    if (!got) return '';
+    const d = rows.map((r, i) => pt(i, +r[key]).map(x => x.toFixed(1)).join(',')).join(' ');
+    return `<polygon points="${d}" fill="${fill}" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>`;
+  };
+  const grid = [0.25, 0.5, 0.75, 1].map(f => {
+    const d = rows.map((_, i) => [cx + R * f * Math.cos(ang(i)), cy + R * f * Math.sin(ang(i))].map(x => x.toFixed(1)).join(',')).join(' ');
+    return `<polygon points="${d}" fill="none" stroke="var(--line)" stroke-width="1"/>`;
+  }).join('');
+  const zero = `<polygon points="${rows.map((_, i) => pt(i, 0).map(x => x.toFixed(1)).join(',')).join(' ')}" fill="none" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3"/>`;
+  const spokes = rows.map((_, i) => `<line x1="${cx}" y1="${cy}" x2="${(cx + R * Math.cos(ang(i))).toFixed(1)}" y2="${(cy + R * Math.sin(ang(i))).toFixed(1)}" stroke="var(--line)" stroke-width="1"/>`).join('');
+  const labels = rows.map((r, i) => {
+    const a = ang(i), lx = cx + (R + 26) * Math.cos(a), ly = cy + (R + 26) * Math.sin(a);
+    const anchorFor = Math.abs(Math.cos(a)) < 0.3 ? 'middle' : (Math.cos(a) > 0 ? 'start' : 'end');
+    return `<text x="${lx.toFixed(1)}" y="${(ly + 4).toFixed(1)}" text-anchor="${anchorFor}" font-size="11" fill="var(--muted)">${esc(r.label)}</text>`;
+  }).join('');
+  // The viewBox reaches past the plot on both sides: the axis labels sit 26px beyond the outer
+  // ring and "Low Volatility" is wider than that margin, so a box drawn to the radar alone clips
+  // them to "mall)" and "Mom".
+  return `<svg viewBox="-58 0 ${S + 116} ${S + 18}" style="width:340px;max-width:100%;height:auto;flex:none" role="img" aria-label="Factor fingerprint">
+    ${grid}${spokes}${zero}
+    ${poly('benchmark_beta', 'var(--bench)', 'color-mix(in srgb, var(--bench) 18%, transparent)')}
+    ${poly('model_beta', 'var(--accent)', 'color-mix(in srgb, var(--accent) 22%, transparent)')}
+    ${labels}
+    <text x="${cx}" y="${S + 14}" text-anchor="middle" font-size="10" fill="var(--muted)">dashed ring = no tilt · scale ±${M.toFixed(2)}</text></svg>`;
+}
+
+// scope: 'model' with a strategy id, or 'firm'. Same card either way, so the two cannot drift.
+function fingerprintCard(scope, strategyId, modelLabel, benchLabel, heading) {
+  const rows = (D.fingerprint || []).filter(r => r.scope === scope && (scope === 'firm' || r.strategy_id === strategyId))
+    .slice().sort((a, b) => a.sort_order - b.sort_order);
+  const cov = (D.fingerprintCov || []).find(r => r.scope === scope && (scope === 'firm' || r.strategy_id === strategyId)) || null;
+  if (!rows.length) return '';
+  const have = v => v !== null && v !== undefined;
+  const b2 = v => have(v) ? (+v >= 0 ? '+' : '−') + Math.abs(+v).toFixed(2) : '—';
+  const tone = v => !have(v) ? 'var(--muted)' : Math.abs(+v) < 0.025 ? 'var(--muted)' : +v > 0 ? 'var(--pos)' : 'var(--neg)';
+  const un = (cov?.unresolved || []).filter(u => u.side === 'model');
+  const p1 = v => have(v) ? (+v * 100).toFixed(1) + '%' : '—';
+
+  const table = `<table style="min-width:420px"><thead><tr>
+      <th>Factor</th><th class="num">${esc(modelLabel)}</th><th class="num">${esc(benchLabel)}</th><th class="num">Active</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td>${esc(r.label)}</td>
+      <td class="num" style="color:${tone(r.model_beta)}">${b2(r.model_beta)}</td>
+      <td class="num" style="color:var(--muted)">${b2(r.benchmark_beta)}</td>
+      <td class="num" style="color:${tone(r.active_beta)}"><b>${b2(r.active_beta)}</b></td></tr>`).join('')}
+    </tbody></table>`;
+
+  // The largest active bet, named. A fingerprint read as five numbers invites picking the biggest
+  // absolute tilt, which is usually the one the benchmark already carried.
+  const biggest = rows.filter(r => have(r.active_beta)).slice().sort((a, b) => Math.abs(+b.active_beta) - Math.abs(+a.active_beta))[0];
+
+  const unBlock = !un.length ? '' : `<details style="margin-top:10px;font-size:13px">
+    <summary style="cursor:pointer;color:var(--text)">${un.length} equity holding${un.length === 1 ? '' : 's'} could not be fingerprinted</summary>
+    <table style="margin-top:8px"><thead><tr><th>Ticker</th><th class="num">Weight</th><th>Why</th></tr></thead><tbody>
+    ${un.map(u => `<tr><td><b>${esc(u.ticker || '—')}</b></td><td class="num">${(+u.weight * 100).toFixed(1)}%</td>
+      <td style="max-width:460px;color:var(--muted)">${esc(u.reason)}</td></tr>`).join('')}
+    </tbody></table></details>`;
+
+  return `<div class="card" style="margin-top:18px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">${esc(heading)}</h2>
+      <span style="font-size:12px;color:var(--muted)">
+        <span style="display:inline-block;width:9px;height:9px;background:var(--accent);border-radius:2px;margin-right:5px"></span>${esc(modelLabel)}
+        <span style="display:inline-block;width:9px;height:9px;background:var(--bench);border-radius:2px;margin:0 5px 0 12px"></span>${esc(benchLabel)}</span></div>
+    <div style="display:flex;gap:26px;align-items:center;flex-wrap:wrap;margin-top:12px">
+      ${factorRadar(rows, benchLabel, modelLabel)}
+      <div style="flex:1;min-width:320px;overflow-x:auto">${table}</div>
+    </div>
+    ${unBlock}
+    <p class="note">Each fund's excess return is regressed on the market plus five long/short factor legs, every one built as a factor index <i>minus</i> the market — ${esc('VLUE−SPY')} for value, ${esc('MTUM−SPY')} for momentum, ${esc('QUAL−SPY')} for quality, ${esc('USMV−SPY')} for low volatility, and ${esc('IWM−SPY')} for size. Subtracting the market is what makes each leg a factor rather than an index: VLUE on its own is mostly market, VLUE minus the market is the value tilt and nothing else.
+    <b>These are tilts, and a tilt has a sign.</b> That is the difference from the allocation this replaced, which could not go negative and so reported every model as some positive mixture of the five whether or not it leaned toward any of them. A reading of ${esc('−0.12')} on quality means the book leans away from quality; an allocation had no way to say that.
+    Each fund's tilts are divided by its own equity beta, so they are expressed <b>per unit of equity exposure</b> — without that a 60/40 fund would look untilted simply for holding bonds. Developed and emerging market legs are included as controls, not as factors, so the five tilts measure style rather than geography; without them an international fund could not be fitted at all.
+    ${biggest ? `The largest active bet here is <b>${esc(biggest.label.toLowerCase())}</b> at ${b2(biggest.active_beta)} against the benchmark${Math.abs(+biggest.model_beta) > Math.abs(+biggest.active_beta) ? ' — larger in absolute terms elsewhere, but much of that is a tilt the benchmark already carried rather than one the desk chose' : ''}. ` : ''}
+    ${cov ? `Equity is ${p1(cov.model_equity_weight)} of ${scope === 'firm' ? 'the firm' : 'this model'}${have(cov.model_resolved) ? `, and the fingerprint describes ${p1(cov.model_resolved)} of it` : ''}. ` : ''}Equity only: a bond fund has no style tilt, and averaging one in at zero would read as "no tilt" rather than as "this does not apply to that part of the book". A fund whose fit explains less than 70% of its own daily movement is left out by name${un.length ? ' — the list above' : ''}.${cov?.window_start ? ` Fitted on daily returns from ${esc(cov.window_start)} to ${esc(cov.window_end)}.` : ''}</p></div>`;
+}
+
+// ---------- A flat world map, by region ----------
+//
+// Simplified landmasses on an equirectangular frame, grouped into the same five geographic
+// regions the job aggregates to. It is a schematic, not a projection to measure from: the
+// outlines are deliberately coarse because their only job is to say WHERE, while the number
+// beside each one says HOW MUCH. Mexico is drawn with Latin America rather than with the North
+// American landmass, so the shading matches the regional figure it carries.
+const GEO_REGION_PATHS = {
+  north_america: [
+    'M33.3 66.7 L111.1 55.6 L144.4 55.6 L236.1 50.0 L272.2 47.2 L327.8 63.9 L344.4 105.6 L316.7 116.7 L305.6 130.6 L288.9 147.2 L275.0 177.8 L266.7 166.7 L250.0 169.4 L230.6 177.8 L225.0 188.9 L208.3 188.9 L183.3 172.2 L175.0 161.1 L155.6 138.9 L152.8 113.9 L122.2 86.1 L83.3 80.6 L41.7 75.0 Z',
+    'M375.0 83.3 L438.9 55.6 L444.4 38.9 L416.7 19.4 L338.9 22.2 L327.8 38.9 L347.2 69.4 Z',
+    'M336.1 119.4 L352.8 119.4 L352.8 108.3 L336.1 108.3 Z',
+  ],
+  latin_america: [
+    'M208.3 188.9 L225.0 188.9 L230.6 205.6 L247.2 200.0 L255.6 205.6 L266.7 222.2 L283.3 227.8 L269.4 227.8 L255.6 213.9 L236.1 208.3 L211.1 200.0 Z',
+    'M283.3 227.8 L300.0 219.4 L327.8 219.4 L355.6 236.1 L361.1 250.0 L377.8 255.6 L402.8 266.7 L391.7 294.4 L366.7 319.4 L350.0 344.4 L338.9 358.3 L316.7 402.8 L300.0 394.4 L297.2 375.0 L302.8 341.7 L305.6 300.0 L288.9 266.7 L277.8 250.0 L283.3 236.1 Z',
+  ],
+  europe: [
+    'M475.0 147.2 L475.0 130.6 L494.4 130.6 L500.0 116.7 L486.1 116.7 L502.8 108.3 L511.1 105.6 L522.2 100.0 L527.8 91.7 L522.2 88.9 L513.9 80.6 L533.3 66.7 L550.0 58.3 L566.7 52.8 L583.3 55.6 L588.9 69.4 L605.6 80.6 L622.2 91.7 L633.3 105.6 L611.1 116.7 L600.0 125.0 L583.3 125.0 L577.8 136.1 L566.7 138.9 L552.8 138.9 L538.9 144.4 L533.3 127.8 L522.2 127.8 L508.3 130.6 L500.0 138.9 Z',
+    'M486.1 111.1 L500.0 108.3 L497.2 100.0 L491.7 86.1 L483.3 88.9 L486.1 100.0 Z',
+    'M433.3 72.2 L461.1 69.4 L455.6 66.7 L436.1 66.7 Z',
+  ],
+  africa_mideast: [
+    'M452.8 208.3 L455.6 191.7 L472.2 175.0 L483.3 150.0 L527.8 147.2 L555.6 158.3 L588.9 163.9 L597.2 183.3 L608.3 205.6 L619.4 216.7 L641.7 216.7 L641.7 233.3 L616.7 255.6 L613.9 280.6 L611.1 297.2 L597.2 316.7 L583.3 336.1 L569.4 344.4 L550.0 344.4 L536.1 313.9 L533.3 294.4 L525.0 252.8 L505.6 233.3 L477.8 236.1 L463.9 225.0 Z',
+    'M597.2 166.7 L616.7 166.7 L633.3 166.7 L658.3 183.3 L661.1 194.4 L644.4 205.6 L622.2 216.7 L608.3 205.6 Z',
+    'M619.4 286.1 L638.9 294.4 L633.3 319.4 L622.2 311.1 Z',
+  ],
+  asia_pacific: [
+    'M633.3 105.6 L661.1 102.8 L694.4 105.6 L722.2 111.1 L750.0 119.4 L777.8 119.4 L805.6 111.1 L833.3 102.8 L866.7 116.7 L894.4 100.0 L930.6 88.9 L972.2 77.8 L994.4 66.7 L977.8 52.8 L944.4 52.8 L888.9 44.4 L819.4 44.4 L763.9 33.3 L708.3 47.2 L666.7 52.8 L638.9 61.1 L622.2 91.7 Z',
+    'M622.2 91.7 L638.9 125.0 L638.9 138.9 L633.3 166.7 L658.3 183.3 L672.2 180.6 L688.9 183.3 L700.0 194.4 L702.8 208.3 L713.9 227.8 L722.2 213.9 L733.3 188.9 L744.4 191.7 L755.6 188.9 L761.1 205.6 L772.2 222.2 L777.8 213.9 L791.7 222.2 L802.8 213.9 L797.2 194.4 L805.6 191.7 L827.8 183.3 L838.9 163.9 L838.9 138.9 L855.6 130.6 L875.0 116.7 L894.4 100.0 L866.7 116.7 L833.3 102.8 L805.6 111.1 L777.8 119.4 L750.0 119.4 L722.2 111.1 L694.4 105.6 L661.1 102.8 L633.3 105.6 Z',
+    'M861.1 158.3 L877.8 150.0 L891.7 136.1 L902.8 127.8 L894.4 125.0 L880.6 147.2 L863.9 155.6 Z',
+    'M763.9 236.1 L791.7 247.2 L827.8 261.1 L861.1 263.9 L891.7 258.3 L891.7 272.2 L861.1 275.0 L827.8 275.0 L794.4 269.4 L766.7 250.0 Z',
+    'M833.3 200.0 L850.0 200.0 L850.0 233.3 L836.1 233.3 Z',
+    'M816.7 311.1 L838.9 300.0 L861.1 283.3 L877.8 283.3 L894.4 280.6 L905.6 302.8 L919.4 316.7 L925.0 327.8 L916.7 352.8 L905.6 358.3 L888.9 355.6 L875.0 347.2 L858.3 338.9 L841.7 344.4 L819.4 344.4 L813.9 322.2 Z',
+    'M980.6 347.2 L994.4 358.3 L986.1 366.7 L972.2 377.8 L963.9 375.0 L977.8 363.9 Z',
+    'M833.3 180.6 L838.9 180.6 L838.9 188.9 L833.3 188.9 Z',
+  ],
+};
+// Shading is relative to the largest region in the model, so a book that is 80% one place still
+// reads as a map rather than a single dark blob beside four invisible ones.
+function worldMap(byRegion, labelOf) {
+  const max = Math.max(0.0001, ...Object.values(byRegion).map(v => +v || 0));
+  const shade = v => {
+    const t = Math.max(0, Math.min(1, (+v || 0) / max));
+    return `color-mix(in srgb, var(--accent) ${(10 + t * 78).toFixed(0)}%, var(--panel2))`;
+  };
+  const paths = Object.entries(GEO_REGION_PATHS).map(([slug, ds]) => {
+    const v = byRegion[slug];
+    const pct = v === null || v === undefined ? 'not resolved' : `${(+v * 100).toFixed(1)}%`;
+    return `<g><title>${esc(labelOf(slug))} — ${esc(pct)}</title>
+      ${ds.map(d => `<path d="${d}" fill="${v === null || v === undefined ? 'var(--panel2)' : shade(v)}" stroke="var(--line)" stroke-width="1"/>`).join('')}</g>`;
+  }).join('');
+  // Labels sit over the centre of mass of each region's drawn shape, nudged by hand so none of
+  // them lands in the sea or on top of another.
+  // Anchored at a real coordinate inside each region -- roughly central Canada, Brazil, central
+  // Europe, equatorial Africa and central Asia -- so the figure sits on land and not in the sea.
+  const LABEL_AT = { north_america: [222, 117], latin_america: [339, 283], europe: [556, 100], africa_mideast: [556, 244], asia_pacific: [764, 139] };
+  const labels = Object.entries(LABEL_AT).map(([slug, [x, y]]) => {
+    const v = byRegion[slug];
+    if (v === null || v === undefined) return '';
+    return `<text x="${x}" y="${y}" text-anchor="middle" font-size="15" font-weight="700" fill="var(--text)" style="paint-order:stroke;stroke:var(--bg);stroke-width:3px">${(+v * 100).toFixed(0)}%</text>`;
+  }).join('');
+  // Equirectangular: x = (lon+180) x 1000/360, y = (90-lat) x 500/180. Cropped below 410 because
+  // Antarctica holds no equity and its absence buys height for everything that does.
+  return `<svg viewBox="20 15 980 400" style="width:100%;height:auto;display:block" role="img" aria-label="Equity allocation by region">${paths}${labels}</svg>`;
+}
+
+
+// Geography: a world map of where the equity is, and the ten largest countries beside the
+// benchmark. Equity only -- a bond fund or a gold trust has no country mix to estimate, and the
+// job excludes them rather than listing them as gaps.
+function geographyCard(m) {
+  const rows = (D.geoExposure || []).filter(r => r.strategy_id === m.id);
+  const cov = (D.geoCoverage || []).find(r => r.strategy_id === m.id) || null;
+  if (!rows.length) {
+    return `<div class="card" style="margin-top:18px"><h2>Portfolio breakdown</h2>
+      <div class="empty">No geographic fit for this model yet. Run jobs/compute-geo-exposure.mjs.</div></div>`;
+  }
+  const benchLabel = m.benchmarkLabel || 'Benchmark';
+  const modelLabel = m.name.replace(/\s*\([^)]*\)/g, '');
+  const have = v => v !== null && v !== undefined;
+  const p1 = v => (+v * 100).toFixed(1) + '%';
+
+  const regions = rows.filter(r => r.scope === 'region');
+  const labelOf = slug => (regions.find(r => r.code === slug) || {}).label || slug;
+  const byRegionModel = Object.fromEntries(regions.map(r => [r.code, r.model_weight]));
+  const anyModel = regions.some(r => have(r.model_weight));
+
+  const tabs = `<div class="tabs" style="margin:0">
+    ${[['sector', 'Sector'], ['geography', 'Geography']].map(([k, lbl]) =>
+      `<button class="tab" data-breakdown="${k}" aria-selected="${k === 'geography'}">${lbl}</button>`).join('')}</div>`;
+
+  const regionRows = regions.slice().sort((a, b) => (+b.model_weight || 0) - (+a.model_weight || 0)).map(r => {
+    const d = have(r.model_weight) && have(r.benchmark_weight) ? +r.model_weight - +r.benchmark_weight : null;
+    return `<tr><td>${esc(r.label)}</td>
+      <td class="num">${have(r.model_weight) ? p1(r.model_weight) : '<span style="color:var(--muted)">—</span>'}</td>
+      <td class="num" style="color:var(--muted)">${have(r.benchmark_weight) ? p1(r.benchmark_weight) : '—'}</td>
+      <td class="num" style="color:${d === null ? 'var(--muted)' : Math.abs(d) < 0.0005 ? 'var(--muted)' : d > 0 ? 'var(--pos)' : 'var(--neg)'}">${d === null ? '—' : (d >= 0 ? '+' : '−') + (Math.abs(d) * 100).toFixed(1) + '%'}</td></tr>`;
+  }).join('');
+
+  // Top ten by MODEL weight where the model resolved, otherwise by benchmark weight -- a model
+  // with no placeable equity should still show what its benchmark holds rather than ten dashes.
+  const countries = rows.filter(r => r.scope === 'country');
+  const key = anyModel ? 'model_weight' : 'benchmark_weight';
+  const top = countries.slice().sort((a, b) => (+b[key] || 0) - (+a[key] || 0)).slice(0, 10);
+  const scale = Math.max(0.01, ...top.flatMap(r => [+r.model_weight || 0, +r.benchmark_weight || 0]));
+  const bar = (v, color, muted) => have(v)
+    ? `<div style="display:flex;align-items:center;gap:6px">
+         <div style="height:9px;width:${+v > 0 ? Math.max(0.6, (+v / scale) * 100) : 0}%;background:${color};border-radius:2px"></div>
+         <small style="color:${muted ? 'var(--muted)' : 'var(--text)'};white-space:nowrap">${p1(v)}</small></div>`
+    : `<div><small style="color:var(--muted)">not resolved</small></div>`;
+  const countryRows = top.map(r => {
+    const d = have(r.model_weight) && have(r.benchmark_weight) ? +r.model_weight - +r.benchmark_weight : null;
+    return `<tr><td style="width:190px">${esc(r.label)}<br><small style="color:var(--muted)">${esc(labelOf(r.region))}</small></td>
+      <td>${bar(r.model_weight, 'var(--accent)', false)}${bar(r.benchmark_weight, 'var(--bench)', true)}</td>
+      <td class="num" style="width:90px;color:${d === null ? 'var(--muted)' : Math.abs(d) < 0.0005 ? 'var(--muted)' : d > 0 ? 'var(--pos)' : 'var(--neg)'}">${d === null ? '—' : (d >= 0 ? '+' : '−') + (Math.abs(d) * 100).toFixed(1) + '%'}</td></tr>`;
+  }).join('');
+
+  const un = (cov?.unresolved || []).filter(u => u.side === 'model');
+  const unBlock = !un.length ? '' : `<details style="margin-top:10px;font-size:13px">
+    <summary style="cursor:pointer;color:var(--text)">${un.length} equity holding${un.length === 1 ? '' : 's'} could not be placed on the map</summary>
+    <table style="margin-top:8px"><thead><tr><th>Ticker</th><th class="num">Weight</th><th>Why</th></tr></thead><tbody>
+    ${un.map(u => `<tr><td><b>${esc(u.ticker || '—')}</b></td><td class="num">${(+u.weight * 100).toFixed(1)}%</td>
+      <td style="max-width:460px;color:var(--muted)">${esc(u.reason)}</td></tr>`).join('')}
+    </tbody></table></details>`;
+
+  const covLine = !cov ? '' : `Equity is ${p1(cov.model_equity_weight)} of this model${cov.basis === 'target' ? ' on target weights' : ''}. `
+    + `The map and the table describe ${have(cov.model_resolved) ? p1(cov.model_resolved) : 'none'} of that equity and `
+    + `${have(cov.benchmark_resolved) ? p1(cov.benchmark_resolved) : 'none'} of the benchmark's.`;
+
+  return `<div class="card" style="margin-top:18px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Portfolio breakdown</h2>
+      <span style="font-size:12px;color:var(--muted)">
+        <span style="display:inline-block;width:9px;height:9px;background:var(--accent);border-radius:2px;margin-right:5px"></span>${esc(modelLabel)}
+        <span style="display:inline-block;width:9px;height:9px;background:var(--bench);border-radius:2px;margin:0 5px 0 12px"></span>${esc(benchLabel)}</span></div>
+    <div style="margin-top:10px">${tabs}</div>
+    ${!anyModel ? `<div class="empty" style="margin-top:12px">None of this model's equity could be placed geographically${un.length ? ` — ${esc(un.map(u => u.ticker).join(', '))} ${un.length === 1 ? 'is' : 'are'} the holding${un.length === 1 ? '' : 's'} involved` : ''}. The benchmark's own geography is shown below for reference.</div>`
+      : `<div style="margin-top:14px">${worldMap(byRegionModel, labelOf)}</div>`}
+    <div style="overflow-x:auto;margin-top:6px"><table style="min-width:520px"><thead><tr>
+      <th>Region</th><th class="num">Model</th><th class="num">${esc(benchLabel)}</th><th class="num">Over / under</th>
+    </tr></thead><tbody>${regionRows}</tbody></table></div>
+    <h3 style="margin:20px 0 0;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Ten largest countries</h3>
+    <div style="overflow-x:auto;margin-top:8px"><table style="min-width:620px"><thead><tr>
+      <th>Country</th><th>Share of resolved equity</th><th class="num">Over / under</th>
+    </tr></thead><tbody>${countryRows}</tbody></table></div>
+    ${unBlock}
+    <p class="note"><b>These are estimated from returns, not read from holdings.</b> No source connected to this desk publishes what these funds own, so geography is measured in two stages. Each fund is first fitted to a small set of well-separated regional indices — US large, mid and small cap, Canada, developed ex-North-America and emerging — with weights that cannot go negative and must sum to one. Those regional indices are then decomposed into their own countries, once, which is the step that makes the country table trustworthy: a regional index really is a basket of countries, so the regression recovers a composition that exists rather than inventing one. EFA resolves at an R² of 0.996 into Japan 23.8%, the UK 16.2%, France 10.8% and Switzerland 10.4%, against published MSCI EAFE weights of roughly 22, 15, 11 and 10.
+    Fitting a fund <i>directly</i> against twenty single-country indices was rejected: country indices correlate 0.7 to 0.9, so the solver can move weight between France and Germany almost freely without changing the fit, and the answer would be close to arbitrary.
+    <b>Fixed income, cash, commodity and gold holdings are excluded entirely</b> — they have no country mix to estimate, and listing them as unplaced would read as a gap in the analysis rather than as the model simply holding things that are not equity. ${covLine}
+    A fund whose fit explains less than 70% of its own daily movement is left out by name rather than spread across the others${un.length ? ' — the list above' : ''}, and the percentages renormalise over what remains. Regions are geographic: "emerging markets" is not a place and a map cannot shade it, so Korea and Japan are both Asia-Pacific here.${cov?.window_start ? ` Fitted on daily returns from ${esc(cov.window_start)} to ${esc(cov.window_end)}.` : ''}</p></div>`;
+}
+
+
 function modelDashboard(m) {
   repModelId = m.id;
 
@@ -2691,158 +2942,6 @@ function modelDashboard(m) {
   // Both sides renormalise over the part that resolved, so the comparison is of mix rather than
   // of level, and the coverage line says how much of each side that was.
   
-// ---------- A flat world map, by region ----------
-//
-// Simplified landmasses on an equirectangular frame, grouped into the same five geographic
-// regions the job aggregates to. It is a schematic, not a projection to measure from: the
-// outlines are deliberately coarse because their only job is to say WHERE, while the number
-// beside each one says HOW MUCH. Mexico is drawn with Latin America rather than with the North
-// American landmass, so the shading matches the regional figure it carries.
-const GEO_REGION_PATHS = {
-  north_america: [
-    'M33.3 66.7 L111.1 55.6 L144.4 55.6 L236.1 50.0 L272.2 47.2 L327.8 63.9 L344.4 105.6 L316.7 116.7 L305.6 130.6 L288.9 147.2 L275.0 177.8 L266.7 166.7 L250.0 169.4 L230.6 177.8 L225.0 188.9 L208.3 188.9 L183.3 172.2 L175.0 161.1 L155.6 138.9 L152.8 113.9 L122.2 86.1 L83.3 80.6 L41.7 75.0 Z',
-    'M375.0 83.3 L438.9 55.6 L444.4 38.9 L416.7 19.4 L338.9 22.2 L327.8 38.9 L347.2 69.4 Z',
-    'M336.1 119.4 L352.8 119.4 L352.8 108.3 L336.1 108.3 Z',
-  ],
-  latin_america: [
-    'M208.3 188.9 L225.0 188.9 L230.6 205.6 L247.2 200.0 L255.6 205.6 L266.7 222.2 L283.3 227.8 L269.4 227.8 L255.6 213.9 L236.1 208.3 L211.1 200.0 Z',
-    'M283.3 227.8 L300.0 219.4 L327.8 219.4 L355.6 236.1 L361.1 250.0 L377.8 255.6 L402.8 266.7 L391.7 294.4 L366.7 319.4 L350.0 344.4 L338.9 358.3 L316.7 402.8 L300.0 394.4 L297.2 375.0 L302.8 341.7 L305.6 300.0 L288.9 266.7 L277.8 250.0 L283.3 236.1 Z',
-  ],
-  europe: [
-    'M475.0 147.2 L475.0 130.6 L494.4 130.6 L500.0 116.7 L486.1 116.7 L502.8 108.3 L511.1 105.6 L522.2 100.0 L527.8 91.7 L522.2 88.9 L513.9 80.6 L533.3 66.7 L550.0 58.3 L566.7 52.8 L583.3 55.6 L588.9 69.4 L605.6 80.6 L622.2 91.7 L633.3 105.6 L611.1 116.7 L600.0 125.0 L583.3 125.0 L577.8 136.1 L566.7 138.9 L552.8 138.9 L538.9 144.4 L533.3 127.8 L522.2 127.8 L508.3 130.6 L500.0 138.9 Z',
-    'M486.1 111.1 L500.0 108.3 L497.2 100.0 L491.7 86.1 L483.3 88.9 L486.1 100.0 Z',
-    'M433.3 72.2 L461.1 69.4 L455.6 66.7 L436.1 66.7 Z',
-  ],
-  africa_mideast: [
-    'M452.8 208.3 L455.6 191.7 L472.2 175.0 L483.3 150.0 L527.8 147.2 L555.6 158.3 L588.9 163.9 L597.2 183.3 L608.3 205.6 L619.4 216.7 L641.7 216.7 L641.7 233.3 L616.7 255.6 L613.9 280.6 L611.1 297.2 L597.2 316.7 L583.3 336.1 L569.4 344.4 L550.0 344.4 L536.1 313.9 L533.3 294.4 L525.0 252.8 L505.6 233.3 L477.8 236.1 L463.9 225.0 Z',
-    'M597.2 166.7 L616.7 166.7 L633.3 166.7 L658.3 183.3 L661.1 194.4 L644.4 205.6 L622.2 216.7 L608.3 205.6 Z',
-    'M619.4 286.1 L638.9 294.4 L633.3 319.4 L622.2 311.1 Z',
-  ],
-  asia_pacific: [
-    'M633.3 105.6 L661.1 102.8 L694.4 105.6 L722.2 111.1 L750.0 119.4 L777.8 119.4 L805.6 111.1 L833.3 102.8 L866.7 116.7 L894.4 100.0 L930.6 88.9 L972.2 77.8 L994.4 66.7 L977.8 52.8 L944.4 52.8 L888.9 44.4 L819.4 44.4 L763.9 33.3 L708.3 47.2 L666.7 52.8 L638.9 61.1 L622.2 91.7 Z',
-    'M622.2 91.7 L638.9 125.0 L638.9 138.9 L633.3 166.7 L658.3 183.3 L672.2 180.6 L688.9 183.3 L700.0 194.4 L702.8 208.3 L713.9 227.8 L722.2 213.9 L733.3 188.9 L744.4 191.7 L755.6 188.9 L761.1 205.6 L772.2 222.2 L777.8 213.9 L791.7 222.2 L802.8 213.9 L797.2 194.4 L805.6 191.7 L827.8 183.3 L838.9 163.9 L838.9 138.9 L855.6 130.6 L875.0 116.7 L894.4 100.0 L866.7 116.7 L833.3 102.8 L805.6 111.1 L777.8 119.4 L750.0 119.4 L722.2 111.1 L694.4 105.6 L661.1 102.8 L633.3 105.6 Z',
-    'M861.1 158.3 L877.8 150.0 L891.7 136.1 L902.8 127.8 L894.4 125.0 L880.6 147.2 L863.9 155.6 Z',
-    'M763.9 236.1 L791.7 247.2 L827.8 261.1 L861.1 263.9 L891.7 258.3 L891.7 272.2 L861.1 275.0 L827.8 275.0 L794.4 269.4 L766.7 250.0 Z',
-    'M833.3 200.0 L850.0 200.0 L850.0 233.3 L836.1 233.3 Z',
-    'M816.7 311.1 L838.9 300.0 L861.1 283.3 L877.8 283.3 L894.4 280.6 L905.6 302.8 L919.4 316.7 L925.0 327.8 L916.7 352.8 L905.6 358.3 L888.9 355.6 L875.0 347.2 L858.3 338.9 L841.7 344.4 L819.4 344.4 L813.9 322.2 Z',
-    'M980.6 347.2 L994.4 358.3 L986.1 366.7 L972.2 377.8 L963.9 375.0 L977.8 363.9 Z',
-    'M833.3 180.6 L838.9 180.6 L838.9 188.9 L833.3 188.9 Z',
-  ],
-};
-// Shading is relative to the largest region in the model, so a book that is 80% one place still
-// reads as a map rather than a single dark blob beside four invisible ones.
-function worldMap(byRegion, labelOf) {
-  const max = Math.max(0.0001, ...Object.values(byRegion).map(v => +v || 0));
-  const shade = v => {
-    const t = Math.max(0, Math.min(1, (+v || 0) / max));
-    return `color-mix(in srgb, var(--accent) ${(10 + t * 78).toFixed(0)}%, var(--panel2))`;
-  };
-  const paths = Object.entries(GEO_REGION_PATHS).map(([slug, ds]) => {
-    const v = byRegion[slug];
-    const pct = v === null || v === undefined ? 'not resolved' : `${(+v * 100).toFixed(1)}%`;
-    return `<g><title>${esc(labelOf(slug))} — ${esc(pct)}</title>
-      ${ds.map(d => `<path d="${d}" fill="${v === null || v === undefined ? 'var(--panel2)' : shade(v)}" stroke="var(--line)" stroke-width="1"/>`).join('')}</g>`;
-  }).join('');
-  // Labels sit over the centre of mass of each region's drawn shape, nudged by hand so none of
-  // them lands in the sea or on top of another.
-  // Anchored at a real coordinate inside each region -- roughly central Canada, Brazil, central
-  // Europe, equatorial Africa and central Asia -- so the figure sits on land and not in the sea.
-  const LABEL_AT = { north_america: [222, 117], latin_america: [339, 283], europe: [556, 100], africa_mideast: [556, 244], asia_pacific: [764, 139] };
-  const labels = Object.entries(LABEL_AT).map(([slug, [x, y]]) => {
-    const v = byRegion[slug];
-    if (v === null || v === undefined) return '';
-    return `<text x="${x}" y="${y}" text-anchor="middle" font-size="15" font-weight="700" fill="var(--text)" style="paint-order:stroke;stroke:var(--bg);stroke-width:3px">${(+v * 100).toFixed(0)}%</text>`;
-  }).join('');
-  // Equirectangular: x = (lon+180) x 1000/360, y = (90-lat) x 500/180. Cropped below 410 because
-  // Antarctica holds no equity and its absence buys height for everything that does.
-  return `<svg viewBox="20 15 980 400" style="width:100%;height:auto;display:block" role="img" aria-label="Equity allocation by region">${paths}${labels}</svg>`;
-}
-
-
-// Geography: a world map of where the equity is, and the ten largest countries beside the
-// benchmark. Equity only -- a bond fund or a gold trust has no country mix to estimate, and the
-// job excludes them rather than listing them as gaps.
-function geographyCard(m) {
-  const rows = (D.geoExposure || []).filter(r => r.strategy_id === m.id);
-  const cov = (D.geoCoverage || []).find(r => r.strategy_id === m.id) || null;
-  if (!rows.length) {
-    return `<div class="card" style="margin-top:18px"><h2>Portfolio breakdown</h2>
-      <div class="empty">No geographic fit for this model yet. Run jobs/compute-geo-exposure.mjs.</div></div>`;
-  }
-  const benchLabel = m.benchmarkLabel || 'Benchmark';
-  const modelLabel = m.name.replace(/\s*\([^)]*\)/g, '');
-  const have = v => v !== null && v !== undefined;
-  const p1 = v => (+v * 100).toFixed(1) + '%';
-
-  const regions = rows.filter(r => r.scope === 'region');
-  const labelOf = slug => (regions.find(r => r.code === slug) || {}).label || slug;
-  const byRegionModel = Object.fromEntries(regions.map(r => [r.code, r.model_weight]));
-  const anyModel = regions.some(r => have(r.model_weight));
-
-  const tabs = `<div class="tabs" style="margin:0">
-    ${[['sector', 'Sector'], ['geography', 'Geography']].map(([k, lbl]) =>
-      `<button class="tab" data-breakdown="${k}" aria-selected="${k === 'geography'}">${lbl}</button>`).join('')}</div>`;
-
-  const regionRows = regions.slice().sort((a, b) => (+b.model_weight || 0) - (+a.model_weight || 0)).map(r => {
-    const d = have(r.model_weight) && have(r.benchmark_weight) ? +r.model_weight - +r.benchmark_weight : null;
-    return `<tr><td>${esc(r.label)}</td>
-      <td class="num">${have(r.model_weight) ? p1(r.model_weight) : '<span style="color:var(--muted)">—</span>'}</td>
-      <td class="num" style="color:var(--muted)">${have(r.benchmark_weight) ? p1(r.benchmark_weight) : '—'}</td>
-      <td class="num" style="color:${d === null ? 'var(--muted)' : Math.abs(d) < 0.0005 ? 'var(--muted)' : d > 0 ? 'var(--pos)' : 'var(--neg)'}">${d === null ? '—' : (d >= 0 ? '+' : '−') + (Math.abs(d) * 100).toFixed(1) + '%'}</td></tr>`;
-  }).join('');
-
-  // Top ten by MODEL weight where the model resolved, otherwise by benchmark weight -- a model
-  // with no placeable equity should still show what its benchmark holds rather than ten dashes.
-  const countries = rows.filter(r => r.scope === 'country');
-  const key = anyModel ? 'model_weight' : 'benchmark_weight';
-  const top = countries.slice().sort((a, b) => (+b[key] || 0) - (+a[key] || 0)).slice(0, 10);
-  const scale = Math.max(0.01, ...top.flatMap(r => [+r.model_weight || 0, +r.benchmark_weight || 0]));
-  const bar = (v, color, muted) => have(v)
-    ? `<div style="display:flex;align-items:center;gap:6px">
-         <div style="height:9px;width:${+v > 0 ? Math.max(0.6, (+v / scale) * 100) : 0}%;background:${color};border-radius:2px"></div>
-         <small style="color:${muted ? 'var(--muted)' : 'var(--text)'};white-space:nowrap">${p1(v)}</small></div>`
-    : `<div><small style="color:var(--muted)">not resolved</small></div>`;
-  const countryRows = top.map(r => {
-    const d = have(r.model_weight) && have(r.benchmark_weight) ? +r.model_weight - +r.benchmark_weight : null;
-    return `<tr><td style="width:190px">${esc(r.label)}<br><small style="color:var(--muted)">${esc(labelOf(r.region))}</small></td>
-      <td>${bar(r.model_weight, 'var(--accent)', false)}${bar(r.benchmark_weight, 'var(--bench)', true)}</td>
-      <td class="num" style="width:90px;color:${d === null ? 'var(--muted)' : Math.abs(d) < 0.0005 ? 'var(--muted)' : d > 0 ? 'var(--pos)' : 'var(--neg)'}">${d === null ? '—' : (d >= 0 ? '+' : '−') + (Math.abs(d) * 100).toFixed(1) + '%'}</td></tr>`;
-  }).join('');
-
-  const un = (cov?.unresolved || []).filter(u => u.side === 'model');
-  const unBlock = !un.length ? '' : `<details style="margin-top:10px;font-size:13px">
-    <summary style="cursor:pointer;color:var(--text)">${un.length} equity holding${un.length === 1 ? '' : 's'} could not be placed on the map</summary>
-    <table style="margin-top:8px"><thead><tr><th>Ticker</th><th class="num">Weight</th><th>Why</th></tr></thead><tbody>
-    ${un.map(u => `<tr><td><b>${esc(u.ticker || '—')}</b></td><td class="num">${(+u.weight * 100).toFixed(1)}%</td>
-      <td style="max-width:460px;color:var(--muted)">${esc(u.reason)}</td></tr>`).join('')}
-    </tbody></table></details>`;
-
-  const covLine = !cov ? '' : `Equity is ${p1(cov.model_equity_weight)} of this model${cov.basis === 'target' ? ' on target weights' : ''}. `
-    + `The map and the table describe ${have(cov.model_resolved) ? p1(cov.model_resolved) : 'none'} of that equity and `
-    + `${have(cov.benchmark_resolved) ? p1(cov.benchmark_resolved) : 'none'} of the benchmark's.`;
-
-  return `<div class="card" style="margin-top:18px">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
-      <h2 style="margin:0">Portfolio breakdown</h2>
-      <span style="font-size:12px;color:var(--muted)">
-        <span style="display:inline-block;width:9px;height:9px;background:var(--accent);border-radius:2px;margin-right:5px"></span>${esc(modelLabel)}
-        <span style="display:inline-block;width:9px;height:9px;background:var(--bench);border-radius:2px;margin:0 5px 0 12px"></span>${esc(benchLabel)}</span></div>
-    <div style="margin-top:10px">${tabs}</div>
-    ${!anyModel ? `<div class="empty" style="margin-top:12px">None of this model's equity could be placed geographically${un.length ? ` — ${esc(un.map(u => u.ticker).join(', '))} ${un.length === 1 ? 'is' : 'are'} the holding${un.length === 1 ? '' : 's'} involved` : ''}. The benchmark's own geography is shown below for reference.</div>`
-      : `<div style="margin-top:14px">${worldMap(byRegionModel, labelOf)}</div>`}
-    <div style="overflow-x:auto;margin-top:6px"><table style="min-width:520px"><thead><tr>
-      <th>Region</th><th class="num">Model</th><th class="num">${esc(benchLabel)}</th><th class="num">Over / under</th>
-    </tr></thead><tbody>${regionRows}</tbody></table></div>
-    <h3 style="margin:20px 0 0;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Ten largest countries</h3>
-    <div style="overflow-x:auto;margin-top:8px"><table style="min-width:620px"><thead><tr>
-      <th>Country</th><th>Share of resolved equity</th><th class="num">Over / under</th>
-    </tr></thead><tbody>${countryRows}</tbody></table></div>
-    ${unBlock}
-    <p class="note"><b>These are estimated from returns, not read from holdings.</b> No source connected to this desk publishes what these funds own, so geography is measured in two stages. Each fund is first fitted to a small set of well-separated regional indices — US large, mid and small cap, Canada, developed ex-North-America and emerging — with weights that cannot go negative and must sum to one. Those regional indices are then decomposed into their own countries, once, which is the step that makes the country table trustworthy: a regional index really is a basket of countries, so the regression recovers a composition that exists rather than inventing one. EFA resolves at an R² of 0.996 into Japan 23.8%, the UK 16.2%, France 10.8% and Switzerland 10.4%, against published MSCI EAFE weights of roughly 22, 15, 11 and 10.
-    Fitting a fund <i>directly</i> against twenty single-country indices was rejected: country indices correlate 0.7 to 0.9, so the solver can move weight between France and Germany almost freely without changing the fit, and the answer would be close to arbitrary.
-    <b>Fixed income, cash, commodity and gold holdings are excluded entirely</b> — they have no country mix to estimate, and listing them as unplaced would read as a gap in the analysis rather than as the model simply holding things that are not equity. ${covLine}
-    A fund whose fit explains less than 70% of its own daily movement is left out by name rather than spread across the others${un.length ? ' — the list above' : ''}, and the percentages renormalise over what remains. Regions are geographic: "emerging markets" is not a place and a map cannot shade it, so Korea and Japan are both Asia-Pacific here.${cov?.window_start ? ` Fitted on daily returns from ${esc(cov.window_start)} to ${esc(cov.window_end)}.` : ''}</p></div>`;
-}
 
 const breakdownCard = (() => {
     const all = (D.styleExposure || []).filter(r => r.strategy_id === m.id);
@@ -2951,7 +3050,7 @@ const breakdownCard = (() => {
 
   return `<p class="sub">Each holding's weight splits evenly across the factors it is long. Shorts are tallied separately, so they do not sum with the pie. Classify the unclassified positions and press Update to refresh.</p>
    ${repSaveError ? `<div class="card" style="margin-bottom:18px;border-left:3px solid var(--neg)"><p style="margin:0">${esc(repSaveError)}</p></div>` : ''}
-   ${dqCard}${statsCard}${allocGrid}${contribCard}${ddCard}${trailingCard}${breakdownCard}
+   ${dqCard}${statsCard}${allocGrid}${contribCard}${ddCard}${trailingCard}${fingerprintCard('model', m.id, m.name.replace(/\s*\([^)]*\)/g, ''), m.benchmarkLabel || 'Benchmark', 'Factor fingerprint')}${breakdownCard}
    <details style="margin-top:22px;font-size:13px;color:var(--muted)">
      <summary style="cursor:pointer;color:var(--text)">The classification matrix</summary>
      <table style="margin-top:10px"><thead><tr><th>Asset class</th><th>Growth</th><th>Inflation</th><th>Cost of liquidity</th></tr></thead><tbody>
