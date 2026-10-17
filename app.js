@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -167,6 +167,8 @@ async function load() {
     qSoft(sb.from('latest_firm_stress_results').select('as_of,scenario_id,factor_score,by_factor,coverage,aum_covered,n_models,universe_helps,universe_hurts,universe_meta'), 'firm stress'),
     qSoft(sb.from('latest_security_class_blend_fit').select('security_id,vol_asset,window_from,window_to,n_weeks,chosen_mix,vol_chosen,ratio_chosen,passes,suggested_mix,vol_suggested,ratio_suggested,suggested_corr,tolerance,achievable'), 'class blend fit'),
     qSoft(sb.from('latest_model_duration').select('strategy_id,as_of,fi_duration,fi_weight,total_duration,n_fi_holdings,n_priced,n_unmeasured,n_insignificant,coverage'), 'model duration'),
+    qAllSoft(() => sb.from('latest_model_geo_exposure').select('strategy_id,as_of,scope,code,label,region,model_weight,benchmark_weight'), 'model geography'),
+    qSoft(sb.from('latest_model_geo_coverage').select('strategy_id,as_of,basis,model_equity_weight,model_resolved,benchmark_resolved,unresolved,window_start,window_end'), 'model geography coverage'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -248,7 +250,8 @@ async function load() {
     beautyReading: beautyReading || [], beautyComponents: beautyComponents || [], macroRegime: macroRegime || [],
     beautyRanks: beautyRanks || [], beautyHistory: beautyHistory || [], modelVar: modelVar || [], tailRisk: tailRisk || [],
     firmMetrics: firmMetrics || [], firmExposures: firmExposures || [], firmStress: firmStress || [],
-    blendFit: blendFit || [], modelDuration: modelDuration || [] };
+    blendFit: blendFit || [], modelDuration: modelDuration || [],
+    geoExposure: geoExposure || [], geoCoverage: geoCoverage || [] };
 }
 
 // ---------- Views ----------
@@ -2687,13 +2690,168 @@ function modelDashboard(m) {
   // or factor weight only means anything inside equity — that is also what the owner asked for.
   // Both sides renormalise over the part that resolved, so the comparison is of mix rather than
   // of level, and the coverage line says how much of each side that was.
-  const breakdownCard = (() => {
+  
+// ---------- A flat world map, by region ----------
+//
+// Simplified landmasses on an equirectangular frame, grouped into the same five geographic
+// regions the job aggregates to. It is a schematic, not a projection to measure from: the
+// outlines are deliberately coarse because their only job is to say WHERE, while the number
+// beside each one says HOW MUCH. Mexico is drawn with Latin America rather than with the North
+// American landmass, so the shading matches the regional figure it carries.
+const GEO_REGION_PATHS = {
+  north_america: [
+    'M33.3 66.7 L111.1 55.6 L144.4 55.6 L236.1 50.0 L272.2 47.2 L327.8 63.9 L344.4 105.6 L316.7 116.7 L305.6 130.6 L288.9 147.2 L275.0 177.8 L266.7 166.7 L250.0 169.4 L230.6 177.8 L225.0 188.9 L208.3 188.9 L183.3 172.2 L175.0 161.1 L155.6 138.9 L152.8 113.9 L122.2 86.1 L83.3 80.6 L41.7 75.0 Z',
+    'M375.0 83.3 L438.9 55.6 L444.4 38.9 L416.7 19.4 L338.9 22.2 L327.8 38.9 L347.2 69.4 Z',
+    'M336.1 119.4 L352.8 119.4 L352.8 108.3 L336.1 108.3 Z',
+  ],
+  latin_america: [
+    'M208.3 188.9 L225.0 188.9 L230.6 205.6 L247.2 200.0 L255.6 205.6 L266.7 222.2 L283.3 227.8 L269.4 227.8 L255.6 213.9 L236.1 208.3 L211.1 200.0 Z',
+    'M283.3 227.8 L300.0 219.4 L327.8 219.4 L355.6 236.1 L361.1 250.0 L377.8 255.6 L402.8 266.7 L391.7 294.4 L366.7 319.4 L350.0 344.4 L338.9 358.3 L316.7 402.8 L300.0 394.4 L297.2 375.0 L302.8 341.7 L305.6 300.0 L288.9 266.7 L277.8 250.0 L283.3 236.1 Z',
+  ],
+  europe: [
+    'M475.0 147.2 L475.0 130.6 L494.4 130.6 L500.0 116.7 L486.1 116.7 L502.8 108.3 L511.1 105.6 L522.2 100.0 L527.8 91.7 L522.2 88.9 L513.9 80.6 L533.3 66.7 L550.0 58.3 L566.7 52.8 L583.3 55.6 L588.9 69.4 L605.6 80.6 L622.2 91.7 L633.3 105.6 L611.1 116.7 L600.0 125.0 L583.3 125.0 L577.8 136.1 L566.7 138.9 L552.8 138.9 L538.9 144.4 L533.3 127.8 L522.2 127.8 L508.3 130.6 L500.0 138.9 Z',
+    'M486.1 111.1 L500.0 108.3 L497.2 100.0 L491.7 86.1 L483.3 88.9 L486.1 100.0 Z',
+    'M433.3 72.2 L461.1 69.4 L455.6 66.7 L436.1 66.7 Z',
+  ],
+  africa_mideast: [
+    'M452.8 208.3 L455.6 191.7 L472.2 175.0 L483.3 150.0 L527.8 147.2 L555.6 158.3 L588.9 163.9 L597.2 183.3 L608.3 205.6 L619.4 216.7 L641.7 216.7 L641.7 233.3 L616.7 255.6 L613.9 280.6 L611.1 297.2 L597.2 316.7 L583.3 336.1 L569.4 344.4 L550.0 344.4 L536.1 313.9 L533.3 294.4 L525.0 252.8 L505.6 233.3 L477.8 236.1 L463.9 225.0 Z',
+    'M597.2 166.7 L616.7 166.7 L633.3 166.7 L658.3 183.3 L661.1 194.4 L644.4 205.6 L622.2 216.7 L608.3 205.6 Z',
+    'M619.4 286.1 L638.9 294.4 L633.3 319.4 L622.2 311.1 Z',
+  ],
+  asia_pacific: [
+    'M633.3 105.6 L661.1 102.8 L694.4 105.6 L722.2 111.1 L750.0 119.4 L777.8 119.4 L805.6 111.1 L833.3 102.8 L866.7 116.7 L894.4 100.0 L930.6 88.9 L972.2 77.8 L994.4 66.7 L977.8 52.8 L944.4 52.8 L888.9 44.4 L819.4 44.4 L763.9 33.3 L708.3 47.2 L666.7 52.8 L638.9 61.1 L622.2 91.7 Z',
+    'M622.2 91.7 L638.9 125.0 L638.9 138.9 L633.3 166.7 L658.3 183.3 L672.2 180.6 L688.9 183.3 L700.0 194.4 L702.8 208.3 L713.9 227.8 L722.2 213.9 L733.3 188.9 L744.4 191.7 L755.6 188.9 L761.1 205.6 L772.2 222.2 L777.8 213.9 L791.7 222.2 L802.8 213.9 L797.2 194.4 L805.6 191.7 L827.8 183.3 L838.9 163.9 L838.9 138.9 L855.6 130.6 L875.0 116.7 L894.4 100.0 L866.7 116.7 L833.3 102.8 L805.6 111.1 L777.8 119.4 L750.0 119.4 L722.2 111.1 L694.4 105.6 L661.1 102.8 L633.3 105.6 Z',
+    'M861.1 158.3 L877.8 150.0 L891.7 136.1 L902.8 127.8 L894.4 125.0 L880.6 147.2 L863.9 155.6 Z',
+    'M763.9 236.1 L791.7 247.2 L827.8 261.1 L861.1 263.9 L891.7 258.3 L891.7 272.2 L861.1 275.0 L827.8 275.0 L794.4 269.4 L766.7 250.0 Z',
+    'M833.3 200.0 L850.0 200.0 L850.0 233.3 L836.1 233.3 Z',
+    'M816.7 311.1 L838.9 300.0 L861.1 283.3 L877.8 283.3 L894.4 280.6 L905.6 302.8 L919.4 316.7 L925.0 327.8 L916.7 352.8 L905.6 358.3 L888.9 355.6 L875.0 347.2 L858.3 338.9 L841.7 344.4 L819.4 344.4 L813.9 322.2 Z',
+    'M980.6 347.2 L994.4 358.3 L986.1 366.7 L972.2 377.8 L963.9 375.0 L977.8 363.9 Z',
+    'M833.3 180.6 L838.9 180.6 L838.9 188.9 L833.3 188.9 Z',
+  ],
+};
+// Shading is relative to the largest region in the model, so a book that is 80% one place still
+// reads as a map rather than a single dark blob beside four invisible ones.
+function worldMap(byRegion, labelOf) {
+  const max = Math.max(0.0001, ...Object.values(byRegion).map(v => +v || 0));
+  const shade = v => {
+    const t = Math.max(0, Math.min(1, (+v || 0) / max));
+    return `color-mix(in srgb, var(--accent) ${(10 + t * 78).toFixed(0)}%, var(--panel2))`;
+  };
+  const paths = Object.entries(GEO_REGION_PATHS).map(([slug, ds]) => {
+    const v = byRegion[slug];
+    const pct = v === null || v === undefined ? 'not resolved' : `${(+v * 100).toFixed(1)}%`;
+    return `<g><title>${esc(labelOf(slug))} — ${esc(pct)}</title>
+      ${ds.map(d => `<path d="${d}" fill="${v === null || v === undefined ? 'var(--panel2)' : shade(v)}" stroke="var(--line)" stroke-width="1"/>`).join('')}</g>`;
+  }).join('');
+  // Labels sit over the centre of mass of each region's drawn shape, nudged by hand so none of
+  // them lands in the sea or on top of another.
+  // Anchored at a real coordinate inside each region -- roughly central Canada, Brazil, central
+  // Europe, equatorial Africa and central Asia -- so the figure sits on land and not in the sea.
+  const LABEL_AT = { north_america: [222, 117], latin_america: [339, 283], europe: [556, 100], africa_mideast: [556, 244], asia_pacific: [764, 139] };
+  const labels = Object.entries(LABEL_AT).map(([slug, [x, y]]) => {
+    const v = byRegion[slug];
+    if (v === null || v === undefined) return '';
+    return `<text x="${x}" y="${y}" text-anchor="middle" font-size="15" font-weight="700" fill="var(--text)" style="paint-order:stroke;stroke:var(--bg);stroke-width:3px">${(+v * 100).toFixed(0)}%</text>`;
+  }).join('');
+  // Equirectangular: x = (lon+180) x 1000/360, y = (90-lat) x 500/180. Cropped below 410 because
+  // Antarctica holds no equity and its absence buys height for everything that does.
+  return `<svg viewBox="20 15 980 400" style="width:100%;height:auto;display:block" role="img" aria-label="Equity allocation by region">${paths}${labels}</svg>`;
+}
+
+
+// Geography: a world map of where the equity is, and the ten largest countries beside the
+// benchmark. Equity only -- a bond fund or a gold trust has no country mix to estimate, and the
+// job excludes them rather than listing them as gaps.
+function geographyCard(m) {
+  const rows = (D.geoExposure || []).filter(r => r.strategy_id === m.id);
+  const cov = (D.geoCoverage || []).find(r => r.strategy_id === m.id) || null;
+  if (!rows.length) {
+    return `<div class="card" style="margin-top:18px"><h2>Portfolio breakdown</h2>
+      <div class="empty">No geographic fit for this model yet. Run jobs/compute-geo-exposure.mjs.</div></div>`;
+  }
+  const benchLabel = m.benchmarkLabel || 'Benchmark';
+  const modelLabel = m.name.replace(/\s*\([^)]*\)/g, '');
+  const have = v => v !== null && v !== undefined;
+  const p1 = v => (+v * 100).toFixed(1) + '%';
+
+  const regions = rows.filter(r => r.scope === 'region');
+  const labelOf = slug => (regions.find(r => r.code === slug) || {}).label || slug;
+  const byRegionModel = Object.fromEntries(regions.map(r => [r.code, r.model_weight]));
+  const anyModel = regions.some(r => have(r.model_weight));
+
+  const tabs = `<div class="tabs" style="margin:0">
+    ${[['sector', 'Sector'], ['geography', 'Geography']].map(([k, lbl]) =>
+      `<button class="tab" data-breakdown="${k}" aria-selected="${k === 'geography'}">${lbl}</button>`).join('')}</div>`;
+
+  const regionRows = regions.slice().sort((a, b) => (+b.model_weight || 0) - (+a.model_weight || 0)).map(r => {
+    const d = have(r.model_weight) && have(r.benchmark_weight) ? +r.model_weight - +r.benchmark_weight : null;
+    return `<tr><td>${esc(r.label)}</td>
+      <td class="num">${have(r.model_weight) ? p1(r.model_weight) : '<span style="color:var(--muted)">—</span>'}</td>
+      <td class="num" style="color:var(--muted)">${have(r.benchmark_weight) ? p1(r.benchmark_weight) : '—'}</td>
+      <td class="num" style="color:${d === null ? 'var(--muted)' : Math.abs(d) < 0.0005 ? 'var(--muted)' : d > 0 ? 'var(--pos)' : 'var(--neg)'}">${d === null ? '—' : (d >= 0 ? '+' : '−') + (Math.abs(d) * 100).toFixed(1) + '%'}</td></tr>`;
+  }).join('');
+
+  // Top ten by MODEL weight where the model resolved, otherwise by benchmark weight -- a model
+  // with no placeable equity should still show what its benchmark holds rather than ten dashes.
+  const countries = rows.filter(r => r.scope === 'country');
+  const key = anyModel ? 'model_weight' : 'benchmark_weight';
+  const top = countries.slice().sort((a, b) => (+b[key] || 0) - (+a[key] || 0)).slice(0, 10);
+  const scale = Math.max(0.01, ...top.flatMap(r => [+r.model_weight || 0, +r.benchmark_weight || 0]));
+  const bar = (v, color, muted) => have(v)
+    ? `<div style="display:flex;align-items:center;gap:6px">
+         <div style="height:9px;width:${+v > 0 ? Math.max(0.6, (+v / scale) * 100) : 0}%;background:${color};border-radius:2px"></div>
+         <small style="color:${muted ? 'var(--muted)' : 'var(--text)'};white-space:nowrap">${p1(v)}</small></div>`
+    : `<div><small style="color:var(--muted)">not resolved</small></div>`;
+  const countryRows = top.map(r => {
+    const d = have(r.model_weight) && have(r.benchmark_weight) ? +r.model_weight - +r.benchmark_weight : null;
+    return `<tr><td style="width:190px">${esc(r.label)}<br><small style="color:var(--muted)">${esc(labelOf(r.region))}</small></td>
+      <td>${bar(r.model_weight, 'var(--accent)', false)}${bar(r.benchmark_weight, 'var(--bench)', true)}</td>
+      <td class="num" style="width:90px;color:${d === null ? 'var(--muted)' : Math.abs(d) < 0.0005 ? 'var(--muted)' : d > 0 ? 'var(--pos)' : 'var(--neg)'}">${d === null ? '—' : (d >= 0 ? '+' : '−') + (Math.abs(d) * 100).toFixed(1) + '%'}</td></tr>`;
+  }).join('');
+
+  const un = (cov?.unresolved || []).filter(u => u.side === 'model');
+  const unBlock = !un.length ? '' : `<details style="margin-top:10px;font-size:13px">
+    <summary style="cursor:pointer;color:var(--text)">${un.length} equity holding${un.length === 1 ? '' : 's'} could not be placed on the map</summary>
+    <table style="margin-top:8px"><thead><tr><th>Ticker</th><th class="num">Weight</th><th>Why</th></tr></thead><tbody>
+    ${un.map(u => `<tr><td><b>${esc(u.ticker || '—')}</b></td><td class="num">${(+u.weight * 100).toFixed(1)}%</td>
+      <td style="max-width:460px;color:var(--muted)">${esc(u.reason)}</td></tr>`).join('')}
+    </tbody></table></details>`;
+
+  const covLine = !cov ? '' : `Equity is ${p1(cov.model_equity_weight)} of this model${cov.basis === 'target' ? ' on target weights' : ''}. `
+    + `The map and the table describe ${have(cov.model_resolved) ? p1(cov.model_resolved) : 'none'} of that equity and `
+    + `${have(cov.benchmark_resolved) ? p1(cov.benchmark_resolved) : 'none'} of the benchmark's.`;
+
+  return `<div class="card" style="margin-top:18px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Portfolio breakdown</h2>
+      <span style="font-size:12px;color:var(--muted)">
+        <span style="display:inline-block;width:9px;height:9px;background:var(--accent);border-radius:2px;margin-right:5px"></span>${esc(modelLabel)}
+        <span style="display:inline-block;width:9px;height:9px;background:var(--bench);border-radius:2px;margin:0 5px 0 12px"></span>${esc(benchLabel)}</span></div>
+    <div style="margin-top:10px">${tabs}</div>
+    ${!anyModel ? `<div class="empty" style="margin-top:12px">None of this model's equity could be placed geographically${un.length ? ` — ${esc(un.map(u => u.ticker).join(', '))} ${un.length === 1 ? 'is' : 'are'} the holding${un.length === 1 ? '' : 's'} involved` : ''}. The benchmark's own geography is shown below for reference.</div>`
+      : `<div style="margin-top:14px">${worldMap(byRegionModel, labelOf)}</div>`}
+    <div style="overflow-x:auto;margin-top:6px"><table style="min-width:520px"><thead><tr>
+      <th>Region</th><th class="num">Model</th><th class="num">${esc(benchLabel)}</th><th class="num">Over / under</th>
+    </tr></thead><tbody>${regionRows}</tbody></table></div>
+    <h3 style="margin:20px 0 0;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Ten largest countries</h3>
+    <div style="overflow-x:auto;margin-top:8px"><table style="min-width:620px"><thead><tr>
+      <th>Country</th><th>Share of resolved equity</th><th class="num">Over / under</th>
+    </tr></thead><tbody>${countryRows}</tbody></table></div>
+    ${unBlock}
+    <p class="note"><b>These are estimated from returns, not read from holdings.</b> No source connected to this desk publishes what these funds own, so geography is measured in two stages. Each fund is first fitted to a small set of well-separated regional indices — US large, mid and small cap, Canada, developed ex-North-America and emerging — with weights that cannot go negative and must sum to one. Those regional indices are then decomposed into their own countries, once, which is the step that makes the country table trustworthy: a regional index really is a basket of countries, so the regression recovers a composition that exists rather than inventing one. EFA resolves at an R² of 0.996 into Japan 23.8%, the UK 16.2%, France 10.8% and Switzerland 10.4%, against published MSCI EAFE weights of roughly 22, 15, 11 and 10.
+    Fitting a fund <i>directly</i> against twenty single-country indices was rejected: country indices correlate 0.7 to 0.9, so the solver can move weight between France and Germany almost freely without changing the fit, and the answer would be close to arbitrary.
+    <b>Fixed income, cash, commodity and gold holdings are excluded entirely</b> — they have no country mix to estimate, and listing them as unplaced would read as a gap in the analysis rather than as the model simply holding things that are not equity. ${covLine}
+    A fund whose fit explains less than 70% of its own daily movement is left out by name rather than spread across the others${un.length ? ' — the list above' : ''}, and the percentages renormalise over what remains. Regions are geographic: "emerging markets" is not a place and a map cannot shade it, so Korea and Japan are both Asia-Pacific here.${cov?.window_start ? ` Fitted on daily returns from ${esc(cov.window_start)} to ${esc(cov.window_end)}.` : ''}</p></div>`;
+}
+
+const breakdownCard = (() => {
     const all = (D.styleExposure || []).filter(r => r.strategy_id === m.id);
     if (!all.length) {
       return `<div class="card" style="margin-top:18px"><h2>Portfolio breakdown</h2>
         <div class="empty">Not computed yet. Run jobs/compute-style-exposure.mjs.</div></div>`;
     }
     const lens = breakdownLens;
+    if (lens === 'geography') return geographyCard(m);
     const rows = all.filter(r => r.lens === lens).sort((a, b) => a.sort_order - b.sort_order);
     const cov = (D.styleCoverage || []).find(r => r.strategy_id === m.id && r.lens === lens);
     const benchLabel = m.benchmarkLabel || 'Benchmark';
@@ -2702,7 +2860,7 @@ function modelDashboard(m) {
     const comps = rows.filter(r => r.kind === 'composite');
 
     const tabs = `<div class="tabs" style="margin:0">
-      ${[['sector', 'Sector'], ['factor', 'Equity factors']].map(([k, lbl]) =>
+      ${[['sector', 'Sector'], ['geography', 'Geography']].map(([k, lbl]) =>
         `<button class="tab" data-breakdown="${k}" aria-selected="${k === lens}">${lbl}</button>`).join('')}</div>`;
 
     const have = v => v !== null && v !== undefined;
@@ -2770,13 +2928,11 @@ function modelDashboard(m) {
           <span style="display:inline-block;width:9px;height:9px;background:var(--bench);border-radius:2px;margin:0 5px 0 12px"></span>${esc(benchLabel)}</span></div>
       <div style="margin-top:10px">${tabs}</div>
       <div style="overflow-x:auto;margin-top:12px"><table style="min-width:680px"><thead><tr>
-        <th>${lens === 'sector' ? 'Sector' : 'Factor'}</th><th>Share of resolved equity</th><th>Over / under weight</th>
+        <th>Sector</th><th>Share of resolved equity</th><th>Over / under weight</th>
       </tr></thead><tbody>${allocRows}${compRows}</tbody></table></div>
       ${unBlock}
       <p class="note"><b>These are estimated from returns, not read from holdings.</b> No data source connected to this desk publishes what the funds in these models own, so each fund's daily returns are fitted to a basis of real index ETFs — the eleven sector SPDRs for the sector view, iShares' value, momentum, quality and min-vol funds plus the S&P 500 for factors — with weights that cannot go negative and must sum to one. That measures how a fund <i>behaves</i>. A fund can be placed in a sector it owns no shares of, if it moves like one. ${covLine}
-      ${lens === 'factor'
-        ? 'AQR defines <b>Defensive</b> as quality combined with low volatility, and <b>Multi-Factor</b> as several styles run in one framework, so both are made out of the four rows above rather than sitting alongside them — they are shown separately because adding them in would count the same holding twice. Multi-factor counts the equity held in funds carrying at least three of the four styles at once, which is a property of the fund and not of the blend: one pure value fund beside one pure momentum fund is not a multi-factor model.'
-        : 'Non-US equity keeps its own row instead of being pushed into US sectors. Fitting the international and emerging-market indices to the sector SPDRs was tried and rejected — it explained two thirds and a half of their movement respectively, and returned an emerging-market mix with no financials at all in an index that is roughly a quarter financials.'}
+      Non-US equity keeps its own row instead of being pushed into US sectors. Fitting the international and emerging-market indices to the sector SPDRs was tried and rejected — it explained two thirds and a half of their movement respectively, and returned an emerging-market mix with no financials at all in an index that is roughly a quarter financials.
       A fund whose fit explains less than 70% of its own daily movement is left out by name rather than spread across the others${un.length ? ' — the list above' : ''}, and the percentages renormalise over what remains.${cov?.window_start ? ` Fitted on daily returns from ${esc(cov.window_start)} to ${esc(cov.window_end)}.` : ''}</p></div>`;
   })();
 
@@ -3495,6 +3651,10 @@ document.addEventListener('click', e => {
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-breakdown]');
   if (!t) return;
+  // Only the two lenses that exist. The equity-factor lens was removed in favour of geography,
+  // and compute-style-exposure.mjs still writes its rows, so without this guard a stale
+  // data-breakdown="factor" anywhere would render a view that is no longer reachable by design.
+  if (t.dataset.breakdown !== 'sector' && t.dataset.breakdown !== 'geography') return;
   breakdownLens = t.dataset.breakdown;
   const arg = (location.hash.split('/')[1] || '');
   if (arg) openModel(arg);

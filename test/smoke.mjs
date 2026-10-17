@@ -375,17 +375,66 @@ if (!argRoute) {
   await go('#stan/' + strat.id);
   const bd0 = drawer();
   need(bd0.includes('Portfolio breakdown'), '[breakdown] card did not render');
-  await click('[data-breakdown]', { breakdown: 'factor' });
+  await click('[data-breakdown]', { breakdown: 'geography' });
   const bd1 = drawer();
-  need(bd1 !== bd0, '[breakdown] switching to the factor lens did not change the table');
-  need(bd1.includes('Defensive'), '[breakdown] factor lens is missing the Defensive composite');
-  for (const [lens, html] of [['sector', bd0], ['factor', bd1]]) {
-    const seg = (html.split('Portfolio breakdown')[1] || '').split('Derived from the rows above')[0];
+  need(bd1 !== bd0, '[breakdown] switching to the geography lens did not change the card');
+  // The equity-factor lens was replaced by geography. Neither its tab nor its content may return.
+  need(!bd0.includes('Equity factors') && !bd1.includes('Equity factors'), '[breakdown] the Equity factors tab is still rendered');
+  need(!bd1.includes('Defensive') && !bd1.includes('Multi-Factor'), '[breakdown] factor-lens content leaked into the geography card');
+  await click('[data-breakdown]', { breakdown: 'factor' });
+  need(drawer() === bd1, '[breakdown] a stale factor lens is still reachable and rendered');
+  await click('[data-breakdown]', { breakdown: 'geography' });
+  if (wantDump) { const out = join(SITE, '..', 'family-office-agentic-orchestration', 'preview', '_geo.html');
+    writeFileSync(out, `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="_page.css"><body data-theme="dark" style="padding:20px;background:var(--bg)"><div style="max-width:1060px;margin:auto">${drawer()}</div>`); }
+
+  need(bd1.includes('Ten largest countries'), '[breakdown] geography is missing the country table');
+  need(/viewBox="20 15 980 400"/.test(bd1), '[breakdown] the world map did not render');
+  {
+    const seg = (bd0.split('Portfolio breakdown')[1] || '').split('Derived from the rows above')[0];
     const vals = [...seg.matchAll(/<div style="height:9px;width:[^"]*"><\/div>\s*<small style="color:var\(--text\)[^"]*">([\d.]+)%/g)].map(m => +m[1]);
-    if (!vals.length) { say(`      breakdown ${lens}: model column not resolved`); continue; }
-    const sum = vals.reduce((a, b) => a + b, 0);
-    say(`      breakdown ${lens.padEnd(7)} model column totals ${sum.toFixed(1)}%`);
-    need(Math.abs(sum - 100) < 1.5, `[breakdown] ${lens} model column totals ${sum.toFixed(1)}%, expected 100% of resolved equity`);
+    if (!vals.length) say('      breakdown sector : model column not resolved');
+    else {
+      const sum = vals.reduce((a, b) => a + b, 0);
+      say(`      breakdown sector  model column totals ${sum.toFixed(1)}%`);
+      need(Math.abs(sum - 100) < 1.5, `[breakdown] sector model column totals ${sum.toFixed(1)}%, expected 100% of resolved equity`);
+    }
+  }
+  // Geography: both scopes must sum to 100% on each side, countries must roll up into their
+  // regions, and a fixed income or commodity holding must never appear as unplaced equity.
+  {
+    const geo = await fetch(`${SUPABASE_URL}/rest/v1/latest_model_geo_exposure?select=strategy_id,scope,code,label,region,model_weight,benchmark_weight`, { headers: REST }).then(r => r.json());
+    const covs = await fetch(`${SUPABASE_URL}/rest/v1/latest_model_geo_coverage?select=strategy_id,model_equity_weight,model_resolved,benchmark_resolved,unresolved`, { headers: REST }).then(r => r.json());
+    const bad = [];
+    const byStrat = [...new Set(geo.map(g => g.strategy_id))];
+    for (const sid of byStrat) {
+      for (const scope of ['country', 'region']) {
+        for (const side of ['model_weight', 'benchmark_weight']) {
+          const rs = geo.filter(g => g.strategy_id === sid && g.scope === scope && g[side] !== null);
+          if (!rs.length) continue;
+          const sum = rs.reduce((a, r) => a + +r[side], 0);
+          if (Math.abs(sum - 1) > 0.005) bad.push(`${scope} ${side} sums to ${sum.toFixed(3)}`);
+          if (rs.some(r => +r[side] < -1e-9)) bad.push(`${scope} ${side} has a negative weight`);
+        }
+        // Countries must roll up to exactly the region totals, or map and table disagree.
+        if (scope === 'country') {
+          const regions = geo.filter(g => g.strategy_id === sid && g.scope === 'region');
+          for (const reg of regions) {
+            for (const side of ['model_weight', 'benchmark_weight']) {
+              if (reg[side] === null) continue;
+              const kids = geo.filter(g => g.strategy_id === sid && g.scope === 'country' && g.region === reg.code && g[side] !== null);
+              const sum = kids.reduce((a, r) => a + +r[side], 0);
+              if (Math.abs(sum - +reg[side]) > 0.002) bad.push(`${reg.code} ${side}: countries sum to ${sum.toFixed(4)} but the region says ${(+reg[side]).toFixed(4)}`);
+            }
+          }
+        }
+      }
+    }
+    for (const c of covs) {
+      if (c.model_resolved !== null && (+c.model_resolved < 0 || +c.model_resolved > 1.000001)) bad.push('model_resolved outside 0..1');
+      for (const u of (c.unresolved || [])) if (!u.ticker) bad.push('an unresolved entry has no ticker');
+    }
+    say(` ok  geography              -> ${byStrat.length} models, ${geo.filter(g => g.scope === 'country').length} country rows, ${[...new Set(bad)].length} problems`);
+    for (const b of [...new Set(bad)]) errors.push(`[geography] ${b}`);
   }
 
   // -------------------------------------------------------------------------
