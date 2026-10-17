@@ -886,6 +886,13 @@ if (!argRoute) {
     if (ytd !== undefined) need(Math.abs(+ytd) < 60, `[sandbox] Test returned a YTD of ${ytd}%, which is not this book`);
     need(/Factor fingerprint/.test(tested), '[sandbox] Test did not produce a factor fingerprint');
     need(/Sector weighting/.test(tested), '[sandbox] Test did not produce a sector breakdown');
+    // The second pie is the regime split, and the fingerprint sits with the pies rather than
+    // among the statistics: those three say what the book IS, the statistics how it has behaved.
+    need(/>Regimes</.test(tested), '[sandbox] the second pie is not labelled Regimes');
+    // Specifically the pie's eyebrow label, not the fingerprint table's "Factor" column header.
+    need(!/class="eyebrow"[^>]*>Factor</.test(tested), '[sandbox] the old Factor pie label is still there');
+    need(tested.indexOf('Factor fingerprint') < tested.indexOf('Portfolio statistics'),
+      '[sandbox] the fingerprint is not above the portfolio statistics');
     for (const [sid, w] of off) errors.push(`[sandbox] open lots for ${sid} sum to ${(w * 100).toFixed(1)}%`);
     for (const l of lots) if (!(+l.cost_price > 0)) errors.push(`[sandbox] a ${l.ticker} lot has no cost basis`);
   }

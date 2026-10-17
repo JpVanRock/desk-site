@@ -4347,14 +4347,15 @@ function sandboxAllocation() {
       <div style="display:flex;gap:18px;flex-wrap:wrap">
         <div><div class="eyebrow" style="margin-bottom:6px">Asset class</div>
           <div style="display:flex;gap:10px;align-items:center">${pie(classSlices, CLASS_COLORS)}${legend(classSlices, CLASS_COLORS)}</div></div>
-        <div><div class="eyebrow" style="margin-bottom:6px">Factor</div>
+        <div><div class="eyebrow" style="margin-bottom:6px">Regimes</div>
           <div style="display:flex;gap:10px;align-items:center">${pie(factorSlices, FCOL)}${legend(factorSlices, FCOL)}</div></div>
       </div>
     </div>
 
+    ${fpBlock}
+
     <h3 style="margin:18px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Portfolio statistics</h3>
     ${statsBlock}
-    ${fpBlock}
     ${secBlock}
 
     ${saMsg ? `<div class="note" style="margin-top:10px;color:${saMsg.ok ? 'var(--pos)' : 'var(--neg)'}">${esc(saMsg.text)}</div>` : ''}
