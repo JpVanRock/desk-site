@@ -511,6 +511,51 @@ if (!argRoute) {
     await click('[data-anniemodel]', { anniemodel: tabIds0[0] });
   }
 
+  // Tax efficiency: the arithmetic, the netting, and the bracket toggle.
+  {
+    const eff = await fetch(`${SUPABASE_URL}/rest/v1/latest_model_tax_efficiency?select=strategy_id,year,st_gain_bps,st_loss_bps,lt_gain_bps,lt_loss_bps,n_st,n_lt,bps_from_trims`, { headers: REST }).then(r => r.json());
+    const cov = await fetch(`${SUPABASE_URL}/rest/v1/latest_model_tax_coverage?select=strategy_id,n_sales,n_partial_sales,opening_lot_bps`, { headers: REST }).then(r => r.json());
+    const bad = [];
+    for (const r of eff) {
+      for (const k of ['st_gain_bps', 'st_loss_bps', 'lt_gain_bps', 'lt_loss_bps']) {
+        if (+r[k] < 0) bad.push(`${r.year} ${k} is negative; the components are magnitudes`);
+      }
+      // Figures without events behind them, or events without figures, mean the walk lost one.
+      if (r.n_st + r.n_lt === 0 && (+r.st_gain_bps || +r.lt_gain_bps)) bad.push(`${r.year} has gains but no realisation events`);
+      if (+r.bps_from_trims < 0) bad.push(`${r.year} has negative trim attribution`);
+    }
+    for (const c of cov) if (c.n_partial_sales > c.n_sales) bad.push('more partial sales than sales');
+    // Netting must follow the rule, not tax gross gains. Reproduce it here independently.
+    const net = (r, lt, st) => {
+      let S = +r.st_gain_bps - +r.st_loss_bps, L = +r.lt_gain_bps - +r.lt_loss_bps;
+      if (S < 0 && L > 0) { const u = Math.min(-S, L); L -= u; S += u; }
+      else if (L < 0 && S > 0) { const u = Math.min(-L, S); S -= u; L += u; }
+      return Math.max(0, S) * st + Math.max(0, L) * lt;
+    };
+    for (const r of eff) {
+      const gross = (+r.st_gain_bps) * 0.24 + (+r.lt_gain_bps) * 0.15;
+      if (net(r, 0.15, 0.24) > gross + 1e-6) bad.push(`${r.year} nets to more tax than taxing gross gains would`);
+      // HNW must never be cheaper than standard: both rates are strictly higher.
+      if (net(r, 0.20, 0.37) < net(r, 0.15, 0.24) - 1e-6) bad.push(`${r.year} HNW rates produce less tax than standard`);
+    }
+    say(` ok  tax efficiency         -> ${eff.length} model-years, ${cov.reduce((a, c) => a + c.n_partial_sales, 0)} partial sales counted, ${[...new Set(bad)].length} problems`);
+    for (const b of [...new Set(bad)]) errors.push(`[tax] ${b}`);
+
+    need(a0.includes('Tax efficiency'), '[tax] the card is missing from Annie');
+    need(a0.indexOf('Decision errors') < a0.indexOf('Tax efficiency'), '[tax] the card is not below the decision errors section');
+    // Both rate sets must be stated on the page, and the toggle must change the figure.
+    need(/15% long-term · 24% short-term/.test(a0), '[tax] the standard rates are not stated');
+    need(/20% long-term · 37% short-term/.test(a0), '[tax] the HNW rates are not stated');
+    const stdDrag = (a0.match(/−([\d.]+) <span style="font-size:15px;font-weight:600">bps\/yr/) || [])[1];
+    await click('[data-taxbracket]', { taxbracket: 'hnw' });
+    const h1 = app();
+    const hnwDrag = (h1.match(/−([\d.]+) <span style="font-size:15px;font-weight:600">bps\/yr/) || [])[1];
+    say(` ok  tax bracket toggle     -> standard −${stdDrag} bps/yr, HNW −${hnwDrag} bps/yr`);
+    need(stdDrag && hnwDrag, '[tax] could not read the headline drag on one of the brackets');
+    need(+hnwDrag > +stdDrag, `[tax] HNW (${hnwDrag}) is not heavier than standard (${stdDrag}), though both its rates are higher`);
+    await click('[data-taxbracket]', { taxbracket: 'standard' });
+  }
+
   const tabIds = [...a0.matchAll(/data-anniemodel="([^"]+)"/g)].map(m => m[1]);
   say(` ok  annie scorecard tabs   -> ${tabIds.length} (${tabIds[0]} first)`);
   need(tabIds.length === 9, `[annie] expected 9 scorecard tabs, got ${tabIds.length}`);

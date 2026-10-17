@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -171,6 +171,8 @@ async function load() {
     qSoft(sb.from('latest_model_geo_coverage').select('strategy_id,as_of,basis,model_equity_weight,model_resolved,benchmark_resolved,unresolved,window_start,window_end'), 'model geography coverage'),
     qSoft(sb.from('latest_factor_fingerprint').select('scope,strategy_id,as_of,factor,label,model_beta,benchmark_beta,active_beta,sort_order'), 'factor fingerprint'),
     qSoft(sb.from('latest_factor_fingerprint_coverage').select('scope,strategy_id,as_of,model_equity_weight,model_resolved,benchmark_resolved,unresolved,window_start,window_end'), 'factor fingerprint coverage'),
+    qSoft(sb.from('latest_model_tax_efficiency').select('strategy_id,as_of,year,st_gain_bps,st_loss_bps,lt_gain_bps,lt_loss_bps,n_st,n_lt,bps_from_trims'), 'tax efficiency'),
+    qSoft(sb.from('latest_model_tax_coverage').select('strategy_id,as_of,first_snapshot,last_snapshot,n_lots_opened,n_sales,n_partial_sales,opening_lot_bps,unpriced_sales'), 'tax coverage'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -254,7 +256,8 @@ async function load() {
     firmMetrics: firmMetrics || [], firmExposures: firmExposures || [], firmStress: firmStress || [],
     blendFit: blendFit || [], modelDuration: modelDuration || [],
     geoExposure: geoExposure || [], geoCoverage: geoCoverage || [],
-    fingerprint: fingerprint || [], fingerprintCov: fingerprintCov || [] };
+    fingerprint: fingerprint || [], fingerprintCov: fingerprintCov || [],
+    taxEff: taxEff || [], taxCov: taxCov || [] };
 }
 
 // ---------- Views ----------
@@ -1694,6 +1697,29 @@ const ERROR_CAVEAT = 'Borrowed vocabulary, not a significance test: no α is set
 let annieWindow = 'ITD';
 // Which scorecard tab is showing: 'overall' or a strategy id.
 let annieModel = 'overall';
+// Which rate set the tax card is reading. Module scope for the same reason as annieModel: the
+// card is rebuilt on every render and a local would reset the toggle each time.
+let taxBracket = 'standard';
+// The two readings the desk offers. Nothing stored carries a tax figure -- the job keeps the
+// four pre-tax components per year and these are applied here, so one dataset serves both and
+// the two can never drift apart.
+const TAX_RATES = {
+  standard: { lt: 0.15, st: 0.24, label: 'Standard', note: '15% long-term · 24% short-term' },
+  hnw:      { lt: 0.20, st: 0.37, label: 'HNW',      note: '20% long-term · 37% short-term' },
+};
+
+// Short-term losses net against short-term gains, long-term against long-term, and a leftover
+// loss of either character then offsets a remaining gain of the other. This is the actual rule,
+// and it matters here: taxing gross gains would bill a desk with 99 losing trades for every one
+// of them while ignoring the deduction they earn.
+function netTax(r, rate) {
+  let st = +r.st_gain_bps - +r.st_loss_bps;
+  let lt = +r.lt_gain_bps - +r.lt_loss_bps;
+  if (st < 0 && lt > 0) { const use = Math.min(-st, lt); lt -= use; st += use; }
+  else if (lt < 0 && st > 0) { const use = Math.min(-lt, st); st -= use; lt += use; }
+  const stTax = Math.max(0, st) * rate.st, ltTax = Math.max(0, lt) * rate.lt;
+  return { st, lt, stTax, ltTax, total: stTax + ltTax };
+}
 
 function annie() {
   // Same two helpers the other pages declare locally; keep them in step if they ever move to
@@ -1988,6 +2014,105 @@ function annie() {
         </div></div>`;
     })();
 
+    // ---- tax efficiency -------------------------------------------------------------------
+    // Short against long term across the whole recorded trade history, by FIFO lot so partial
+    // sales count -- roughly half the realisations in these models are trims, and a round-trip
+    // ledger cannot see one.
+    const taxCard = (() => {
+      const all = (D.taxEff || []).filter(r => isOverall || r.strategy_id === annieModel);
+      if (!all.length) return '';
+      const rate = TAX_RATES[taxBracket];
+      const years = [...new Set(all.map(r => r.year))].sort();
+      // Overall averages the models that have a ledger, each counting once -- the same rule the
+      // rest of this page uses. These are basis points of a model's own value, so summing them
+      // across eight models would describe a portfolio nobody holds.
+      const perYear = years.map(y => {
+        const rows = all.filter(r => r.year === y);
+        const k = isOverall ? rows.length : 1;
+        const agg = rows.reduce((a, r) => ({
+          st_gain_bps: a.st_gain_bps + +r.st_gain_bps, st_loss_bps: a.st_loss_bps + +r.st_loss_bps,
+          lt_gain_bps: a.lt_gain_bps + +r.lt_gain_bps, lt_loss_bps: a.lt_loss_bps + +r.lt_loss_bps,
+          n_st: a.n_st + r.n_st, n_lt: a.n_lt + r.n_lt, trims: a.trims + +r.bps_from_trims,
+        }), { st_gain_bps: 0, st_loss_bps: 0, lt_gain_bps: 0, lt_loss_bps: 0, n_st: 0, n_lt: 0, trims: 0 });
+        for (const f of ['st_gain_bps', 'st_loss_bps', 'lt_gain_bps', 'lt_loss_bps']) agg[f] /= k;
+        agg.trims /= k;
+        return { year: y, ...agg, tax: netTax(agg, rate), models: rows.length };
+      });
+      const totalTax = perYear.reduce((a, p) => a + p.tax.total, 0);
+      const avgTax = totalTax / perYear.length;
+      const grossGains = perYear.reduce((a, p) => a + p.st_gain_bps + p.lt_gain_bps, 0);
+      const ltShare = grossGains > 0 ? perYear.reduce((a, p) => a + p.lt_gain_bps, 0) / grossGains : null;
+      const cov = (D.taxCov || []).filter(c => isOverall || c.strategy_id === annieModel);
+      const nPartial = cov.reduce((a, c) => a + c.n_partial_sales, 0);
+      const nSales = cov.reduce((a, c) => a + c.n_sales, 0);
+      const openingBps = cov.reduce((a, c) => a + +c.opening_lot_bps, 0);
+      const realisedAll = all.reduce((a, r) => a + +r.st_gain_bps + +r.lt_gain_bps + +r.st_loss_bps + +r.lt_loss_bps, 0);
+
+      const maxBar = Math.max(1, ...perYear.map(p => Math.max(p.st_gain_bps, p.lt_gain_bps)));
+      const bars = perYear.map(p => {
+        const hST = Math.round((p.st_gain_bps / maxBar) * 64);
+        const hLT = Math.round((p.lt_gain_bps / maxBar) * 64);
+        const tip = `${p.year}: ${p.lt_gain_bps.toFixed(0)} bps of long-term gains and ${p.st_gain_bps.toFixed(0)} short-term, less ${(p.lt_loss_bps + p.st_loss_bps).toFixed(0)} bps of losses. Tax at ${rate.note} comes to ${p.tax.total.toFixed(0)} bps.`;
+        return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:52px" title="${esc(tip)}">
+          <small style="font-size:11px;font-weight:700;color:var(--neg);font-variant-numeric:tabular-nums">−${p.tax.total.toFixed(0)}</small>
+          <div style="width:100%;height:68px;display:flex;align-items:flex-end;gap:3px">
+            <div style="flex:1;height:${hLT}px;background:var(--pos);border-radius:2px 2px 0 0;min-height:2px"></div>
+            <div style="flex:1;height:${hST}px;background:var(--flat);border-radius:2px 2px 0 0;min-height:2px"></div>
+          </div>
+          <small style="font-size:10px;color:var(--muted)">${p.year}</small></div>`;
+      }).join('');
+
+      const rows = perYear.map(p => {
+        const net = p.tax.st + p.tax.lt;
+        return `<tr><td><b>${p.year}</b></td>
+          <td class="num" style="color:var(--pos)">${p.lt_gain_bps.toFixed(0)}</td>
+          <td class="num" style="color:var(--flat)">${p.st_gain_bps.toFixed(0)}</td>
+          <td class="num" style="color:var(--muted)">−${(p.lt_loss_bps + p.st_loss_bps).toFixed(0)}</td>
+          <td class="num">${net >= 0 ? '' : '−'}${Math.abs(net).toFixed(0)}</td>
+          <td class="num"><b style="color:var(--neg)">−${p.tax.total.toFixed(0)}</b></td>
+          <td class="num" style="color:var(--muted)">${p.n_lt + p.n_st}</td></tr>`;
+      }).join('');
+
+      const toggle = `<div class="tabs" style="margin:0">${Object.entries(TAX_RATES).map(([k, v]) =>
+        `<button class="tab" data-taxbracket="${k}" aria-selected="${k === taxBracket}" title="${esc(v.note)}">${esc(v.label)}</button>`).join('')}</div>`;
+
+      // The score is the drag itself, in the units the question was asked in. A letter grade would
+      // be the desk inventing a scale; basis points a year is a number the owner can act on.
+      const grade = avgTax < 100 ? ['Light', 'var(--pos)'] : avgTax < 200 ? ['Moderate', 'var(--flat)'] : ['Heavy', 'var(--neg)'];
+
+      return `<div class="card" style="margin-top:14px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
+          <h2 style="margin:0">Tax efficiency</h2>${toggle}</div>
+        <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start;margin-top:14px">
+          <div style="flex:none;min-width:190px">
+            <div class="eyebrow">Tax impact</div>
+            <div style="font-size:30px;font-weight:700;color:${grade[1]};line-height:1.1">−${avgTax.toFixed(0)} <span style="font-size:15px;font-weight:600">bps/yr</span></div>
+            <div style="font-size:12px;color:var(--muted);margin-top:2px">${esc(grade[0])} · ${esc(rate.note)}</div>
+            <div style="margin-top:12px;font-size:13px">
+              <div><b style="color:var(--pos)">${ltShare === null ? '—' : (ltShare * 100).toFixed(0) + '%'}</b> <span style="color:var(--muted)">of gains were long-term</span></div>
+              <div style="margin-top:3px"><b>${nSales}</b> <span style="color:var(--muted)">realisations, ${nPartial} of them partial</span></div>
+              <div style="margin-top:3px"><b>−${totalTax.toFixed(0)}</b> <span style="color:var(--muted)">bps over ${perYear.length} year${perYear.length === 1 ? '' : 's'}</span></div>
+            </div>
+          </div>
+          <div style="flex:1;min-width:230px">
+            <div style="font-size:12px;color:var(--muted);margin-bottom:6px">
+              <span style="display:inline-block;width:9px;height:9px;background:var(--pos);border-radius:2px;margin-right:4px"></span>long-term gains
+              <span style="display:inline-block;width:9px;height:9px;background:var(--flat);border-radius:2px;margin:0 4px 0 10px"></span>short-term
+              <span style="color:var(--neg);margin-left:10px">−bps = tax</span></div>
+            <div style="display:flex;align-items:flex-end;gap:8px">${bars}</div>
+          </div>
+        </div>
+        <div style="overflow-x:auto;margin-top:16px"><table style="min-width:520px"><thead><tr>
+          <th>Year</th><th class="num">LT gains</th><th class="num">ST gains</th><th class="num">Losses</th>
+          <th class="num">Net taxable</th><th class="num">Tax</th><th class="num">Events</th>
+        </tr></thead><tbody>${rows}</tbody></table></div>
+        <p class="note">Every figure is <b>basis points of the model's own value</b>, measured by FIFO lot across the whole recorded trade history${cov[0] ? ` (${esc(cov[0].first_snapshot)} onward)` : ''}. <b>Partial sales count</b>: ${nPartial} of ${nSales} realisations here were trims rather than exits, and a round-trip ledger cannot see a trim at all — it only knows a position was present and then absent. One sale can produce both a short-term and a long-term result, because it consumes lots of different ages, which is what happens in a real account.
+        Losses are netted the way the rule actually works — short against short, long against long, and a leftover loss of either character against a remaining gain of the other — so this is tax that would have been owed, not tax on gross gains.
+        ${isOverall ? '<b>Overall averages the models that have a ledger, each counting once.</b> These are basis points of a single model&#39;s own value, so adding eight of them together would describe a portfolio nobody holds. ' : ''}
+        <b>Three things make this an understatement rather than a precise bill.</b> Gains are measured on adjusted closes, so distributions are folded into price appreciation — in a real account a dividend is taxable the year it is paid, usually at the higher rate, and it does not wait for a sale. ${openingBps > 0 ? `About ${openingBps.toFixed(0)} bps of what is realised here came from positions already held when the records begin, whose basis and holding period are the first snapshot's rather than the true purchase; their real holding period is longer, so a few of these may be graded short-term when they were not. ` : ''}And weights are targets at allocation dates, so lot sizes are intended rather than executed quantities. Nothing here is tax advice or a filing figure.
+        <b>Rates applied:</b> ${esc(TAX_RATES.standard.note)} on the Standard tab; ${esc(TAX_RATES.hnw.note)} on HNW. Federal rates only — no state tax, no net investment income tax, no wash-sale adjustment.</p></div>`;
+    })();
+
     const head = !s
       ? '<span style="font-size:12px;color:var(--muted)">no dated holdings history — nothing to grade</span>'
       : `<span style="font-size:12px;color:var(--muted)">${esc(s.first_snapshot)} to ${esc(s.last_snapshot)} · ${s.n_closed} completed, ${s.n_open} open${isOverall ? ` · ${graded.length} of ${(D.models || []).length} models graded` : ''}</span>`;
@@ -2027,6 +2152,7 @@ function annie() {
         ${streakBox(streak)}
       </div>
       ${errorsBlock(s, isOverall)}
+      ${taxCard}
       <p class="note">${note}</p>
       ${curveBlock}</div>`;
   })();
@@ -3898,6 +4024,14 @@ document.addEventListener('click', e => {
   const t = e.target.closest('[data-anniemodel]');
   if (!t) return;
   annieModel = t.dataset.anniemodel;
+  $('#app').innerHTML = annie();
+});
+// Standard vs HNW rates on Annie's tax card. Only the rates change — the stored figures are
+// pre-tax, so the toggle is a re-read of one dataset rather than a second fetch.
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-taxbracket]');
+  if (!t || !TAX_RATES[t.dataset.taxbracket]) return;
+  taxBracket = t.dataset.taxbracket;
   $('#app').innerHTML = annie();
 });
 // Decision-score window tabs on Annie's page.
