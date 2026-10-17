@@ -740,6 +740,32 @@ if (!argRoute) {
       (/failure/i.test(label) && col !== 'var(--neg)') || (/^Confirming$/.test(label) && col !== 'var(--pos)'));
     say(` ok  sven verdict colours   -> ${verdicts.length} verdicts, ${wrong.length} mis-coloured`);
     for (const [l, c] of wrong) errors.push(`[sven] verdict "${l}" rendered ${c}`);
+
+    // Failures first, and the impacted column must name holdings rather than models.
+    const order = verdicts.map(([l]) => l);
+    const lastFail = order.map((l, i) => /failure/i.test(l) ? i : -1).filter(i => i >= 0).pop() ?? -1;
+    const firstNonFail = order.findIndex(l => !/failure/i.test(l));
+    need(lastFail < 0 || firstNonFail < 0 || lastFail < firstNonFail,
+      `[sven] failures are not listed first: ${order.join(' | ')}`);
+    need(!seg.includes('>Held in<'), '[sven] the Held in column is still rendered');
+    need(seg.includes('Impacted Holdings'), '[sven] the Impacted Holdings column is missing');
+    const rows = await fetch(`${SUPABASE_URL}/rest/v1/latest_news_failure_readings?select=ticker,verdict,impacted,window_days&window_days=eq.30`, { headers: REST }).then(r => r.json());
+    const bad = [];
+    for (const r of rows) {
+      const imp = r.impacted || [];
+      // A verdict that concluded nothing must reach nothing, or the column implies a call.
+      if (['none', 'insufficient'].includes(r.verdict) && imp.length) bad.push(`${r.ticker} concluded "${r.verdict}" yet lists ${imp.length} holdings`);
+      for (const x of imp) {
+        if (!x.ticker || !(+x.usd > 0)) bad.push(`${r.ticker} has an impacted entry with no ticker or no dollars`);
+        if (+x.firm_weight > 1) bad.push(`${x.ticker} is ${x.firm_weight} of the firm`);
+      }
+      // Sorted largest first, since the column's job is to size the exposure.
+      for (let i = 1; i < imp.length; i++) if (+imp[i].usd > +imp[i - 1].usd) bad.push(`${r.ticker} impacted list is not largest-first`);
+    }
+    const withImpact = rows.filter(r => (r.impacted || []).length).length;
+    say(` ok  sven impacted holdings -> ${withImpact} of ${rows.length} readings reach a position, ${[...new Set(bad)].length} problems`);
+    for (const b of [...new Set(bad)]) errors.push(`[sven] ${b}`);
+    need(seg.includes('No Impact to Models'), '[sven] no row shows the No Impact to Models default');
   }
   await click('[data-newswin]', { newswin: '90' });
   need(app() !== s0, '[sven] switching the news window did not change the table');

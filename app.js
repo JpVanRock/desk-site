@@ -152,7 +152,7 @@ async function load() {
     qSoft(sb.from('annie_assessments').select('as_of,kind,strategy_id,ticker,headline,body_md,score,score_scale,confidence,sources,author').order('as_of', { ascending: false }), 'Annie assessments'),
     qSoft(sb.from('latest_annie_trade_reviews').select('strategy_id,as_of,ticker,entry_date,exit_date,held_return,held_excess_bps,days_since_exit,after_return,after_bench,after_excess,held_instead_bps,better_ticker,better_return,better_gain_bps,n_alternatives,exit_verdict,entry_verdict,headline,lesson,unavailable_reason'), 'trade reviews'),
     qSoft(sb.from('latest_sven_rule_signals').select('as_of,ticker,rule_key,rule_no,rule_title,state,headline,detail,method,adapted').order('rule_no'), 'Raschke rules'),
-    qSoft(sb.from('latest_news_failure_readings').select('as_of,ticker,label,asset_class,window_days,n_releases,n_positive,n_negative,n_series,n_factors,agreement,price_change,made_new_high,made_new_low,verdict,headline,held_in'), 'news failure'),
+    qSoft(sb.from('latest_news_failure_readings').select('as_of,ticker,label,asset_class,window_days,n_releases,n_positive,n_negative,n_series,n_factors,agreement,price_change,made_new_high,made_new_low,verdict,headline,held_in,impacted'), 'news failure'),
     qSoft(sb.from('macro_beauty_readings').select('as_of,score,stance,n_live,n_total,headline').order('as_of', { ascending: false }).limit(1), 'beauty reading'),
     qSoft(sb.from('latest_macro_beauty_components').select('as_of,component,label,score,status,headline,measure,value_text,source,how_to_supply,data_as_of'), 'beauty components'),
     qSoft(sb.from('latest_macro_regime_readings').select('as_of,regime,growth_z,inflation_z,conviction,n_growth,n_inflation,data_as_of,stale_days,liquidity_z,n_liquidity,rate_driver,term_premium_z,breakeven_z'), 'macro regime'),
@@ -1552,6 +1552,21 @@ function sven() {
     Rules marked <sup style="color:var(--warn)">a</sup> are <b>adapted</b>: Raschke wrote for an intraday screen, and where a daily bar can carry the spirit of a rule but not the rule itself — a close in the top third of the range standing in for "the last hour" — the substitution is named rather than hidden. <b>Rules 3, 9 and 10 are not evaluable at all</b> and show a dash: they are entirely about when inside the session something happened, and a daily bar has no inside. Approximating them would be inventing the number the rule turns on.</p></div>`;
 
   // ---- news failure ----
+  // Which positions a reading reaches, in firm dollars, and which way. The direction is the
+  // verdict's: a confirming read is good for the holdings it touches, a failure is bad for them.
+  // A reading that called nothing reaches nothing, so "no read" and "insufficient" say so rather
+  // than listing holdings beside a verdict that never concluded.
+  const impactedCell = (r, fail) => {
+    const list = r.impacted || [];
+    if (!list.length) return '<span style="color:var(--muted)">No Impact to Models</span>';
+    const tone = fail ? 'var(--neg)' : 'var(--pos)';
+    const sign = fail ? '−' : '+';
+    const total = list.reduce((a, x) => a + +x.usd, 0);
+    const tip = `${fail ? 'Hurt' : 'Helped'} by this reading: ${list.map(x => `${x.ticker} ${(+x.firm_weight * 100).toFixed(1)}% of the firm${x.partial ? ' (its share of this class only)' : ''}`).join(', ')}.`;
+    return `<span title="${esc(tip)}"><span style="color:${tone};font-weight:600">${sign}</span> ${list.map(x =>
+      `<span style="color:var(--text)">${esc(x.ticker)}</span><span style="color:var(--muted)">${x.partial ? '*' : ''} $${(+x.usd / 1e6).toFixed(0)}M</span>`).join(', ')}
+      <br><small style="color:var(--muted)">$${(total / 1e6).toFixed(0)}M ${fail ? 'exposed' : 'supported'}</small></span>`;
+  };
   const wins = [...new Set(news.map(r => r.window_days))].sort((a, b) => a - b);
   const rowsN = news.filter(r => r.window_days === newsWindow)
     .sort((a, b) => {
@@ -1567,7 +1582,7 @@ function sven() {
       <b>${failures.length} asset${failures.length === 1 ? '' : 's'} not responding to ${failures.length === 1 ? 'its' : 'their'} own news</b> over ${newsWindow} days: ${failures.map(f => `${esc(f.ticker)} (${esc(FAILURE_STYLE[f.verdict][0].toLowerCase())})`).join(', ')}.</div>` : ''}
     <div style="overflow-x:auto;margin-top:12px"><table style="min-width:860px"><thead><tr>
       <th>Asset</th><th>Class</th><th>Verdict</th><th class="num">News flow</th><th class="num">Breadth</th>
-      <th class="num">Price</th><th>Held in</th></tr></thead><tbody>
+      <th class="num">Price</th><th>Impacted Holdings</th></tr></thead><tbody>
     ${rowsN.map(r => {
       const st = FAILURE_STYLE[r.verdict] || FAILURE_STYLE.none;
       const fail = /failure$/.test(r.verdict);
@@ -1581,10 +1596,11 @@ function sven() {
         <td class="num" title="Distinct series and distinct factors behind the flow. Agreement alone cannot tell one story told eight times from eight stories that agree.">${r.n_series ?? '–'} series<br><small style="color:var(--muted)">${r.n_factors ?? '–'} factor${r.n_factors === 1 ? '' : 's'}</small></td>
         <td class="num">${ch === null ? '<span style="color:var(--muted)">–</span>' : `<span style="color:${ch >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(ch * 100).toFixed(1)}%</span>`}
           <br><small style="color:var(--muted)">${r.made_new_high ? 'new high' : r.made_new_low ? 'new low' : 'no new extreme'}</small></td>
-        <td style="color:var(--muted);font-size:12px">${(r.held_in || []).length ? esc((r.held_in || []).join(', ')) : '—'}</td></tr>`;
+        <td style="font-size:12px">${impactedCell(r, fail)}</td></tr>`;
     }).join('')}
     </tbody></table></div>
-    <p class="note"><b>Good news is not a property of a release on its own</b> — a strong payroll print is good news for equities and bad news for bonds. Each release is scored by which way it moved its factor, multiplied by how that asset class loads on that factor, so both halves come from tables the desk already keeps rather than from a judgment made here.
+    <p class="note"><b>Impacted Holdings</b> names the firm's own positions in the asset class a reading describes, in firm dollars, largest first — not the models, which hold every class and so repeated the same eight names on every row. A confirming read supports those positions and a failure puts them at risk, so the column takes its sign from the verdict rather than storing one that could drift from it. A ticker marked <b>*</b> counts only its share of that class: QDSIX is classified 60% equity, 20% fixed income and 20% commodities, so a commodity reading reaches a fifth of its position and not all of it. Where a verdict concluded nothing the column reads <b>No Impact to Models</b> — a reading that called no direction reaches no holding. <b>Failures sort to the top of the table</b>, since they are the only rows that ask for a decision.
+    <b>Good news is not a property of a release on its own</b> — a strong payroll print is good news for equities and bad news for bonds. Each release is scored by which way it moved its factor, multiplied by how that asset class loads on that factor, so both halves come from tables the desk already keeps rather than from a judgment made here.
     A <b>positive news failure</b> is a stream of good news the asset did not rise on; a <b>negative news failure</b> is a stream of bad news it did not fall on. Neither is called on fewer than five releases, on a flow more split than 65/35, or on a single factor — one factor moving is one story told many times, and agreement cannot tell that from many stories agreeing, which is why breadth sits beside it.
     Only weekly, monthly and quarterly series count: the daily ones here are market prices, not announcements. <b>Publication dates are assumed from frequency, not recorded</b> — a release covering August is treated as published a month later — because this desk stores the period an observation covers and not the day it came out.</p></div>`;
 
