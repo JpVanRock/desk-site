@@ -1483,10 +1483,16 @@ const SVEN_GROUP = { SPY: 'US equity', QQQ: 'US equity', MDY: 'US equity', IWM: 
 // order the rows arrive in, which is the database's business and not a reading order.
 const SVEN_ORDER = ['SPY', 'QQQ', 'MDY', 'IWM', 'DIA', 'EFA', 'EEM', 'GLD', 'USO'];
 const SVEN_LABEL = { SPY: 'S&P 500', QQQ: 'Nasdaq 100', MDY: 'S&P MidCap 400', IWM: 'Russell 2000', DIA: 'Dow Industrials', EFA: 'Developed ex-US', EEM: 'Emerging markets', GLD: 'Gold', USO: 'Crude oil', AGG: 'US aggregate bonds' };
+// The colour marks the VERDICT, not the direction it implies: any news failure is red, a
+// confirming read is green. An earlier cut coloured by market implication, so a negative failure
+// -- bad news that did not sink the asset, which is bullish -- came out green while sitting in a
+// column headed by the word failure. One of the two had to give, and the column heading wins:
+// green means the tape agreed with its news, red means it did not. Which WAY a failure cuts is
+// still in the label and the tooltip, where it reads as a sentence rather than as a colour.
 const FAILURE_STYLE = {
   positive_failure: ['Positive news failure', 'var(--neg)', 'Good news that did not lift it — the warning to sell.'],
-  negative_failure: ['Negative news failure', 'var(--pos)', 'Bad news that did not sink it — a trend may be turning up.'],
-  confirming:       ['Confirming', 'var(--muted)', 'News and price agreed. The ordinary case, and not a signal.'],
+  negative_failure: ['Negative news failure', 'var(--neg)', 'Bad news that did not sink it — bullish in direction, but still a failure of price to follow its news.'],
+  confirming:       ['Confirming', 'var(--pos)', 'News and price agreed. The ordinary case, and not a signal.'],
   none:             ['No read', 'var(--muted)', 'Nothing could be called from this window.'],
   insufficient:     ['Insufficient', 'var(--muted)', 'Too little to call anything.'],
 };
@@ -1670,6 +1676,44 @@ function annie() {
   // every figure blank, because the shape of what is missing is itself worth seeing: a reader
   // comparing models should be able to tell "this one has not been graded" from "this one scored
   // badly", and a model quietly absent from a tab strip teaches neither.
+  // The hot-hand card. A playing card because this is a scorecard about betting well, and the
+  // three faces are the three things a 90-day win rate can be telling you. Exactly 50% gets the
+  // desk's own mark rather than a verdict: it is the one reading that is genuinely neither, and
+  // picking a side there would be inventing a signal out of a coin landing on its edge.
+  const HOT_FACE = {
+    hot:  { tone: 'var(--neg)',  label: 'Hot hand',    sub: 'running well' },
+    even: { tone: 'var(--text)', label: 'Keep pushing', sub: 'at the line' },
+    cold: { tone: 'var(--accent)', label: 'Cold hand',  sub: 'running cold' },
+  };
+  function hotHandCard(rate, wins, n, windowDays) {
+    if (rate === null) {
+      return `<div class="pcard pcard-none" title="No trade has closed in the last ${windowDays} days, so there is no current form to read. Blank rather than cold: nothing closing is not the same as closing badly.">
+        <div class="pcorner">—</div><div class="pface" style="color:var(--muted)">?</div>
+        <div class="plabel">No recent trades</div></div>`;
+    }
+    const pct = rate * 100;
+    // The owner's thresholds: 51% or above is hot, exactly 50% is even, below 50% is cold. That
+    // leaves 50 to 51 unspecified, and it cannot be cold without contradicting "below 50% is
+    // cold" -- so the band between them takes the middle face. Keep pushing is exactly what a
+    // rate half a point over even deserves.
+    const k = pct >= 51 ? 'hot' : pct >= 50 ? 'even' : 'cold';
+    const f = HOT_FACE[k];
+    const glyph = k === 'hot'
+      ? `<svg viewBox="0 0 24 24" width="46" height="46" aria-hidden="true"><path d="M12 2c.6 3.2-1.4 4.6-2.8 6.1C7.6 9.8 6 11.5 6 14.2 6 17.9 8.9 21 12.3 21c3.4 0 6-2.6 6-6 0-2.4-1-3.8-2.3-5.3-.5 1-1.2 1.7-2 2 .5-2.6-.6-6.4-4-9.7z" fill="currentColor"/></svg>`
+      : k === 'cold'
+      ? `<svg viewBox="0 0 24 24" width="46" height="46" aria-hidden="true" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"><path d="M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7"/><path d="M12 5.4 9.6 3.6M12 5.4l2.4-1.8M12 18.6l-2.4 1.8M12 18.6l2.4 1.8M5.1 9.2 4.3 6.4M5.1 9.2 2.2 9.5M18.9 14.8l.8 2.8M18.9 14.8l2.9-.3M5.1 14.8l-2.9-.3M5.1 14.8l-.8 2.8M18.9 9.2l2.9.3M18.9 9.2l.8-2.8"/></svg>`
+      : `<svg class="logo" style="width:46px;height:46px" role="img" aria-label="Sisyphus"><use href="#sisyphus-mark"/></svg>`;
+    const tip = `${f.label} — ${wins} of ${n} trades closed in the last ${windowDays} days exited profitable (${pct.toFixed(0)}%). ${
+      k === 'hot' ? 'At or above 51% the desk is running well.'
+      : k === 'cold' ? 'Below 50% the desk is running cold.'
+      : `${pct === 50 ? 'Exactly even' : 'Over even but not yet 51%'}: neither hot nor cold, so the card shows the desk mark rather than a verdict.`}`;
+    return `<div class="pcard pcard-${k}" title="${esc(tip)}">
+      <div class="pcorner" style="color:${f.tone}">${pct.toFixed(0)}%</div>
+      <div class="pface" style="color:${f.tone}">${glyph}</div>
+      <div class="plabel">${esc(f.label)}</div>
+      <div class="psub">${wins}/${n} in ${windowDays}d · ${esc(f.sub)}</div></div>`;
+  }
+
   const scorecard = (() => {
     const kpi = (lab, val, sub, title) => `<div class="card kpi" title="${esc(title)}">
       <span class="eyebrow">${esc(lab)}</span><b style="font-size:26px">${val}</b><small>${esc(sub)}</small></div>`;
@@ -1731,9 +1775,9 @@ function annie() {
         </div></div>`;
     };
 
-    // The last ten completed trades, oldest on the left so the newest sits where the eye lands.
-    // Taken straight from the ledger rather than stored: it is ten rows of a table already here,
-    // and a stored copy would be one more thing that can disagree with the journal below it.
+    // The last ten completed trades, NEWEST on the left. Taken straight from the ledger rather
+    // than stored: it is ten rows of a table already here, and a stored copy would be one more
+    // thing that can disagree with the journal below it.
     const streakBox = list => {
       const chips = list.map(t => {
         const won = +t.total_return > 0;
@@ -1741,20 +1785,30 @@ function annie() {
         const tip = `${t.ticker} · opened ${t.entry_date}\n${won ? 'Win' : 'Loss'} ${r === null ? '—' : (r >= 0 ? '+' : '') + (r * 100).toFixed(1) + '%'} · closed ${t.exit_date}`;
         return `<span class="stk ${won ? 'w' : 'l'}" data-tip="${esc(tip)}">${won ? 'W' : 'L'}</span>`;
       }).join('');
-      return `<div class="card kpi" title="The last ten completed trades, oldest on the left. Hover one for the ticker, the date it was opened and what it returned.">
+      return `<div class="card kpi" title="The last ten completed trades, most recent on the left. Hover one for the ticker, the date it was opened and what it returned.">
         <span class="eyebrow">Current streak</span>
         <div style="display:flex;gap:5px;margin:6px 0 4px;flex-wrap:wrap">${chips || '<span style="color:var(--muted);font-size:22px">—</span>'}</div>
-        <small>${list.length ? 'last ' + list.length + ', oldest first' : 'no closed trades'}</small></div>`;
+        <small>${list.length ? 'last ' + list.length + ', most recent first' : 'no closed trades'}</small></div>`;
     };
 
     const isOverall = annieModel === 'overall';
     const s = isOverall ? overall : (stats.find(x => x.strategy_id === annieModel) || null);
     const label = isOverall ? 'Overall' : bare(modelName(annieModel));
 
-    const streak = trades
+    const closedTrades = trades
       .filter(t => t.status === 'closed' && t.total_return !== null && (isOverall || t.strategy_id === annieModel))
-      .sort((a, b) => String(a.exit_date).localeCompare(String(b.exit_date)))
-      .slice(-10);
+      .sort((a, b) => String(b.exit_date).localeCompare(String(a.exit_date)));
+    const streak = closedTrades.slice(0, 10);
+
+    // Hot hand, over the last ninety days of CLOSED trades. A rolling window rather than the
+    // all-time batting average beside it: the point of the card is current form, and a desk that
+    // batted .750 across four years can still be cold now. Ninety days of nothing closing is not
+    // a cold hand -- it is no hand, and the card says so rather than reading as a loss.
+    const HOT_WINDOW_DAYS = 90;
+    const cutoff = new Date(Date.now() - HOT_WINDOW_DAYS * 864e5).toISOString().slice(0, 10);
+    const recent90 = closedTrades.filter(t => String(t.exit_date) >= cutoff);
+    const wins90 = recent90.filter(t => +t.total_return > 0).length;
+    const rate90 = recent90.length ? wins90 / recent90.length : null;
     const hold = !s ? null : isOverall ? (() => { const v = stats.map(x => n(x.avg_hold_days)).filter(x => x !== null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; })() : n(s.avg_hold_days);
     const ytd = !s ? null : isOverall ? stats.reduce((a, x) => a + (n(x.n_trades_ytd) || 0), 0) : n(s.n_trades_ytd);
     const ba = s ? n(s.batting_average) : null;
@@ -1838,7 +1892,8 @@ function annie() {
 
     return `<div class="card" style="margin-bottom:14px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
-        <h2 style="margin:0">Scorecard</h2>${head}</div>
+        <h2 style="margin:0">Scorecard</h2>
+        <div style="display:flex;align-items:center;gap:14px;margin-left:auto">${head}${hotHandCard(rate90, wins90, recent90.length, HOT_WINDOW_DAYS)}</div></div>
       <div style="margin-top:10px">${tabs}</div>
       <div class="kpis" style="grid-template-columns:repeat(5,1fr);margin-top:14px">
         ${kpi('Batting average', ba === null ? DASH : ba.toFixed(3).replace(/^0/, ''),

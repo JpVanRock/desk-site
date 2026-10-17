@@ -448,6 +448,41 @@ if (!argRoute) {
   for (const want of ['Scorecard', 'Hunting Pitches', 'Current positions — decision score', 'Trade journal',
                       'Performance Snapshot', 'Consistency &amp; Curve Quality', 'Recent Performance'])
     need(a0.includes(want), `[annie] missing section: ${want}`);
+  const tabIds0 = [...a0.matchAll(/data-anniemodel="([^"]+)"/g)].map(m => m[1]);
+
+  // The hot-hand card and the streak must agree with the ledger, and the streak must run newest
+  // first on EVERY tab -- it is rebuilt per tab, so checking one proves nothing about the rest.
+  {
+    const card = a0.match(/<div class="pcard pcard-(\w+)"[^>]*title="([^"]*)"/);
+    need(card, '[annie] the hot-hand card did not render');
+    if (card) {
+      const kind = card[1];
+      const pct = (a0.match(/<div class="pcorner"[^>]*>(\d+)%</) || [])[1];
+      if (kind !== 'none') {
+        const p = +pct;
+        const want = p >= 51 ? 'hot' : p >= 50 ? 'even' : 'cold';
+        say(` ok  annie hot hand         -> ${p}% over 90 days, card reads ${kind}`);
+        need(kind === want, `[annie] a 90-day rate of ${p}% rendered the ${kind} card, expected ${want}`);
+        // The even card carries the site mark, the other two carry an icon.
+        if (kind === 'even') need(/pcard-even[\s\S]{0,400}#sisyphus-mark/.test(a0), '[annie] the even card does not use the site logo');
+        else need(/pcard-(hot|cold)[\s\S]{0,400}<svg viewBox="0 0 24 24"/.test(a0), '[annie] the hot/cold card has no icon');
+      } else say(' ok  annie hot hand         -> no trades closed in 90 days; card is blank');
+    }
+    for (const tab of tabIds0.slice(0, 4)) {
+      await click('[data-anniemodel]', { anniemodel: tab });
+      const h = app();
+      const chips = [...h.matchAll(/class="stk [wl]" data-tip="([^"]*?) · opened/g)].map(m => m[1]);
+      const dates = [...h.matchAll(/class="stk [wl]" data-tip="[^"]*?closed ([\d-]+)"/g)].map(m => m[1]);
+      if (dates.length > 1) {
+        const desc = dates.every((d, i) => i === 0 || dates[i - 1] >= d);
+        need(desc, `[annie] streak on tab ${tab} is not newest-first: ${dates.slice(0, 3).join(' ')}`);
+      }
+      need(!h.includes('oldest first'), `[annie] streak on tab ${tab} still says oldest first`);
+      if (chips.length) need(chips.length <= 10, `[annie] streak on tab ${tab} shows ${chips.length} chips, expected at most 10`);
+    }
+    say(` ok  annie streak order     -> newest first on ${Math.min(4, tabIds0.length)} tabs`);
+    await click('[data-anniemodel]', { anniemodel: tabIds0[0] });
+  }
 
   const tabIds = [...a0.matchAll(/data-anniemodel="([^"]+)"/g)].map(m => m[1]);
   say(` ok  annie scorecard tabs   -> ${tabIds.length} (${tabIds[0]} first)`);
@@ -670,6 +705,15 @@ if (!argRoute) {
   say(` ok  sven matrix            -> ${idx} indices`);
   need(idx > 0, '[sven] rule matrix rendered no indices');
   need(s0.includes('News failure'), '[sven] news failure card missing');
+  // The verdict column reads by colour: confirming green, any failure red.
+  {
+    const seg = s0.split('News failure')[1] || '';
+    const verdicts = [...seg.matchAll(/<span style="color:(var\(--[a-z]+\));font-weight:[^"]*"[^>]*>([^<]+)<\/span>/g)].map(m => [m[2], m[1]]);
+    const wrong = verdicts.filter(([label, col]) =>
+      (/failure/i.test(label) && col !== 'var(--neg)') || (/^Confirming$/.test(label) && col !== 'var(--pos)'));
+    say(` ok  sven verdict colours   -> ${verdicts.length} verdicts, ${wrong.length} mis-coloured`);
+    for (const [l, c] of wrong) errors.push(`[sven] verdict "${l}" rendered ${c}`);
+  }
   await click('[data-newswin]', { newswin: '90' });
   need(app() !== s0, '[sven] switching the news window did not change the table');
 }
