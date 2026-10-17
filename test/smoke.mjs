@@ -279,10 +279,21 @@ if (!argRoute) {
   if (!sid) say(' ok  classify stage        -> nothing unclassified to stage');
   else {
     const b4 = unclass(h0);
-    await change('[data-splitfor]', { splitfor: sid }, 'eq60_fi40');
-    const st = unclass(drawer());
-    say(` ok  classify stage        -> unclassified ${b4}% -> ${st}%`);
-    need(st < b4, '[classify] staging a split did not preview in the donut');
+    // Once every holding in a model carries a classification the residual is 0 and no staged
+    // split can push it lower, so asserting a fall tests nothing and fails on success. The claim
+    // worth making either way is that the donut previews a STAGED change; when there is nothing
+    // left to classify, staging one back to unclassified proves it in the other direction.
+    if (b4 > 0) {
+      await change('[data-splitfor]', { splitfor: sid }, 'eq60_fi40');
+      const st = unclass(drawer());
+      say(` ok  classify stage        -> unclassified ${b4}% -> ${st}%`);
+      need(st < b4, '[classify] staging a split did not reduce the unclassified residual');
+    } else {
+      await change('[data-splitfor]', { splitfor: sid }, '');
+      const st = unclass(drawer());
+      say(` ok  classify stage        -> all classified; unstaging one gives ${st}%`);
+      need(st > 0, '[classify] unstaging a classification did not restore an unclassified residual');
+    }
     need(drawer().includes('data-repupdate'), '[classify] no Update button appeared with staged changes');
   }
 
@@ -444,6 +455,54 @@ if (!argRoute) {
   // A leg with no data must never render a 0: on a 0-100 risk scale that reads as maximum risk-off.
   need(!/>awaiting data<\/span>[\s\S]{0,160}?font-weight:700;color:var\(--\w+\)">0</.test(ad),
     '[adam] a leg awaiting data rendered a 0 score; it must render a dash');
+
+  // -------------------------------------------------------------------------
+  // 10b. Volatility match on the unclassified holdings, and the FI duration tile.
+  // -------------------------------------------------------------------------
+  currentRoute = 'classify-vol';
+  await go('#stan/' + strat.id);
+  {
+    const d = drawer();
+    const fits = await fetch(`${SUPABASE_URL}/rest/v1/latest_security_class_blend_fit?select=security_id,vol_asset,vol_chosen,ratio_chosen,passes,suggested_mix,vol_suggested,ratio_suggested,tolerance,achievable,n_weeks`, { headers: REST }).then(r => r.json());
+    const bad = [];
+    for (const f of fits) {
+      const tol = +f.tolerance;
+      // The tick must follow the arithmetic, not a stored opinion about it.
+      if (f.ratio_chosen !== null) {
+        const should = Math.abs(+f.ratio_chosen - 1) <= tol;
+        if (should !== f.passes) bad.push(`passes=${f.passes} but ratio ${f.ratio_chosen} against tolerance ${tol}`);
+      }
+      // A suggestion that does not itself pass is not a suggestion.
+      if (f.suggested_mix) {
+        if (Math.abs(+f.ratio_suggested - 1) > tol) bad.push(`suggested mix lands at ratio ${f.ratio_suggested}, outside ${tol}`);
+        const sum = Object.values(f.suggested_mix).reduce((a, b) => a + +b, 0);
+        if (Math.abs(sum - 1) > 1e-6) bad.push(`suggested mix sums to ${sum}, not 1`);
+        if (Object.values(f.suggested_mix).some(v => +v < 0.10 - 1e-9)) bad.push('suggested mix contains a slice under 10%');
+        if (f.passes === true) bad.push('a passing classification was still given a suggestion');
+      }
+      if (f.passes === false && !f.suggested_mix && f.achievable) bad.push('missed tolerance, a mix exists, yet nothing was suggested');
+      if (!(+f.vol_asset > 0)) bad.push('volatility is not positive');
+      if (!(f.n_weeks >= 52)) bad.push(`fitted on ${f.n_weeks} weeks, under the 52-week minimum`);
+    }
+    say(` ok  classification vol     -> ${fits.length} funds, ${fits.filter(f => f.passes).length} within tolerance, ${[...new Set(bad)].length} problems`);
+    for (const b of [...new Set(bad)]) errors.push(`[classify-vol] ${b}`);
+    if (fits.length) {
+      need(/class="vmark"/.test(d), '[classify-vol] no volatility verdict rendered on any unclassified row');
+      need(/vol \d/.test(d), '[classify-vol] the fund volatility is not shown beside the weight');
+    }
+    // The duration tile replaced Weight priced; both must not be present, and the tile must not
+    // invent a number when the model has no measured fixed income.
+    need(!d.includes('Weight priced'), '[duration] the Weight priced tile is still rendered');
+    need(d.includes('FI duration'), '[duration] the FI duration tile is missing');
+    const md = await fetch(`${SUPABASE_URL}/rest/v1/latest_model_duration?select=strategy_id,fi_duration,fi_weight,coverage,n_fi_holdings,n_priced&strategy_id=eq.${strat.id}`, { headers: REST }).then(r => r.json());
+    if (md[0]) {
+      const shown = (d.match(/FI duration[\s\S]{0,160}?>([\-\d.]+) yrs/) || [])[1];
+      say(` ok  fi duration            -> ${md[0].fi_duration} yrs on ${(md[0].fi_weight * 100).toFixed(1)}% FI, tile shows ${shown ?? 'a dash'}`);
+      if (md[0].fi_duration !== null) need(shown !== undefined && Math.abs(+shown - +md[0].fi_duration) < 0.005, '[duration] the tile disagrees with the stored figure');
+      need(!(md[0].coverage > 1.000001), '[duration] coverage exceeds 100% of fixed income weight');
+      need(md[0].n_priced <= md[0].n_fi_holdings, '[duration] more holdings priced than exist');
+    }
+  }
 
   // -------------------------------------------------------------------------
   // 11. Sisyphus stress: the universe lists, and the cap that sets their length.

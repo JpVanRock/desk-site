@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -165,6 +165,8 @@ async function load() {
     // helps/hurts (current holdings, in firm dollars) are deliberately not fetched: the card ranks
     // the whole universe now, and the held-only lists were the thing being replaced.
     qSoft(sb.from('latest_firm_stress_results').select('as_of,scenario_id,factor_score,by_factor,coverage,aum_covered,n_models,universe_helps,universe_hurts,universe_meta'), 'firm stress'),
+    qSoft(sb.from('latest_security_class_blend_fit').select('security_id,vol_asset,window_from,window_to,n_weeks,chosen_mix,vol_chosen,ratio_chosen,passes,suggested_mix,vol_suggested,ratio_suggested,suggested_corr,tolerance,achievable'), 'class blend fit'),
+    qSoft(sb.from('latest_model_duration').select('strategy_id,as_of,fi_duration,fi_weight,total_duration,n_fi_holdings,n_priced,n_unmeasured,n_insignificant,coverage'), 'model duration'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -245,7 +247,8 @@ async function load() {
     svenRules: newest(svenRules), newsFailure: newest(newsFailure),
     beautyReading: beautyReading || [], beautyComponents: beautyComponents || [], macroRegime: macroRegime || [],
     beautyRanks: beautyRanks || [], beautyHistory: beautyHistory || [], modelVar: modelVar || [], tailRisk: tailRisk || [],
-    firmMetrics: firmMetrics || [], firmExposures: firmExposures || [], firmStress: firmStress || [] };
+    firmMetrics: firmMetrics || [], firmExposures: firmExposures || [], firmStress: firmStress || [],
+    blendFit: blendFit || [], modelDuration: modelDuration || [] };
 }
 
 // ---------- Views ----------
@@ -2181,6 +2184,17 @@ const SPLIT_OPTIONS = [
   { key: 'eq90_cm10',      label: '90% Equity / 10% Commodities',                     mix: { equities: 0.90, commodities_real_assets: 0.10 } },
 ];
 const SPLIT_BY_KEY = Object.fromEntries(SPLIT_OPTIONS.map(o => [o.key, o]));
+const CLASS_LABEL = { equities: 'Equity', bonds: 'Fixed Income', cash: 'Cash', commodities_real_assets: 'Commodities', gold: 'Gold' };
+// A custom blend is stored as class weights in `mix`; the named options stay in `split`. Reading
+// an override goes through here so the two cannot drift apart, and a mix always wins: it is the
+// more specific statement, and it is what the volatility check was run against.
+const mixOf = ov => !ov ? null
+  : (ov.mix && Object.keys(ov.mix).length ? ov.mix : (SPLIT_BY_KEY[ov.split] || {}).mix || null);
+const mixLabel = mix => !mix ? '—' : Object.entries(mix).filter(([, v]) => v > 0)
+  .sort((a, b) => b[1] - a[1]).map(([k, v]) => `${Math.round(v * 100)}% ${CLASS_LABEL[k] || k}`).join(' / ');
+const mixKey = mix => 'custom:' + Object.entries(mix).filter(([, v]) => v > 0).sort().map(([k, v]) => `${k}=${v}`).join(',');
+const mixFromKey = k => !k || !k.startsWith('custom:') ? null
+  : Object.fromEntries(k.slice(7).split(',').filter(Boolean).map(p => { const [a, b] = p.split('='); return [a, +b]; }));
 
 // Compute the pie, the short tally and the unclassified residual for a set of holdings.
 // holdings: [{ ticker, security_id, weight }]. classOf(h) -> asset class slug or null.
@@ -2197,17 +2211,18 @@ function computeFactorAllocation(holdings, classOf, overrideBySec) {
   for (const h of holdings) {
     const w = +h.weight;
     const ov = h.security_id ? overrideBySec[h.security_id] : null;
-    if (ov && SPLIT_BY_KEY[ov.split]) {
+    const ovMix = mixOf(ov);
+    if (ov && ovMix) {
       // A look-through is a blend of real asset classes, so it earns both sides of the matrix:
       // the long pie AND the short tally, each weighted by the class share.
-      for (const [cls, share] of Object.entries(SPLIT_BY_KEY[ov.split].mix)) {
+      for (const [cls, share] of Object.entries(ovMix)) {
         const row = FA_MATRIX[cls];
         if (!row) continue;
         const lf = FA_FACTORS.filter(f => row[f] === 'L');
         for (const f of lf) { longs[f] += w * share / lf.length; add(f, h, w * share / lf.length); }
         for (const f of FA_FACTORS) if (row[f] === 'S') shorts[f] += w * share;
       }
-      resolved.push({ ...h, split: ov.split });
+      resolved.push({ ...h, split: ov.split, mix: ovMix });
       continue;
     }
     const slug = FA_UNCONFIRMED.has(h.ticker) ? null : classOf(h);
@@ -2240,13 +2255,16 @@ async function commitSplits() {
   const prev = D.factorOverrides.slice();
   for (const [sid, split] of Object.entries(pending)) {
     D.factorOverrides = D.factorOverrides.filter(o => o.security_id !== sid);
-    if (split) D.factorOverrides.push({ security_id: sid, split, author: 'site', as_of: new Date().toISOString().slice(0, 10) });
+    if (!split) continue;
+    const cm = mixFromKey(split);
+    D.factorOverrides.push({ security_id: sid, split: cm ? null : split, mix: cm, author: 'site', as_of: new Date().toISOString().slice(0, 10) });
   }
   repPending = {}; repSaveError = null;
   openModel(repModelId);
   try {
     const ups = Object.entries(pending).filter(([, v]) => v)
-      .map(([security_id, split]) => ({ security_id, split, author: 'site', as_of: new Date().toISOString().slice(0, 10) }));
+      .map(([security_id, split]) => { const cm = mixFromKey(split);
+        return { security_id, split: cm ? null : split, mix: cm, author: 'site', as_of: new Date().toISOString().slice(0, 10) }; });
     const dels = Object.entries(pending).filter(([, v]) => !v).map(([k]) => k);
     if (ups.length) { const { error } = await sb.from('holding_factor_overrides').upsert(ups, { onConflict: 'security_id' }); if (error) throw new Error(error.message); }
     for (const sid of dels) { const { error } = await sb.from('holding_factor_overrides').delete().eq('security_id', sid); if (error) throw new Error(error.message); }
@@ -2358,6 +2376,7 @@ const STAT_HOW = {
   beta_sp500:       'Slope of model returns regressed on the S&P 500 over the window. Read R² alongside it: a beta from a poor fit is a number without a meaning.',
   dividend_yield:   "Weighted average of each holding's yield at current weights. No instrument-level yield source is connected, so this cannot be computed at all.",
   coverage:         'Share of model weight that was actually priced at the thinnest point of the window. A return computed over part of the model is not the model’s return.',
+  fi_duration:      'Weighted duration of the model’s fixed income, in years: roughly what the sleeve loses for every one point the 10-year Treasury yield rises. Measured, not sourced — no duration vendor is connected and there is no holdings look-through, so each fund’s rate sensitivity is regressed from its own weekly returns against the 10-year. The bond share of a blended fund counts through its classification, so a 20/80 fund held at 10% contributes 8% of the model here.',
 };
 
 // Renders the dashboard body for ONE model. Lives in the model drawer rather than on a page of
@@ -2370,6 +2389,7 @@ function modelDashboard(m) {
   const pc = (v, d = 2) => v === null ? null : (v >= 0 ? '+' : '') + (v * 100).toFixed(d) + '%';
   const col = v => v === null ? 'var(--muted)' : v >= 0 ? 'var(--pos)' : 'var(--neg)';
 
+  const dur = (D.modelDuration || []).find(r => r.strategy_id === m.id) || null;
   const stats = (D.periodStats || []).filter(r => r.strategy_id === m.id);
   const stat = stats.find(r => r.period === repPeriod) || null;
   const series = (D.valueSeries || []).filter(v => v.strategy_id === m.id);
@@ -2386,7 +2406,7 @@ function modelDashboard(m) {
     ['Downside capture', stat && n(stat.downside_capture) !== null ? (n(stat.downside_capture) * 100).toFixed(0) + '%' : null, 'downside_capture'],
     ['Beta vs S&P 500', stat && n(stat.beta_sp500) !== null ? n(stat.beta_sp500).toFixed(2) + '×' : null, 'beta_sp500'],
     ['Dividend yield', null, 'dividend_yield'],
-    ['Weight priced', stat && n(stat.min_coverage) !== null ? (n(stat.min_coverage) * 100).toFixed(0) + '%' : null, 'coverage'],
+    ['FI duration', dur && n(dur.fi_duration) !== null ? n(dur.fi_duration).toFixed(2) + ' yrs' : null, 'fi_duration'],
   ];
   const missing = cells.filter(c => c[1] === null).length;
   const statNote = !hasHistory ? 'No dated holdings history for this model — load one with jobs/load-holdings-history.mjs'
@@ -2401,12 +2421,17 @@ function modelDashboard(m) {
     ${stat && !stat.unavailable_reason ? `<p class="sub" style="margin:4px 0 12px">${esc(stat.start_date)} to ${esc(stat.end_date)}${stat.window_starts_in_gap ? ' · <b style="color:var(--warn)">window start fell inside the history gap and was pulled back</b>' : ''}</p>` : ''}
     <div class="statstrip">${cells.map(([lab, val, how]) => `<div class="stat" title="${esc(STAT_HOW[how])}">
       <div class="slab">${lab}</div><div class="sval${val === null ? ' pending' : ''}" ${val !== null && /^[+-]/.test(val) ? `style="color:${col(parseFloat(val))}"` : ''}>${val === null ? '—' : esc(val)}</div></div>`).join('')}</div>
+    ${dur ? `<p class="note" style="margin-bottom:6px"><b>Fixed income is ${(n(dur.fi_weight) * 100).toFixed(1)}% of this model</b>, carrying ${dur.fi_duration === null ? 'no measurable' : `${n(dur.fi_duration).toFixed(2)} years of`} duration${dur.total_duration === null ? '' : `, which puts the whole book at ${n(dur.total_duration).toFixed(2)} years`}. Duration is regressed from each fund's own weekly returns against the 10-year Treasury yield, so it is what the holding <i>did</i> when rates moved rather than what a factsheet states — a credit fund usually shows far less than its stated figure, and that is the true number for risk.${dur.n_unmeasured ? ` <b>${dur.n_unmeasured} of ${dur.n_fi_holdings} fixed income holdings have too little history to measure</b>, so the sleeve figure covers ${(n(dur.coverage) * 100).toFixed(0)}% of its weight.` : ''}${dur.n_insignificant ? ` ${dur.n_insignificant} of ${dur.n_priced} measured holdings have a rate sensitivity inside two standard errors — their point estimates are still used, since rounding them to zero would push the average down one way only.` : ''}</p>` : ''}
     <p class="note">Hover any statistic to see how it is calculated. ${stat && stat.method_note ? `<b>These are reconstructed, not the firm's reported figures.</b> ${esc(stat.method_note)}` : 'Nothing on this row is estimated or filled in by hand.'}</p></div>`;
 
   // ---- the two allocation panels ----
   const ovBySec = Object.fromEntries((D.factorOverrides || []).map(o => [o.security_id, o]));
   const staged = { ...ovBySec };
-  for (const [sid, split] of Object.entries(repPending)) staged[sid] = split ? { security_id: sid, split } : undefined;
+  for (const [sid, split] of Object.entries(repPending)) {
+    if (!split) { staged[sid] = undefined; continue; }
+    const cm = mixFromKey(split);
+    staged[sid] = cm ? { security_id: sid, split: null, mix: cm } : { security_id: sid, split };
+  }
   const actualH = (D.currentHoldings || []).filter(h => h.strategy_id === m.id);
   const targetH = (m.holdings || []).filter(h => h.security_id);
   const clsOfSec = id => (D.markets.find(x => x.id === id) || {}).cls || null;
@@ -2428,14 +2453,50 @@ function modelDashboard(m) {
     const top = shorts.filter(x => Math.abs(x[1] - maxShort) < 1e-9 && maxShort > 0);
     const unres = r.unresolved.slice().sort((a, b) => +b.weight - +a.weight);
     const res = r.resolved.slice().sort((a, b) => +b.weight - +a.weight);
+    // A classification carries no residual, so nothing ever disagreed with a wrong one. The
+    // volatility check is the disagreement: if a fund is really 60/40, a portfolio holding 60%
+    // SPY and 40% AGG over the same weeks should have about the same standard deviation. Within
+    // 10% earns the tick; outside it, the label is describing a different instrument and the row
+    // says so and offers a blend that is not.
+    const fitBySec = Object.fromEntries((D.blendFit || []).map(f => [f.security_id, f]));
     const rowFor = h => {
-      const cur = staged[h.security_id] ? staged[h.security_id].split : '';
+      const st = staged[h.security_id];
+      const stagedMix = st ? mixOf(st) : null;
+      const cur = st ? (st.mix && Object.keys(st.mix).length ? mixKey(st.mix) : st.split || '') : '';
+      const f = fitBySec[h.security_id] || null;
+      const vol = v => v === null || v === undefined ? '—' : (+v * 100).toFixed(1) + '%';
+      // The verdict follows what is STAGED, not what was last computed: a dropdown change the
+      // owner has not saved yet must not keep showing the old mix's tick.
+      let volBlend = null, ratio = null, ok = null;
+      if (f && stagedMix) {
+        const sameAsComputed = f.chosen_mix && mixKey(f.chosen_mix) === mixKey(stagedMix);
+        const sameAsSuggested = f.suggested_mix && mixKey(f.suggested_mix) === mixKey(stagedMix);
+        if (sameAsComputed) { volBlend = f.vol_chosen; ratio = f.ratio_chosen; }
+        else if (sameAsSuggested) { volBlend = f.vol_suggested; ratio = f.ratio_suggested; }
+        if (ratio !== null && ratio !== undefined) ok = Math.abs(+ratio - 1) <= +(f.tolerance ?? 0.10);
+      }
+      const tol = Math.round((f ? +(f.tolerance ?? 0.10) : 0.10) * 100);
+      const mark = !f ? `<span class="vmark" style="color:var(--muted)" title="No volatility measured for this holding yet — it needs at least a year of weekly prices.">–</span>`
+        : ok === true ? `<span class="vmark" style="color:var(--pos)" title="The chosen blend's standard deviation is ${vol(volBlend)} against the fund's ${vol(f.vol_asset)} — within ${tol}%.">&#10003;</span>`
+        : ok === false ? `<span class="vmark" style="color:var(--neg)" title="The chosen blend's standard deviation is ${vol(volBlend)} against the fund's ${vol(f.vol_asset)}, a ratio of ${(+ratio).toFixed(2)}. Outside ${tol}%, so the label is describing a different instrument.">&#10007;</span>`
+        : `<span class="vmark" style="color:var(--muted)" title="Pick a classification and the blend's volatility is compared with the fund's.">–</span>`;
+      // Offer the suggestion as a real option. A blend the owner cannot select is not a suggestion,
+      // and the eight named splits cannot match every fund's volatility.
+      const sug = f && f.suggested_mix ? { key: mixKey(f.suggested_mix), label: mixLabel(f.suggested_mix) } : null;
+      const curIsCustom = cur.startsWith('custom:');
+      const customOpt = curIsCustom && (!sug || sug.key !== cur) ? { key: cur, label: mixLabel(mixFromKey(cur)) } : null;
       return `<div class="row">
-        <div><span class="tick">${esc(h.ticker)}</span><span class="wt">${pct(+h.weight)}</span></div>
+        <div><span class="tick">${esc(h.ticker)}</span><span class="wt">${pct(+h.weight)}</span>
+          ${f ? `<span class="wt" title="The fund's own annualised standard deviation over ${f.n_weeks} weekly returns from ${esc(f.window_from)} — its longest available history.">vol ${vol(f.vol_asset)}</span>` : ''}
+          ${mark}</div>
         <select data-splitfor="${esc(h.security_id || '')}" ${h.security_id ? '' : 'disabled title="No matching security, so a split cannot be stored"'}>
           <option value="" ${!cur ? 'selected' : ''}>Leave unclassified</option>
           ${SPLIT_OPTIONS.map(o => `<option value="${o.key}" ${cur === o.key ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
-        </select></div>`;
+          ${sug ? `<option value="${esc(sug.key)}" ${cur === sug.key ? 'selected' : ''}>Suggested — ${esc(sug.label)}</option>` : ''}
+          ${customOpt ? `<option value="${esc(customOpt.key)}" selected>Custom — ${esc(customOpt.label)}</option>` : ''}
+        </select></div>
+        ${f && ok === false && f.suggested_mix ? `<div class="vsug">Blend is ${vol(volBlend)} against the fund's ${vol(f.vol_asset)}. <b>${esc(mixLabel(f.suggested_mix))}</b> gives ${vol(f.vol_suggested)}${f.suggested_corr !== null && f.suggested_corr !== undefined && +f.suggested_corr < 0.3 ? ` — though it correlates only ${(+f.suggested_corr).toFixed(2)} with the fund, so this matches the volatility and not the behaviour` : ''}.</div>` : ''}
+        ${f && ok === false && !f.suggested_mix && !f.achievable ? `<div class="vsug">No blend of equities, fixed income, cash, commodities and gold reaches ${vol(f.vol_asset)} within ${tol}%. This fund sits outside the range those five can express.</div>` : ''}`;
     };
     const dirty = Object.keys(repPending).length > 0;
     return `<section class="card"><h2>${esc(title)}</h2><p class="asof" style="font-size:12px;color:var(--muted);margin:0 0 10px">${esc(asof)}</p>
@@ -2447,6 +2508,11 @@ function modelDashboard(m) {
       <div class="unc"><h3>Unclassified positions</h3>
         ${unres.length || res.length ? [...unres, ...res].map(rowFor).join('') : '<p style="color:var(--muted);font-size:12.5px;font-style:italic">None. Every position is classified.</p>'}
         ${(unres.length || res.length) ? `<button class="btn" data-repupdate="1" ${dirty ? '' : 'disabled'}>${dirty ? `Update allocation (${Object.keys(repPending).length} change${Object.keys(repPending).length === 1 ? '' : 's'})` : 'Update allocation'}</button>` : ''}
+        ${(unres.length || res.length) ? `<p class="note" style="margin:8px 0 0;font-size:11.5px">A classification is stored against the security, not this model, so it applies everywhere the name is held${(() => {
+          const ids = [...unres, ...res].map(h => h.security_id).filter(Boolean);
+          const others = (D.models || []).filter(x => x.id !== m.id && ((D.currentHoldings || []).some(c => c.strategy_id === x.id && ids.includes(c.security_id)) || (x.holdings || []).some(c => ids.includes(c.security_id))));
+          return others.length ? ` — these names are also held by ${others.length} other model${others.length === 1 ? '' : 's'}` : '';
+        })()}. The tick compares the chosen blend's standard deviation with the fund's own over the fund's longest history; within ${Math.round(((D.blendFit || [])[0]?.tolerance ?? 0.10) * 100)}% passes.</p>` : ''}
       </div></section>`;
   };
 
