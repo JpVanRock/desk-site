@@ -83,12 +83,19 @@ function builder(table) {
     eq(k, v) { st.filters.push(`${k}=eq.${v}`); return b; },
     is(k, v) { st.filters.push(`${k}=is.${v === null ? 'null' : v}`); return b; },
     in(k, v) { st.filters.push(`${k}=in.(${v.join(',')})`); return b; },
+    gte(k, v) { st.filters.push(`${k}=gte.${v}`); return b; },
+    lte(k, v) { st.filters.push(`${k}=lte.${v}`); return b; },
+    not(k, op, v) { st.filters.push(`${k}=not.${op}.${v === null ? 'null' : v}`); return b; },
     order(c, o) { st.order = `${c}.${o && o.ascending === false ? 'desc' : 'asc'}`; return b; },
     limit(n) { st.limit = n; return b; },
     range(a, z) { st.range = [a, z]; return b; },
     then(res, rej) { runQuery(st).then(res, rej); },
-    // Writes are stubbed. The harness reads production; it must never change it.
+    // Writes are stubbed. The harness reads production; it must never change it. insert returns
+    // a plausible row id so a submit handler can be driven end to end without a round trip:
+    // pressing Submit in a test has to exercise the code, not the database.
     upsert: async () => ({ data: null, error: null }),
+    insert() { return { select: () => ({ single: async () => ({ data: { id: '00000000-0000-0000-0000-000000000000' }, error: null }) }), then(res) { res({ data: null, error: null }); } }; },
+    update() { return { eq: async () => ({ data: null, error: null }) }; },
     delete() { return { eq: async () => ({ data: null, error: null }) }; },
   };
   return b;
@@ -855,6 +862,30 @@ if (!argRoute) {
     // holding being invisible.
     const off = Object.entries(byStrat).filter(([, w]) => Math.abs(w - 1) > 0.02);
     say(` ok  open lots              -> ${lots.length} lots across ${Object.keys(byStrat).length} models, ${off.length} not summing to 100%`);
+
+    // The allocation editor: the pies come straight off the weights, and Test must rebuild a real
+    // series and produce real statistics rather than rendering a shape with nothing behind it.
+    // Measure an equity-bearing model: the fingerprint and sector sections are equity properties,
+    // and a bond book correctly has neither, which would make this test prove nothing.
+    const eqModel = (await fetch(`${SUPABASE_URL}/rest/v1/strategies?select=id,name&name=eq.Balanced%20Core`, { headers: REST }).then(r => r.json()))[0];
+    if (eqModel) await click('[data-samodel]', { samodel: eqModel.id });
+    const ed0 = app();
+    need(/data-sawt=/.test(ed0), '[sandbox] the allocation editor rendered no weight fields');
+    need(/data-satest/.test(ed0) && /data-safinal/.test(ed0), '[sandbox] Test or Submit Final is missing');
+    const totalShown = (ed0.match(/<b style="color:var\(--(?:pos|warn)\)">([\d.]+)%<\/b>/) || [])[1];
+    need(totalShown && Math.abs(+totalShown - 100) < 0.6, `[sandbox] the editor total reads ${totalShown}%, expected the model's own weights to sum to 100%`);
+    await click('[data-satest]', { satest: '1' });
+    await sleep(2500);                                  // the price fetch is a real round trip
+    const tested = app();
+    const ytd = (tested.match(/YTD return<\/span><br><b[^>]*>([+-][\d.]+)%/) || [])[1];
+    const vol = (tested.match(/Volatility<\/span><br><b[^>]*>([\d.]+)%/) || [])[1];
+    say(` ok  sandbox test           -> YTD ${ytd ?? '—'}, volatility ${vol ?? '—'}`);
+    need(ytd !== undefined, '[sandbox] Test produced no YTD figure');
+    need(vol !== undefined, '[sandbox] Test produced no volatility figure');
+    // A measured book should land in a plausible range; a broken series shows itself here first.
+    if (ytd !== undefined) need(Math.abs(+ytd) < 60, `[sandbox] Test returned a YTD of ${ytd}%, which is not this book`);
+    need(/Factor fingerprint/.test(tested), '[sandbox] Test did not produce a factor fingerprint');
+    need(/Sector weighting/.test(tested), '[sandbox] Test did not produce a sector breakdown');
     for (const [sid, w] of off) errors.push(`[sandbox] open lots for ${sid} sum to ${(w * 100).toFixed(1)}%`);
     for (const l of lots) if (!(+l.cost_price > 0)) errors.push(`[sandbox] a ${l.ticker} lot has no cost basis`);
   }
