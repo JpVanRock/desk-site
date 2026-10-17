@@ -568,6 +568,70 @@ if (!argRoute) {
     '[adam] a leg awaiting data rendered a 0 score; it must render a dash');
 
   // -------------------------------------------------------------------------
+  // 9c. Scatter: a position that lost money is red, in the dot and the ticker.
+  // -------------------------------------------------------------------------
+  currentRoute = 'scatter-colour';
+  await go('#stan');
+  // Checked on every window, not just whichever one an earlier block happened to leave selected:
+  // how many positions are under water changes with the period, and the colouring has to hold on
+  // all of them. On 5Y one position is negative; year to date, seven are.
+  {
+    let totalMarks = 0;
+    const seen = [];
+    for (const period of ['YTD', '1Y', '3Y', '5Y']) {
+      await click('[data-scatter]', { scatter: period });
+      const page = app();
+      // Each <g> is one point: the circle carries the return in its title, the text repeats the
+      // colour. Matching per group stops a non-greedy span pairing one point's dot with the next
+      // point's label.
+      const marks = [...page.matchAll(/<g><circle[^>]*fill="(var\(--\w+\))">\s*<title>([A-Z]+) · return (-?[\d.]+)%(?:(?!<\/g>)[\s\S])*?<text[^>]*fill="(var\(--\w+\))"/g)]
+        .map(m => ({ dot: m[1], ticker: m[2], x: +m[3], label: m[4] }));
+      if (!marks.length) continue;
+      totalMarks += marks.length;
+      const losers = marks.filter(m => m.x < 0);
+      seen.push(`${period} ${losers.length}/${marks.length}`);
+      for (const m of marks) {
+        const want = m.x < 0 ? 'var(--neg)' : 'var(--growth)';
+        if (m.dot !== want) errors.push(`[scatter] ${period}: ${m.ticker} returned ${m.x}% but its dot is ${m.dot}`);
+        if (m.label !== m.dot) errors.push(`[scatter] ${period}: ${m.ticker} dot and ticker disagree (${m.dot} vs ${m.label})`);
+      }
+      // The tile must agree with the plot.
+      const tile = (page.match(/Lost money<\/span><b[^>]*>(\d+)</) || [])[1];
+      if (tile !== undefined) need(+tile === losers.length, `[scatter] ${period}: the Lost money tile reads ${tile} but ${losers.length} points are negative`);
+    }
+    say(` ok  scatter colour         -> under water by window: ${seen.join(', ')}; ${totalMarks} points checked`);
+    need(totalMarks > 0, '[scatter] no points rendered on any window');
+    await click('[data-scatter]', { scatter: 'YTD' });
+  }
+
+  // -------------------------------------------------------------------------
+  // 9b. Beta vs band carries the verdict only; the beta figure lives one column over.
+  // -------------------------------------------------------------------------
+  currentRoute = 'beta-band';
+  await go('#stan');
+  {
+    // The band cell is the one carrying a dot followed by a verdict word; the header row repeats
+    // every column name, so slicing on those labels cuts the table off before its first row.
+    const page = app();
+    const cells = [...page.matchAll(/<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:(var\(--\w+\));vertical-align:middle"><\/span>\s*<span style="color:var\(--\w+\);font-weight:600"> (\w+)<\/span>((?:(?!<\/td>)[\s\S])*?)<\/td>/g)]
+      .map(m => ({ dot: m[1], state: m[2], rest: m[3] }));
+    const states = cells.map(c => c.state);
+    // A beta reads like 0.51x, and none may appear in this column any more. The band range uses
+    // an en dash and no multiplication sign, so it cannot be mistaken for one.
+    const strayBeta = cells.filter(c => /\d\.\d{2}×/.test(c.rest));
+    say(` ok  beta vs band           -> ${states.length} verdicts (${[...new Set(states)].join('/')}), ${strayBeta.length} still showing a beta`);
+    need(strayBeta.length === 0, '[beta-band] the band cell still prints the beta figure');
+    need(states.length > 0, '[beta-band] no band verdict rendered');
+    // Green inside, red outside — the dot marks conformity to the band, not the master light.
+    for (const c of cells) {
+      const want = c.state === 'inside' ? 'var(--pos)' : 'var(--neg)';
+      if (c.dot !== want) errors.push(`[beta-band] "${c.state}" rendered a ${c.dot} dot, expected ${want}`);
+    }
+    // Every verdict must carry the band it is a verdict about.
+    for (const c of cells) if (!/\d\.\d{2}–\d\.\d{2}/.test(c.rest)) errors.push(`[beta-band] "${c.state}" is shown without its band range`);
+  }
+
+  // -------------------------------------------------------------------------
   // 10a. Nav order. Stan sits between Sisyphus and Adam; the page map matches the nav.
   // -------------------------------------------------------------------------
   {

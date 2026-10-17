@@ -735,9 +735,14 @@ function positionScatter() {
     const clash = placed.some(q => Math.abs(q.cx - cx) < 42 && Math.abs(q.cy - cy) < 26);
     const below = !clash;
     placed.push({ cx, cy });
-    return `<g><circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="5" fill="var(--growth)">
-        <title>${esc(p.t)} · return ${(p.x * 100).toFixed(1)}% · Sharpe ${p.y.toFixed(2)} · vol ${(p.vol * 100).toFixed(0)}% · ${p.n} days</title></circle>
-      <text x="${cx.toFixed(1)}" y="${(cy + (below ? 17 : -10)).toFixed(1)}" font-size="10" fill="var(--growth)" text-anchor="middle">${esc(p.t)}</text></g>`;
+    // Left of the vertical zero line is a position that lost money over the window. Marked red in
+    // both the dot and its ticker, so it reads at a glance rather than by tracing the axis — the
+    // Sharpe line is a separate division and keeps its own meaning in the note.
+    const lost = p.x < 0;
+    const col = lost ? 'var(--neg)' : 'var(--growth)';
+    return `<g><circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="5" fill="${col}">
+        <title>${esc(p.t)} · return ${(p.x * 100).toFixed(1)}% · Sharpe ${p.y.toFixed(2)} · vol ${(p.vol * 100).toFixed(0)}% · ${p.n} days${lost ? ' · lost money over this window' : ''}</title></circle>
+      <text x="${cx.toFixed(1)}" y="${(cy + (below ? 17 : -10)).toFixed(1)}" font-size="10" fill="${col}"${lost ? ' font-weight="600"' : ''} text-anchor="middle">${esc(p.t)}</text></g>`;
   }).join('');
 
   const r0 = rows[0];
@@ -760,9 +765,10 @@ function positionScatter() {
       <div class="card kpi"><span class="eyebrow">Best risk-adjusted</span><b>${esc(best.t)}</b><small>Sharpe ${best.y.toFixed(2)} on ${(best.x * 100).toFixed(1)}%</small></div>
       <div class="card kpi"><span class="eyebrow">Worst risk-adjusted</span><b>${esc(worst.t)}</b><small>Sharpe ${worst.y.toFixed(2)} on ${(worst.x * 100).toFixed(1)}%</small></div>
       <div class="card kpi"><span class="eyebrow">Below cash</span><b>${pts.filter(p => p.y < 0).length}</b><small>negative Sharpe</small></div>
+      <div class="card kpi"><span class="eyebrow">Lost money</span><b style="color:${pts.some(p => p.x < 0) ? 'var(--neg)' : 'var(--text)'}">${pts.filter(p => p.x < 0).length}</b><small>negative return, marked red</small></div>
       <div class="card kpi"><span class="eyebrow">Positions plotted</span><b>${pts.length}</b><small>held across all models</small></div>
     </div>
-    <p class="note">Every security currently held anywhere in the book, plotted by its total return against its Sharpe ratio over the window. <b>Sharpe is excess of BIL</b>, the desk's cash proxy, not of zero — across a period when cash paid 4–5% that distinction decides whether a low-volatility fund looks good or merely looks calm. Anything below the horizontal line failed to beat cash once its own volatility is allowed for, whatever its return did. A holding without enough price history for a window is not plotted rather than shown on a short sample; hover any point for its volatility and the number of days behind it.</p></div>`;
+    <p class="note">Every security currently held anywhere in the book, plotted by its total return against its Sharpe ratio over the window. <b>Sharpe is excess of BIL</b>, the desk's cash proxy, not of zero — across a period when cash paid 4–5% that distinction decides whether a low-volatility fund looks good or merely looks calm. <b>A position left of the vertical zero line lost money over the window, and is drawn red</b> — dot and ticker both. That is a different division from the horizontal line: anything below <i>that</i> failed to beat cash once its own volatility is allowed for, whatever its return did, so a holding can be red for losing money and still sit above the Sharpe line, or sit below it having made money. A holding without enough price history for a window is not plotted rather than shown on a short sample; hover any point for its volatility and the number of days behind it.</p></div>`;
 }
 
 // ---------- Stan: risk across the models ----------
@@ -842,9 +848,24 @@ function stan() {
        <td class="num">${pct(cash)}</td>
        <td>${!b ? '<span style="color:var(--muted)">–</span>'
           : !b.light ? `<span class="chip" title="${esc(b.note || '')}">unrated</span>`
-          : `<span title="${esc([b.note, b.target_low === null ? '' : `Band ${(+b.target_low).toFixed(2)}×–${(+b.target_high).toFixed(2)}×`].filter(Boolean).join(' · '))}">
-              <b style="font-variant-numeric:tabular-nums;color:${LIGHT_COLOR[b.light]}">${b.actual_beta === null ? '–' : (+b.actual_beta).toFixed(2) + '×'}</b>
-              <br><small style="white-space:nowrap">${lightDot(b.light, 8)} <span style="color:${LIGHT_COLOR[b.light]}">${bandState || b.light}</span>${b.target_low === null ? '' : `<span style="color:var(--muted)"> ${(+b.target_low).toFixed(2)}–${(+b.target_high).toFixed(2)}</span>`}</small></span>`}</td>
+          : (() => {
+              // The beta itself is deliberately not here: it is the next column over, and showing
+              // it twice invited reading this cell as a measurement when its only job is the
+              // verdict — inside the band the Speed Limit calls for, or outside it.
+              // The dot follows the BAND, not the master light: green inside, red outside. The
+              // light already has its own column, and a dot repeating it said nothing about the
+              // band it sits in.
+              const inBand = bandState === 'inside';
+              const col = bandState === null ? 'var(--muted)' : inBand ? 'var(--pos)' : 'var(--neg)';
+              const tip = [b.note,
+                b.target_low === null ? '' : `Band ${(+b.target_low).toFixed(2)}×–${(+b.target_high).toFixed(2)}×`,
+                bandState === 'below' ? 'Below the band is more defensive than the lights call for, not worse.' : '',
+                bandState === 'above' ? 'Above the band is carrying more market risk than the lights call for.' : '',
+              ].filter(Boolean).join(' · ');
+              return `<span title="${esc(tip)}"><small style="white-space:nowrap">
+                <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${col};vertical-align:middle"></span>
+                <span style="color:${col};font-weight:600"> ${esc(bandState || b.light)}</span>${b.target_low === null ? '' : `<span style="color:var(--muted)"> ${(+b.target_low).toFixed(2)}–${(+b.target_high).toFixed(2)}</span>`}</small></span>`;
+            })()}</td>
        <td class="num" title="${b && b.note ? esc(b.note) : 'Least-squares beta against the benchmark chosen for this model'}">${b && b.actual_beta !== null ? (+b.actual_beta).toFixed(2) + '×' : '<span style="color:var(--muted)">–</span>'}${b && b.r_squared !== null ? `<br><small style="color:${+b.r_squared < 0.5 ? 'var(--neg)' : 'var(--muted)'}">R² ${(+b.r_squared).toFixed(2)}</small>` : ''}</td>
        <td class="num">${r.measured ? `<span class="click" data-go="#stan/top3-${esc(r.m.id)}" style="cursor:pointer;text-decoration:underline dotted" title="Show the three largest risk contributors"><b>${(r.top3Risk * 100).toFixed(0)}%</b></span><br><small style="color:var(--muted)">on ${(r.top3Wt * 100).toFixed(0)}% wt</small>` : '<span style="color:var(--muted)">–</span>'}</td>
        ${perfCell(mr, 'Year-to-date return, target weights, gross of fees')}
@@ -857,7 +878,7 @@ function stan() {
      </tr>`;
    }).join('')}
    </tbody></table></div>
-   <p class="note"><b>Beta vs band</b> says whether the model sits inside, below or above the band the master Speed Limit calls for; <b>beta vs bench</b> is the figure itself, against that model's own benchmark — read R² first, since below 0.5 the regression is not describing risk posture and the band cell shows "unrated" instead. <b>Top-3 risk</b> is the share of model volatility carried by its three largest contributors, against the weight those same three hold; click it for the names. Performance is year-to-date on <b>target weights for every model</b>, gross of fees, so the eight are comparable with each other. That is not the same number a model's own drawer shows: where a model has a dated holdings history its drawer measures what it actually held, and the two will differ — for Balanced Core by several points. Cash is priced as BIL rather than dropped, which it used to be. <b>vs CPI</b>, <b>vs Gold</b> and <b>vs BTC</b> restate the model in that numeraire — (1+model)÷(1+numeraire)−1 — so green means the model held its value against that yardstick rather than merely rose. Gold is GLD and bitcoin is Tiingo spot, both over the model's own window. <b>CPI is different and the cell is honest about it:</b> headline CPI is monthly and published in arrears, so the newest reading always covers a month that ended some time ago. Rather than divide a longer investment return by a shorter inflation one — which would quietly flatter every model here — the comparison runs over the months CPI has actually reported, with the model re-measured over exactly those dates. Hover the cell for the window.</p></div>`;
+   <p class="note"><b>Beta vs band</b> says only whether the model sits inside, below or above the band the master Speed Limit calls for, with the band beside it — green inside, red outside. The beta itself is the next column, not this one: carrying it twice invited reading the verdict cell as a measurement. Below the band is more defensive than the lights call for rather than worse, which is why the colour marks conformity and not quality. <b>Beta vs bench</b> is the figure itself, against that model's own benchmark — read R² first, since below 0.5 the regression is not describing risk posture and the band cell shows "unrated" instead. <b>Top-3 risk</b> is the share of model volatility carried by its three largest contributors, against the weight those same three hold; click it for the names. Performance is year-to-date on <b>target weights for every model</b>, gross of fees, so the eight are comparable with each other. That is not the same number a model's own drawer shows: where a model has a dated holdings history its drawer measures what it actually held, and the two will differ — for Balanced Core by several points. Cash is priced as BIL rather than dropped, which it used to be. <b>vs CPI</b>, <b>vs Gold</b> and <b>vs BTC</b> restate the model in that numeraire — (1+model)÷(1+numeraire)−1 — so green means the model held its value against that yardstick rather than merely rose. Gold is GLD and bitcoin is Tiingo spot, both over the model's own window. <b>CPI is different and the cell is honest about it:</b> headline CPI is monthly and published in arrears, so the newest reading always covers a month that ended some time ago. Rather than divide a longer investment return by a shorter inflation one — which would quietly flatter every model here — the comparison runs over the months CPI has actually reported, with the model re-measured over exactly those dates. Hover the cell for the window.</p></div>`;
 
   // Every position any model has flagged, gathered in one place so a name appearing in several
   // models is obvious — that is the concentration that matters at desk level, not model level.
