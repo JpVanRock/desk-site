@@ -1828,6 +1828,48 @@ function annie() {
     })();
     const streak = closedTrades.slice(0, 10);
 
+    // Trade events per calendar year: entries plus exits, not round trips. Counted on the same
+    // rule compute-decision-ledger.mjs uses for n_trades_ytd -- a pre-existing position is not an
+    // entry, because its "entry date" is the first day of the records rather than a purchase --
+    // so the bars and the figure beside them cannot disagree. Checked against the stored value:
+    // both give 231 for 2026.
+    const tradeYears = (() => {
+      const mine = trades.filter(t => isOverall || t.strategy_id === annieModel);
+      const count = y => mine.filter(t => !t.pre_existing && String(t.entry_date).startsWith(y)).length
+                       + mine.filter(t => t.exit_date && String(t.exit_date).startsWith(y)).length;
+      const thisYear = new Date().getUTCFullYear();
+      return [thisYear - 2, thisYear - 1, thisYear].map(y => ({ year: y, n: count(String(y)), ytd: y === thisYear }));
+    })();
+    // How far through the year we are, so the partial bar can say what it is a part of. A usage
+    // chart compares this period with the last and is explicit that this one is unfinished; 231
+    // set beside 308 without that would read as a slowdown when it is ten months against twelve.
+    const yearElapsed = (() => {
+      const now = new Date(), y = now.getUTCFullYear();
+      return (now.getTime() - Date.UTC(y, 0, 1)) / (Date.UTC(y + 1, 0, 1) - Date.UTC(y, 0, 1));
+    })();
+
+    const tradesBox = (years, elapsed) => {
+      const max = Math.max(1, ...years.map(y => y.n));
+      const ytdYear = years.find(y => y.ytd);
+      const pace = elapsed > 0.02 ? Math.round(ytdYear.n / elapsed) : null;
+      const bars = years.map(y => {
+        const h = Math.max(2, Math.round((y.n / max) * 44));
+        const col = y.ytd ? 'var(--accent)' : 'color-mix(in srgb, var(--accent) 36%, var(--panel2))';
+        const tip = y.ytd
+          ? `${y.n} trade events so far in ${y.year} — ${(elapsed * 100).toFixed(0)}% of the year gone${pace === null ? '' : `, a pace of about ${pace} for the full year`}.`
+          : `${y.n} trade events in ${y.year}, the full year.`;
+        return `<div style="display:flex;flex-direction:column;align-items:center;gap:3px;flex:1" title="${esc(tip)}">
+          <small style="font-size:10px;color:${y.ytd ? 'var(--text)' : 'var(--muted)'};font-variant-numeric:tabular-nums">${y.n}</small>
+          <div style="width:100%;height:46px;display:flex;align-items:flex-end">
+            <div style="width:100%;height:${h}px;background:${col};border-radius:2px 2px 0 0${y.ytd ? ';border-top:2px dashed var(--accent)' : ''}"></div></div>
+          <small style="font-size:9.5px;color:var(--muted)">${y.ytd ? 'YTD' : y.year}</small></div>`;
+      }).join('');
+      return `<div class="card kpi" title="Trade events per calendar year — entries plus exits, not round trips. A position bought in March and sold in September is two. The newest bar is the year so far rather than a full year, and its dashed top says so.">
+        <span class="eyebrow">Trades YTD</span>
+        <div style="display:flex;align-items:flex-end;gap:7px;margin:4px 0 2px">${bars}</div>
+        <small>${ytdYear.n} in ${ytdYear.year} · ${(elapsed * 100).toFixed(0)}% of the year gone${pace === null ? '' : ` · ~${pace} at this pace`}</small></div>`;
+    };
+
     // Hot hand, over the last ninety days of CLOSED trades. A rolling window rather than the
     // all-time batting average beside it: the point of the card is current form, and a desk that
     // batted .750 across four years can still be cold now. Ninety days of nothing closing is not
@@ -1943,9 +1985,8 @@ function annie() {
         ${kpi('Average hold time', hold === null ? DASH : `${hold.toFixed(0)}`,
               hold === null ? 'no closed trades' : 'days, entry to exit',
               'Mean days from entry to exit across closed trades the desk actually opened. An upper bound: an exit is dated at the snapshot where the position was first absent, so every hold is measured to a date at or beyond the real one. Pre-existing positions are excluded — their entry date is the first day of the records, not a purchase.')}
-        ${kpi('Trades YTD', ytd === null ? DASH : `${ytd}`,
-              ytd === null ? 'no ledger' : `buys and sells dated ${new Date().getUTCFullYear()}`,
-              'Trade events this calendar year — entries plus exits, not round trips. A position bought in March and sold in September is two decisions.')}
+        ${ytd === null ? kpi('Trades YTD', DASH, 'no ledger',
+              'Trade events this calendar year — entries plus exits, not round trips.') : tradesBox(tradeYears, yearElapsed)}
         ${streakBox(streak)}
       </div>
       ${errorsBlock(s, isOverall)}

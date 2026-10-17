@@ -492,6 +492,21 @@ if (!argRoute) {
       const wins = (h.match(/class="stk w"/g) || []).length, losses = (h.match(/class="stk l"/g) || []).length;
       say(` ok  annie overall streak   -> ${wins}W ${losses}L of ${keys.length} decisions, ${dupes.length} duplicated`);
       need(dupes.length === 0, `[annie] the Overall streak repeats the same decision: ${[...new Set(dupes)].join(', ')}`);
+
+      // The three-year trade bars must agree with the stored YTD figure, or the chart and the
+      // ledger are counting different things.
+      const seg = h.split('Trades YTD')[1] || '';
+      const labels = [...seg.matchAll(/font-size:9\.5px;color:var\(--muted\)">(YTD|\d{4})</g)].map(m => m[1]);
+      const counts = [...seg.matchAll(/font-variant-numeric:tabular-nums">(\d+)</g)].map(m => +m[1]);
+      const stored = await fetch(`${SUPABASE_URL}/rest/v1/latest_model_decision_stats?select=n_trades_ytd`, { headers: REST })
+        .then(r => r.json()).then(rs => rs.reduce((a, x) => a + (x.n_trades_ytd || 0), 0));
+      say(` ok  annie trade bars       -> ${labels.join('/')} = ${counts.slice(0, 3).join('/')}, stored YTD ${stored}`);
+      need(labels.length === 3 && labels[2] === 'YTD', `[annie] expected three bars ending in YTD, got ${labels.join(',')}`);
+      need(counts[2] === stored, `[annie] the YTD bar reads ${counts[2]} but the ledger stores ${stored}`);
+      const yr = new Date().getUTCFullYear();
+      need(labels[0] === String(yr - 2) && labels[1] === String(yr - 1), `[annie] year labels ${labels.join(',')} are not the two years before ${yr}`);
+      // A partial year beside two full ones has to be marked as partial.
+      need(/border-top:2px dashed/.test(seg), '[annie] the YTD bar is not marked as a partial year');
     }
     await click('[data-anniemodel]', { anniemodel: tabIds0[0] });
   }
