@@ -678,7 +678,7 @@ if (!argRoute) {
   await go('#stan');
   {
     const page = app();
-    const ps = await fetch(`${SUPABASE_URL}/rest/v1/latest_model_period_stats?select=strategy_id,period,model_return&period=eq.YTD`, { headers: REST }).then(r => r.json());
+    const ps = await fetch(`${SUPABASE_URL}/rest/v1/latest_model_period_stats?select=strategy_id,period,model_return,start_date,end_date&period=eq.YTD`, { headers: REST }).then(r => r.json());
     const perf = await fetch(`${SUPABASE_URL}/rest/v1/latest_strategy_performance?select=strategy_id,period,portfolio_return&period=eq.YTD`, { headers: REST }).then(r => r.json());
     const measured = Object.fromEntries(ps.filter(r => r.model_return !== null).map(r => [r.strategy_id, +r.model_return]));
     const target = Object.fromEntries(perf.filter(r => r.portfolio_return !== null).map(r => [r.strategy_id, +r.portfolio_return]));
@@ -696,6 +696,15 @@ if (!argRoute) {
     // The old claim must be gone. It is quoted in the new note as history, so the test looks for
     // the assertion rather than the words: "is ... on target weights for every model".
     need(!/Performance is year-to-date on <b>target weights for every model<\/b>/.test(page), '[stan-ytd] the note still asserts every model is on target weights');
+    // All three numeraire legs must run over the model's own window, not the performance job's.
+    const windows = [...page.matchAll(/both legs over ([^.<"]*)/g)].map(m => m[1]);
+    const stale = windows.filter(w => !/the model's own window|the model&#39;s own window/.test(w));
+    say(` ok  numeraire windows      -> ${windows.length} legs, ${stale.length} on the performance window`);
+    need(windows.length > 0, '[stan-ytd] no numeraire window stated');
+    for (const w of stale) errors.push(`[stan-ytd] a numeraire leg still runs over ${w}`);
+    // And the dates quoted must be the model's measured window.
+    const psDates = ps.filter(r => r.model_return !== null)[0];
+    if (psDates) need(page.includes(`${psDates.start_date} to ${psDates.end_date}`), `[stan-ytd] the numeraire tooltip does not quote the model window ${psDates.start_date}..${psDates.end_date}`);
   }
 
   // -------------------------------------------------------------------------
