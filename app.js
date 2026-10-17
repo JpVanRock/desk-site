@@ -708,13 +708,18 @@ function positionScatter() {
   // Axis bounds padded outward to a round step, and always including zero so the quadrant lines
   // mean something.
   const nice = (lo, hi, step) => [Math.floor(Math.min(lo, 0) / step) * step, Math.ceil(Math.max(hi, 0) / step) * step];
-  const [x0, x1] = nice(Math.min(...pts.map(p => p.x)), Math.max(...pts.map(p => p.x)), 0.05);
+  // The return step adapts to the span. Fixed at 5% it drew 49 ticks across the five-year window,
+  // whose labels ran together into an unreadable band along the bottom of the chart — the axis
+  // was correct and illegible at the same time. Aim for about ten gridlines whatever the range.
+  const xSpan = Math.max(...pts.map(p => p.x)) - Math.min(0, ...pts.map(p => p.x));
+  const xStep = [0.05, 0.1, 0.25, 0.5, 1].find(st => xSpan / st <= 12) || 2;
+  const [x0, x1] = nice(Math.min(...pts.map(p => p.x)), Math.max(...pts.map(p => p.x)), xStep);
   const [y0, y1] = nice(Math.min(...pts.map(p => p.y)), Math.max(...pts.map(p => p.y)), 0.5);
   const X = v => pad.l + ((v - x0) / ((x1 - x0) || 1)) * (W - pad.l - pad.r);
   const Y = v => Hh - pad.b - ((v - y0) / ((y1 - y0) || 1)) * (Hh - pad.t - pad.b);
 
   const xTicks = [], yTicks = [];
-  for (let v = x0; v <= x1 + 1e-9; v += 0.05) xTicks.push(+v.toFixed(4));
+  for (let v = x0; v <= x1 + 1e-9; v += xStep) xTicks.push(+v.toFixed(4));
   const yStep = (y1 - y0) > 6 ? 1 : 0.5;
   for (let v = y0; v <= y1 + 1e-9; v += yStep) yTicks.push(+v.toFixed(3));
 

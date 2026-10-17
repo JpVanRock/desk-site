@@ -640,6 +640,13 @@ if (!argRoute) {
         if (m.dot !== want) errors.push(`[scatter] ${period}: ${m.ticker} returned ${m.x}% but its dot is ${m.dot}`);
         if (m.label !== m.dot) errors.push(`[scatter] ${period}: ${m.ticker} dot and ticker disagree (${m.dot} vs ${m.label})`);
       }
+      // No point may sit absurdly far out: one bad price series rescales the whole chart, which
+      // is how a 2,397,621% CPAI return flattened the 5Y plot into a vertical line.
+      // Gridlines must stay readable: a fixed 5% step drew 49 of them across the five-year span.
+      const xLabels = (page.match(/text-anchor="middle">-?\d+%</g) || []).length;
+      if (xLabels > 16) errors.push(`[scatter] ${period}: ${xLabels} x-axis labels, which run together`);
+      const extreme = marks.filter(m => Math.abs(m.x) > 1000);
+      for (const m of extreme) errors.push(`[scatter] ${period}: ${m.ticker} plots at ${m.x}%, which is a broken price series rather than a holding`);
       // The tile must agree with the plot.
       const tile = (page.match(/Lost money<\/span><b[^>]*>(\d+)</) || [])[1];
       if (tile !== undefined) need(+tile === losers.length, `[scatter] ${period}: the Lost money tile reads ${tile} but ${losers.length} points are negative`);
