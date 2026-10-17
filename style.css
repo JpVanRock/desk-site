@@ -68,6 +68,8 @@ tbody tr.click{cursor:pointer}tbody tr.click:hover{background:var(--panel2)}
 .podspread{font-size:22px;font-weight:700;margin-top:10px;font-variant-numeric:tabular-nums}
 .podspread small{font-size:11px;font-weight:400;color:var(--muted);display:block;margin-top:1px}
 .podtkr{font:11px/1 ui-monospace,Menlo,monospace;color:var(--muted);margin-top:8px}
+/* The loop verdict on a podium place: whether the winner is still feeding itself. */
+.podloop{font-size:11px;font-weight:600;letter-spacing:.03em;margin-top:6px}
 @media (max-width:720px){ .podium{grid-template-columns:1fr} .pod1,.pod2{padding-top:14px} }
 /* The risk dial under the headline reading. */
 .dialtrack{position:relative;height:10px;border-radius:99px;

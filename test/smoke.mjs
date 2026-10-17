@@ -53,6 +53,19 @@ const REST = { apikey: KEY, Authorization: `Bearer ${KEY}` };
 
 const errors = [];
 let currentRoute = 'boot';
+// A direct read, for checking what the page shows against what the database holds. Paged, because
+// a table that gains a row per security per night walks into PostgREST's 1000-row cap on its own.
+async function rest(table, select, extra = '') {
+  const out = [];
+  for (let from = 0; ; from += 1000) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${select}${extra}`, { headers: { ...REST, Range: `${from}-${from + 999}` } });
+    if (!res.ok) throw new Error(`${table} -> ${res.status} ${(await res.text()).slice(0, 200)}`);
+    const page = await res.json();
+    for (const r of page) out.push(r);
+    if (page.length < 1000) break;
+  }
+  return out;
+}
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ---------------------------------------------------------------------------
@@ -215,7 +228,7 @@ const series = await pick('current_macro_readings', 'series_id,fred_code');
 // 1. Every route renders something that is not an error or a loading state.
 // ---------------------------------------------------------------------------
 const routes = argRoute ? [argRoute] : [
-  '#sisyphus', '#stan', '#adam', '#sven', '#gail', '#annie', '#sandbox', '#markets', '#views', '#signals', '#agents',
+  '#sisyphus', '#stan', '#adam', '#kate', '#sven', '#gail', '#annie', '#sandbox', '#markets', '#views', '#signals', '#agents',
   '#briefs', '#sources', '#inbox', '#status',
   strat ? `#sisyphus/${strat.id}` : null,
   strat ? `#stan/${strat.id}` : null,
@@ -686,7 +699,9 @@ if (!argRoute) {
   currentRoute = 'adam';
   await go('#adam');
   const ad = app();
-  for (const want of ["This week's beauty contest", 'Macro Beauty Contest', 'The four legs', 'Macro regime'])
+  // The contest itself moved to Kate's tab, where sentiment and crowding are read. What Adam
+  // keeps is the regime and the risk-on gauge -- the framework the contest is run against.
+  for (const want of ['Macro Beauty Contest', 'The four legs', 'Macro regime', 'Preferences under'])
     need(ad.includes(want), `[adam] missing section: ${want}`);
   const rows = [...ad.matchAll(/<td>([^<]+)<\/td>\s*<td><b>([^<]+)<\/b>[\s\S]*?<td class="num">(?:<span style="color:var\(--(pos|neg)\)">(-?[\d.]+)%<\/span>|<span style="color:var\(--muted\)">–<\/span>)<\/td>\s*<td>(?:<span style="color:var\(--(?:pos|neg|muted)\)"[^>]*>)?(agrees|disagrees|unscored)/g)];
   let bad = 0;
@@ -929,9 +944,91 @@ if (!argRoute) {
   {
     const nav = readFileSync(join(SITE, 'index.html'), 'utf8');
     const order = [...nav.matchAll(/<a href="#([a-z]+)">/g)].map(m => m[1]);
-    const want = ['sisyphus', 'stan', 'adam', 'sven', 'gail', 'annie', 'sandbox'];
-    say(` ok  nav order              -> ${order.slice(0, 7).join(' · ')}`);
-    need(want.every((w, i) => order[i] === w), `[nav] expected ${want.join(' · ')}, found ${order.slice(0, 7).join(' · ')}`);
+    const want = ['sisyphus', 'stan', 'adam', 'kate', 'sven', 'gail', 'annie', 'sandbox'];
+    say(` ok  nav order              -> ${order.slice(0, 8).join(' · ')}`);
+    need(want.every((w, i) => order[i] === w), `[nav] expected ${want.join(' · ')}, found ${order.slice(0, 8).join(' · ')}`);
+  }
+
+  // -------------------------------------------------------------------------
+  // 10a2. Kate: the popularity contest, the reflexivity test and the contrarian Top 5.
+  //
+  // The rule this page lives under is that nothing here may look like positioning data. Every
+  // figure is inferred from price and volume, and the guard below fails if the page ever stops
+  // saying so -- that caveat is load-bearing, not decoration.
+  // -------------------------------------------------------------------------
+  currentRoute = 'kate';
+  await go('#kate');
+  {
+    const k = app();
+    need(/Crowd sentiment/.test(k), '[kate] the sentiment gauge is missing');
+    need(/This week's beauty contest|This week&#39;s beauty contest/.test(k), '[kate] the beauty contest was not recreated on Kate\'s page');
+    need(/Contrarian Top 5/.test(k), '[kate] the contrarian Top 5 is missing');
+    need(/Feedback loop/.test(k), '[kate] no feedback loop column, so reflexivity is not being reported');
+    // The page must never imply it can see who owns what.
+    need(/not positioning data/i.test(k), '[kate] the page does not say the crowding is inferred from the tape');
+    need(!/short interest is|positioning shows|investors are positioned/i.test(k), '[kate] the page claims to see positioning');
+
+    const reading = await rest('crowd_sentiment_readings', 'as_of,score,stance,n_live,n_total,n_universe,n_excluded', '&order=as_of.desc&limit=1');
+    const comps = await rest('latest_crowd_sentiment_components', 'component,score,status,n');
+    const rows = await rest('latest_security_crowding', 'security_id,crowd_score,crowd_rank,attention,stretch_pctile,momentum_6m,persistence,up_down_volume,loop_state', '&order=crowd_rank.asc');
+    need(rows.length > 20, `[kate] only ${rows.length} securities were scored for crowding`);
+    need(comps.length === 4, `[kate] the gauge has ${comps.length} legs, expected 4`);
+    const r0 = reading[0];
+    if (r0) {
+      say(` ok  kate gauge             -> ${(+r0.score).toFixed(1)} / 100 ${r0.stance}, ${r0.n_live}/${r0.n_total} legs, ${r0.n_universe} scored`);
+      need(+r0.n_live === comps.filter(c => c.score !== null).length, '[kate] the reading disagrees with its own legs about how many are live');
+      const want = +r0.score >= 60 ? 'crowded' : +r0.score <= 40 ? 'scattered' : 'mixed';
+      need(r0.stance === want, `[kate] a score of ${r0.score} is labelled ${r0.stance}, not ${want}`);
+      // The gauge must be shown with the figure the database holds, to one decimal or rounded.
+      need(k.includes(String(Math.round(+r0.score))), `[kate] the page does not show the gauge reading of ${r0.score}`);
+    }
+    // The ranking has to be a ranking, and the loop verdicts have to follow their own figures.
+    let bad = [];
+    for (let i = 1; i < rows.length; i++) if (+rows[i].crowd_score > +rows[i - 1].crowd_score + 1e-9) bad.push(`rank ${rows[i].crowd_rank} scores above rank ${rows[i - 1].crowd_rank}`);
+    for (const r of rows) {
+      if (!(+r.crowd_score >= 0 && +r.crowd_score <= 100)) bad.push(`${r.crowd_rank} scores ${r.crowd_score}, outside 0-100`);
+      if (r.loop_state === 'cold' && +r.stretch_pctile >= 0.70) bad.push(`rank ${r.crowd_rank} is cold at the ${(+r.stretch_pctile * 100).toFixed(0)}% stretch mark`);
+      if ((r.loop_state === 'running' || r.loop_state === 'crowding') && !(+r.up_down_volume > 1)) bad.push(`rank ${r.crowd_rank} is ${r.loop_state} with volume favouring down days`);
+      // A cash substitute scoring high is how the first version of this job ranked BIL among the
+      // ten most crowded names on the desk: six-month return over volatility is enormous for a
+      // bill fund and means nothing. The vol floor is meant to keep them out entirely.
+      if (Math.abs(+r.momentum_6m) < 0.005 && +r.crowd_score > 60) bad.push(`rank ${r.crowd_rank} is crowded on a six-month move of ${(+r.momentum_6m * 100).toFixed(2)}%`);
+    }
+    bad = [...new Set(bad)];
+    for (const b of bad) errors.push(`[kate] ${b}`);
+    const top5 = rows.slice(0, 5);
+    say(` ok  kate crowding          -> ${rows.length} scored, top 5 ${top5.map(r => r.crowd_rank + ':' + (+r.crowd_score).toFixed(0)).join(' ')}, ${bad.length} problems`);
+    // The five most crowded names must be the five the page actually prints.
+    const secs = await rest('securities', 'id,ticker');
+    const byId = Object.fromEntries(secs.map(x => [x.id, x.ticker]));
+    for (const r of top5) need(k.includes(byId[r.security_id]), `[kate] ${byId[r.security_id]} is in the top five by crowd score but is not on the page`);
+
+    // The reflexivity test on the contest: the loop must be read on whichever side the TAPE
+    // favours. Testing the regime's preferred side regardless reported a loop "running" on a
+    // dimension whose preferred leg was losing by 6.9% over the quarter.
+    const ranks = await rest('latest_beauty_contest_rankings', 'dimension,rank,confirmed,spread_1m,spread_3m,flow_prefer,flow_avoid,loop_state');
+    const withLoop = ranks.filter(r => r.loop_state);
+    need(withLoop.length > 0, '[kate] no dimension carries a loop state, so the reflexivity test did not run');
+    for (const r of withLoop) {
+      const sign = +r.spread_3m >= 0 ? 1 : -1;
+      const accel = sign * (+r.spread_1m / 30 - +r.spread_3m / 90);
+      const chasing = sign > 0 ? +r.flow_prefer > +r.flow_avoid : +r.flow_avoid > +r.flow_prefer;
+      const want = accel > 0 ? (chasing ? 'running' : 'faltering') : (chasing ? 'crowding' : 'cold');
+      need(r.loop_state === want, `[kate] ${r.dimension} is ${r.loop_state} but its acceleration and flows say ${want}`);
+    }
+    say(` ok  kate reflexivity       -> ${withLoop.length} of ${ranks.length} dimensions carry a loop verdict`);
+    // Top five of the contest, and only five.
+    const winners = ranks.filter(r => r.confirmed && r.rank !== null).sort((a, b) => a.rank - b.rank);
+    for (const w of winners.slice(0, 5)) need(k.includes(w.dimension), `[kate] ${w.dimension} is in the contest's top five but is not on the page`);
+    need(!winners.slice(5).some(w => k.includes(w.dimension) && !ranks.find(x => x.dimension === w.dimension && x.confirmed === false)), '[kate] more than five winners are listed');
+
+    // And Adam must have handed the contest over rather than keeping a second copy of it.
+    await go('#adam');
+    const a = app();
+    need(!/This week's beauty contest|This week&#39;s beauty contest/.test(a), '[adam] the beauty contest is still on Adam\'s page as well as Kate\'s');
+    need(/Kate/.test(a), '[adam] the page does not point at Kate, so the contest just vanished');
+    need(/Macro Beauty Contest/.test(a), '[adam] the risk-on gauge went with it; only the contest was meant to move');
+    say(` ok  kate handover          -> the contest is on Kate's tab, the regime gauge stayed with Adam`);
   }
 
   // -------------------------------------------------------------------------

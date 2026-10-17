@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, crowdReading, crowdComponents] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -180,6 +180,9 @@ async function load() {
     qAllSoft(() => sb.from('latest_security_duration').select('security_id,duration_yrs,significant,r2'), 'security duration'),
     qAllSoft(() => sb.from('latest_security_factor_fingerprint').select('security_id,betas,r_squared'), 'security fingerprint'),
     qAllSoft(() => sb.from('latest_security_style_fit').select('security_id,lens,mix'), 'security style'),
+    qAllSoft(() => sb.from('latest_security_crowding').select('security_id,attention,stretch_pctile,momentum_6m,persistence,crowd_score,crowd_rank,up_down_volume,return_autocorr,stretch_trend,loop_state,loop_note,as_of'), 'crowding'),
+    qSoft(sb.from('crowd_sentiment_readings').select('as_of,score,stance,n_live,n_total,n_universe,n_excluded,headline').order('as_of', { ascending: false }).limit(1), 'crowd reading'),
+    qSoft(sb.from('latest_crowd_sentiment_components').select('as_of,component,label,score,status,measure,value_text,headline,n'), 'crowd components'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -267,7 +270,8 @@ async function load() {
     taxEff: taxEff || [], taxCov: taxCov || [],
     openLots: openLots || [], journal: journal || [], journalVerdicts: journalVerdicts || [],
     sandboxTargets: sandboxTargets || [], secDuration: secDuration || [], secFingerprint: secFingerprint || [],
-    secStyle: (secStyle || []).filter(r => r.lens === 'sector') };
+    secStyle: (secStyle || []).filter(r => r.lens === 'sector'),
+    crowding: crowding || [], crowdReading: crowdReading || [], crowdComponents: crowdComponents || [] };
 }
 
 // ---------- Views ----------
@@ -298,7 +302,7 @@ function route() {
   closeDrawer();
   // Keyed lookup, so this order is cosmetic rather than load-bearing — but it is kept in step
   // with the nav in index.html so the two read the same way.
-  const pages = { sisyphus, stan, adam, sven, gail, markets, views: viewsPage, signals, agents, annie, sandbox, briefs, inbox, status, sources };
+  const pages = { sisyphus, stan, adam, kate, sven, gail, markets, views: viewsPage, signals, agents, annie, sandbox, briefs, inbox, status, sources };
   $('#app').innerHTML = (pages[page] || sisyphus)();
   if (page === 'stan' && arg) {
     // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
@@ -1361,6 +1365,7 @@ function adam() {
   const regime = (D.macroRegime || [])[0] || null;
   const ranks = D.beautyRanks || [];
   const hist = D.beautyHistory || [];
+  const pc = v => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : ''}${(+v * 100).toFixed(1)}%`;
 
   if (!reading && !regime && !ranks.length) {
     return `<span class="eyebrow">Macro</span><h1>Adam</h1>
@@ -1368,47 +1373,6 @@ function adam() {
      <div class="card"><div class="empty">Nothing computed yet. Run jobs/compute-macro-regime.mjs and jobs/compute-beauty-contest.mjs.</div></div>`;
   }
 
-  // ---- the winners, at the top ----
-  const scored = ranks.filter(r => r.rank !== null).slice().sort((a, b) => a.rank - b.rank);
-  const winners = scored.filter(r => r.confirmed);
-  const against = scored.filter(r => r.confirmed === false);
-  const unscored = ranks.filter(r => r.rank === null);
-  const pc = v => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : ''}${(+v * 100).toFixed(1)}%`;
-
-  const podium = !winners.length ? '' : `<div class="podium">
-    ${winners.slice(0, 3).map((w, i) => `<div class="pod pod${i + 1}">
-      <div class="podrank">${i + 1}</div>
-      <div class="poddim">${esc(w.dimension)}</div>
-      <div class="podwin">${esc(w.prefer)}</div>
-      <div class="podover">over ${esc(w.avoid)}</div>
-      <div class="podspread" style="color:var(--pos)">${pc(w.spread_3m ?? w.spread_1m)}<small> 3 months</small></div>
-      ${w.prefer_tkr ? `<div class="podtkr">${esc(w.prefer_tkr)} vs ${esc(w.avoid_tkr)}</div>` : ''}
-    </div>`).join('')}</div>`;
-
-  const contestCard = `<div class="card" style="margin-bottom:14px">
-    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
-      <h2 style="margin:0">This week's beauty contest</h2>
-      <span style="font-size:12px;color:var(--muted)">${regime ? esc(regime.as_of) : ''} · ${winners.length} of ${scored.length} dimensions have the tape agreeing with the regime</span></div>
-    ${!regime ? '<div class="empty">No regime reading, so there is nothing to run the contest against.</div>' : `
-    <p class="note" style="margin:8px 0 14px">The regime is <b style="color:${REGIME_LOOK[regime.regime].tone}">${esc(REGIME_LOOK[regime.regime].label)}</b>, and these are the dimensions where the market is <b>already paying</b> for what it prefers. Keynes's point was that the contest rewards picking what others pick — a preference the tape has not started confirming is a judgment, not a candidate.</p>
-    ${podium}
-    ${winners.length > 3 ? `<table style="margin-top:14px"><thead><tr><th class="num">#</th><th>Dimension</th><th>Favoured</th><th class="num">1 month</th><th class="num">3 months</th></tr></thead><tbody>
-      ${winners.slice(3).map(w => `<tr><td class="num">${w.rank}</td><td>${esc(w.dimension)}</td>
-        <td><b>${esc(w.prefer)}</b> <span style="color:var(--muted)">over ${esc(w.avoid)}</span></td>
-        <td class="num" style="color:${(n(w.spread_1m) ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(w.spread_1m)}</td>
-        <td class="num" style="color:var(--pos)">${pc(w.spread_3m)}</td></tr>`).join('')}
-      </tbody></table>` : ''}
-    ${!against.length ? '' : `<div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
-      <div class="eyebrow" style="margin-bottom:8px">Where the regime and the tape disagree</div>
-      <table><thead><tr><th>Dimension</th><th>Regime prefers</th><th class="num">1 month</th><th class="num">3 months</th></tr></thead><tbody>
-      ${against.map(w => `<tr><td>${esc(w.dimension)}</td>
-        <td><b>${esc(w.prefer)}</b> <span style="color:var(--muted)">over ${esc(w.avoid)}</span></td>
-        <td class="num" style="color:${(n(w.spread_1m) ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(w.spread_1m)}</td>
-        <td class="num" style="color:var(--neg)">${pc(w.spread_3m)}</td></tr>`).join('')}
-      </tbody></table>
-      <p class="note">These are the rows worth reading. Either the regime call is early, or it is wrong, and a contest that only ever confirmed itself would be a mirror. ${regime && +regime.conviction < 0.5 ? `<b>Conviction on the regime is ${(+regime.conviction).toFixed(2)}</b>, which is close enough to the boundary between quadrants that disagreement here is unsurprising.` : ''}</p></div>`}
-    ${!unscored.length ? '' : `<p class="note" style="margin-top:12px"><b>${unscored.length} dimension${unscored.length === 1 ? '' : 's'} could not be scored against the tape</b> — ${unscored.map(u => esc(u.dimension)).join(', ')}. The regime still states a preference; there is simply no tracked proxy to test it with, and filling that in from the chart would make the framework unfalsifiable.</p>`}`}
-  </div>`;
 
   // ---- the headline reading ----
   const score = reading ? n(reading.score) : null;
@@ -1538,9 +1502,210 @@ function adam() {
       })()}
     <p class="note">Every nightly run writes a reading and keeps it, so the contest can be graded later against what the market actually did. That is the point of keeping it rather than only showing today.</p></div>`;
 
+  // The contest itself -- the ranked dimensions and the reflexivity test on each -- now lives on
+  // Kate's tab, which is where sentiment and crowding are read. What stays here is the regime and
+  // the risk-on/risk-off gauge: the framework Kate's contest is run AGAINST. Adam says what should
+  // win; Kate says what the crowd is actually voting for, and whether the vote is self-feeding.
   return `<span class="eyebrow">Macro</span><h1>Adam</h1>
-   <p class="sub">The Macro Beauty Contest — what the regime favours, and what the market is already paying for.</p>
-   ${contestCard}${gauge}${legs}${quad}${prefTable}${histCard}`;
+   <p class="sub">The regime, and the risk-on reading behind it. The beauty contest itself is on <a href="#kate">Kate's tab</a>.</p>
+   ${gauge}${legs}${quad}${prefTable}${histCard}`;
+}
+
+// ---------- Kate: sentiment, reflexivity, and the popularity contest ----------
+//
+// Kate's question is never whether something is a good investment. It is what the crowd believes
+// is a good investment, how many of them are already there, and whether the belief is still paying
+// for itself. Keynes's beauty contest and Soros's reflexivity are the same observation from two
+// angles: the price is partly made of belief about the price.
+//
+// EVERYTHING ON THIS PAGE IS INFERRED FROM PRICE AND VOLUME. The desk holds no positioning data --
+// no CFTC Commitment of Traders, no short interest, no fund flows, no sentiment survey -- and the
+// page says so in every section that could be mistaken for one. A crowding score presented as
+// observed positioning is the kind of number that gets believed and then sized.
+const LOOP_LOOK = {
+  running:   { label: 'loop running',  tone: 'var(--pos)',  short: 'The move is recruiting the capital that extends it.' },
+  crowding:  { label: 'crowding in',   tone: 'var(--neg)',  short: 'Capital still arriving after the move stopped paying for it.' },
+  faltering: { label: 'loop faltering', tone: 'var(--warn)', short: 'Participation has turned while the crowd is still in it.' },
+  cold:      { label: 'cold',          tone: 'var(--muted)', short: 'No crowd here to be late to.' },
+};
+const STANCE_CROWD = {
+  crowded:   ['Crowded',  'var(--neg)'],
+  mixed:     ['Mixed',    'var(--flat)'],
+  scattered: ['Scattered', 'var(--pos)'],
+};
+
+function kate() {
+  const n = v => v === null || v === undefined ? null : +v;
+  const pc = v => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : ''}${(+v * 100).toFixed(1)}%`;
+  const pct0 = v => v === null || v === undefined ? '—' : `${(+v * 100).toFixed(0)}%`;
+  const reading = (D.crowdReading || [])[0] || null;
+  const comps = D.crowdComponents || [];
+  const crowd = (D.crowding || []).slice().sort((a, b) => (a.crowd_rank ?? 9e9) - (b.crowd_rank ?? 9e9));
+  const regime = (D.macroRegime || [])[0] || null;
+  const ranks = D.beautyRanks || [];
+  const secById = Object.fromEntries((D.markets || []).map(m => [m.id, m]));
+  const tkr = id => (secById[id] || {}).ticker || '?';
+  const nameOf = id => (secById[id] || {}).name || '';
+
+  if (!reading && !crowd.length && !ranks.length) {
+    return `<span class="eyebrow">Sentiment</span><h1>Kate</h1>
+     <p class="sub">The popularity contest.</p>
+     <div class="card"><div class="empty">Nothing computed yet. Run jobs/compute-sentiment-crowding.mjs and jobs/compute-beauty-contest.mjs.</div></div>`;
+  }
+
+  const loopChip = st => !st || !LOOP_LOOK[st] ? '<span style="color:var(--muted)">—</span>'
+    : `<span style="color:${LOOP_LOOK[st].tone};font-weight:600">${esc(LOOP_LOOK[st].label)}</span>`;
+
+  // ---- the gauge ----
+  const score = reading ? n(reading.score) : null;
+  const [stLabel, stTone] = reading && reading.stance && STANCE_CROWD[reading.stance] ? STANCE_CROWD[reading.stance] : ['Not yet reading', 'var(--muted)'];
+  const gauge = `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Crowd sentiment</h2>
+      <span style="font-size:12px;color:var(--muted)">${reading ? `${reading.n_live} of ${reading.n_total} legs live · ${reading.n_universe} securities scored · as of ${esc(reading.as_of)}` : ''}</span></div>
+    <div style="display:flex;align-items:center;gap:28px;flex-wrap:wrap;margin-top:14px">
+      <div style="min-width:150px">
+        <div style="font-size:52px;font-weight:700;line-height:1;color:${stTone}">${score === null ? '—' : score.toFixed(0)}</div>
+        <div style="font-size:17px;font-weight:600;color:${stTone};margin-top:4px">${esc(stLabel)}</div>
+      </div>
+      <div style="flex:1;min-width:260px">
+        <div class="dialtrack"><div class="dialmark" style="left:${score === null ? 50 : score}%;background:${score === null ? 'var(--line)' : stTone}"></div></div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:6px">
+          <span>Scattered</span><span>Mixed</span><span>Crowded</span></div>
+      </div>
+    </div>
+    ${!comps.length ? '' : `<table style="margin-top:16px"><thead><tr><th>Leg</th><th class="num">Reading</th><th>What is counted</th></tr></thead><tbody>
+      ${comps.slice().sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).map(c => `<tr>
+        <td><b>${esc(c.label)}</b>${c.status === 'live' ? '' : ` <span class="chip">${esc(c.status.replace('_', ' '))}</span>`}</td>
+        <td class="num">${c.score === null ? '<span style="color:var(--muted)">—</span>' : (+c.score).toFixed(0)}${c.value_text ? `<br><span style="font-size:11px;color:var(--muted)">${esc(c.value_text)}</span>` : ''}</td>
+        <td style="font-size:12px;color:var(--muted)">${esc(c.measure)}</td></tr>`).join('')}
+      </tbody></table>`}
+    <p class="note">${reading ? esc(reading.headline) + ' ' : ''}Three legs are shares of the universe, so a tape with two opinions sits near 50 on each; one-sidedness is the average pairwise correlation stated as a percentage rather than scaled onto the dial, because an invented transformation could not be audited. <b>High is not a sell.</b> A crowded tape can stay crowded, which is why the loop states below matter more than the level. ${reading && reading.n_excluded ? `${reading.n_excluded} tracked names could not be scored: mutual-fund share classes print no exchange volume, cash substitutes have no extension to measure, and a short series has no baseline.` : ''}</p>
+  </div>`;
+
+  // ---- the beauty contest, recreated with the reflexivity test ----
+  const scored = ranks.filter(r => r.rank !== null).slice().sort((a, b) => a.rank - b.rank);
+  const winners = scored.filter(r => r.confirmed);
+  const against = scored.filter(r => r.confirmed === false);
+  const unscored = ranks.filter(r => r.rank === null);
+  const top5 = winners.slice(0, 5);
+
+  const podium = !top5.length ? '' : `<div class="podium">
+    ${top5.slice(0, 3).map((w, i) => `<div class="pod pod${i + 1}">
+      <div class="podrank">${i + 1}</div>
+      <div class="poddim">${esc(w.dimension)}</div>
+      <div class="podwin">${esc(w.prefer)}</div>
+      <div class="podover">over ${esc(w.avoid)}</div>
+      <div class="podspread" style="color:var(--pos)">${pc(w.spread_3m ?? w.spread_1m)}<small> 3 months</small></div>
+      ${w.loop_state ? `<div class="podloop" style="color:${LOOP_LOOK[w.loop_state].tone}">${esc(LOOP_LOOK[w.loop_state].label)}</div>` : ''}
+      ${w.prefer_tkr ? `<div class="podtkr">${esc(w.prefer_tkr)} vs ${esc(w.avoid_tkr)}</div>` : ''}
+    </div>`).join('')}</div>`;
+
+  const contestCard = `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">This week's beauty contest</h2>
+      <span style="font-size:12px;color:var(--muted)">${regime ? esc(regime.as_of) : ''} · ${winners.length} of ${scored.length} dimensions have the tape agreeing with the regime</span></div>
+    ${!regime ? '<div class="empty">No regime reading, so there is nothing to run the contest against.</div>' : `
+    <p class="note" style="margin:8px 0 14px">The regime Adam reads is <b style="color:${REGIME_LOOK[regime.regime].tone}">${esc(REGIME_LOOK[regime.regime].label)}</b>, and these are the dimensions where the market is <b>already paying</b> for what it prefers. Keynes's point was that the contest rewards picking what others pick — a preference the tape has not started confirming is a judgment, not a candidate. Every spread is a real return: one tracked ticker minus another over the same dates.</p>
+    ${podium}
+    ${!top5.length ? '' : `<table style="margin-top:14px"><thead><tr><th class="num">#</th><th>Dimension</th><th>Favoured</th><th class="num">1 month</th><th class="num">3 months</th><th>Feedback loop</th></tr></thead><tbody>
+      ${top5.map(w => `<tr><td class="num">${w.rank}</td><td>${esc(w.dimension)}</td>
+        <td><b>${esc(w.prefer)}</b> <span style="color:var(--muted)">over ${esc(w.avoid)}</span></td>
+        <td class="num" style="color:${(n(w.spread_1m) ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(w.spread_1m)}</td>
+        <td class="num" style="color:var(--pos)">${pc(w.spread_3m)}</td>
+        <td title="${esc(w.loop_note || '')}">${loopChip(w.loop_state)}</td></tr>`).join('')}
+      </tbody></table>
+      <p class="note">The top five, and whether each one is feeding itself. <b>Reflexivity is the second question:</b> a spread that widens while capital arrives at the winning side is a loop — the move recruiting the buying that extends it — and it behaves differently from a spread that is merely positive. Acceleration is the last month's spread per day against the quarter's; participation is each proxy's own dollar volume over the month against its trailing year. Hover a verdict for the figures behind it.</p>`}
+    ${!against.length ? '' : `<div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
+      <div class="eyebrow" style="margin-bottom:8px">Where the regime and the tape disagree</div>
+      <table><thead><tr><th>Dimension</th><th>Regime prefers</th><th class="num">1 month</th><th class="num">3 months</th><th>Feedback loop</th></tr></thead><tbody>
+      ${against.map(w => `<tr><td>${esc(w.dimension)}</td>
+        <td><b>${esc(w.prefer)}</b> <span style="color:var(--muted)">over ${esc(w.avoid)}</span></td>
+        <td class="num" style="color:${(n(w.spread_1m) ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(w.spread_1m)}</td>
+        <td class="num" style="color:var(--neg)">${pc(w.spread_3m)}</td>
+        <td title="${esc(w.loop_note || '')}">${loopChip(w.loop_state)}</td></tr>`).join('')}
+      </tbody></table>
+      <p class="note">These are the rows worth reading. Either the regime call is early, or it is wrong, and a contest that only ever confirmed itself would be a mirror. The loop here is tested on whichever side the <b>tape</b> favours rather than the side the regime prefers — if the crowd has picked the avoided leg, that is where the loop lives. ${regime && +regime.conviction < 0.5 ? `<b>Conviction on the regime is ${(+regime.conviction).toFixed(2)}</b>, close enough to the boundary between quadrants that disagreement here is unsurprising.` : ''}</p></div>`}
+    ${!unscored.length ? '' : `<p class="note" style="margin-top:12px"><b>${unscored.length} dimension${unscored.length === 1 ? '' : 's'} could not be scored against the tape</b> — ${unscored.map(u => esc(u.dimension)).join(', ')}. The regime still states a preference; there is simply no tracked proxy to test it with, and filling that in from the chart would make the framework unfalsifiable.</p>`}`}
+  </div>`;
+
+  // ---- the contrarian Top 5 ----
+  // The five most crowded names by the popularity contest, each with its loop verdict. Crowded is
+  // not a sell: crowded and "running" can stay that way for a long time, and fading a live loop is
+  // how people lose money being early. The combination worth saying out loud is crowded while the
+  // loop is crowding in or faltering.
+  const top = crowd.filter(r => r.crowd_score !== null).slice(0, 5);
+  const fadeable = top.filter(r => r.loop_state === 'crowding' || r.loop_state === 'faltering');
+  const contrarian = !top.length ? `<div class="card" style="margin-bottom:14px"><h2>Contrarian Top 5</h2>
+    <div class="empty">No security could be scored. The crowding job needs two years of history and real exchange volume.</div></div>`
+    : `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Contrarian Top 5</h2>
+      <span style="font-size:12px;color:var(--muted)">the most crowded names on the desk's tape</span></div>
+    <p class="note" style="margin:8px 0 14px">Ranked by a popularity score: how much more attention a name is getting than its own normal, how far above its own trend it sits, what it has returned over six months, and how one-sided its tape has been. Each leg is measured against the security's <b>own</b> history before being ranked against the others, so a quiet bond fund and a volatile equity are compared on how unusual each is for itself.</p>
+    <div style="overflow-x:auto"><table style="min-width:720px"><thead><tr>
+      <th class="num">#</th><th>Ticker</th><th class="num">Crowd score</th><th class="num">Attention</th>
+      <th class="num">Above own trend</th><th class="num">6 months</th><th class="num">Up days</th><th class="num">Up/down volume</th><th>Feedback loop</th></tr></thead><tbody>
+      ${top.map(r => `<tr>
+        <td class="num">${r.crowd_rank}</td>
+        <td><b>${esc(tkr(r.security_id))}</b><br><span style="font-size:11px;color:var(--muted)">${esc(nameOf(r.security_id).slice(0, 34))}</span></td>
+        <td class="num"><b>${(+r.crowd_score).toFixed(0)}</b></td>
+        <td class="num">${r.attention === null ? '—' : (+r.attention).toFixed(2) + '×'}</td>
+        <td class="num">${pct0(r.stretch_pctile)}</td>
+        <td class="num" style="color:${(n(r.momentum_6m) ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(r.momentum_6m)}</td>
+        <td class="num">${pct0(r.persistence)}</td>
+        <td class="num" style="color:${r.up_down_volume === null ? 'var(--muted)' : +r.up_down_volume > 1 ? 'var(--pos)' : 'var(--neg)'}">${r.up_down_volume === null ? '—' : (+r.up_down_volume).toFixed(2) + '×'}</td>
+        <td title="${esc(r.loop_note || '')}">${loopChip(r.loop_state)}</td></tr>`).join('')}
+    </tbody></table></div>
+    ${!fadeable.length ? `<p class="note" style="margin-top:12px">None of the five has a loop that has turned. Every one of them is either still being funded by fresh participation or is not extended in the first place, which is the case where a contrarian list is a watchlist rather than a trade.</p>`
+      : `<div style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+      <div class="eyebrow" style="margin-bottom:8px">Where the boat is leaning hardest</div>
+      ${fadeable.map(r => `<p class="note" style="margin:0 0 8px"><b>${esc(tkr(r.security_id))}</b> — ${esc(r.loop_note || '')}</p>`).join('')}
+      <p class="note">These are the rows where the crowd is still in the position and the tape has stopped paying them for it. It is the combination worth naming, not a signal to sell: being early into a reversal costs the same as being wrong about it.</p></div>`}
+    <p class="note" style="margin-top:12px"><b>This is not positioning data.</b> The desk has no Commitment of Traders report, no short interest, no fund flows and no sentiment survey. Everything above is what the tape implies about how full a trade is, which is a weaker claim than seeing who owns it — and the weaker claim is the true one. Mutual-fund share classes print no exchange volume and cash substitutes have no extension to measure, so neither appears here.</p>
+  </div>`;
+
+  // ---- where the desk's own book sits ----
+  // The part that is actionable: crowding in the abstract is interesting, crowding in something
+  // the models already own is a decision.
+  const held = new Set();
+  for (const h of (D.currentHoldings || [])) if (h.security_id) held.add(h.security_id);
+  const ownRows = crowd.filter(r => held.has(r.security_id) && r.crowd_score !== null);
+  const bookCard = !ownRows.length ? '' : `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">What the desk owns, by popularity</h2>
+      <span style="font-size:12px;color:var(--muted)">${ownRows.length} held name${ownRows.length === 1 ? '' : 's'} scored</span></div>
+    <p class="note" style="margin:8px 0 14px">Every position the models currently hold that could be scored, most crowded first. This is the column that turns the contest into a decision: a crowded holding is not a problem, but a crowded holding whose loop has turned is the one to have an answer ready for.</p>
+    <div style="overflow-x:auto"><table style="min-width:560px"><thead><tr>
+      <th class="num">Rank</th><th>Ticker</th><th class="num">Crowd score</th><th class="num">Attention</th>
+      <th class="num">Above own trend</th><th class="num">6 months</th><th>Feedback loop</th></tr></thead><tbody>
+      ${ownRows.map(r => `<tr>
+        <td class="num" style="color:var(--muted)">${r.crowd_rank}</td>
+        <td><b>${esc(tkr(r.security_id))}</b></td>
+        <td class="num">${(+r.crowd_score).toFixed(0)}</td>
+        <td class="num">${r.attention === null ? '—' : (+r.attention).toFixed(2) + '×'}</td>
+        <td class="num">${pct0(r.stretch_pctile)}</td>
+        <td class="num" style="color:${(n(r.momentum_6m) ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(r.momentum_6m)}</td>
+        <td title="${esc(r.loop_note || '')}">${loopChip(r.loop_state)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="note">Rank is against the whole scored universe of ${reading ? reading.n_universe : crowd.length} securities, not against this list, so a rank of 40 means fortieth most crowded thing the desk tracks. Holdings with no exchange volume or too little history are absent rather than shown at zero.</p>
+  </div>`;
+
+  // ---- how the loop states are defined ----
+  const legend = `<div class="card" style="margin-bottom:14px">
+    <h2>Reading the loop</h2>
+    <p class="note" style="margin:0 0 12px">Soros's addition to Keynes: belief and price are a two-way street, so a rising price can recruit the buying that raises it further. The loop runs until it does not — reflexivity is not a reason a trend continues, it is a reason it eventually breaks hard. Three measurements decide which state a name is in: whether it is extended against its own three-year history, whether dollar volume still favours up days over down days, and whether the extension is still widening.</p>
+    <table><thead><tr><th>State</th><th>What it means</th></tr></thead><tbody>
+      ${['running', 'crowding', 'faltering', 'cold'].map(k => `<tr>
+        <td><span style="color:${LOOP_LOOK[k].tone};font-weight:600">${esc(LOOP_LOOK[k].label)}</span></td>
+        <td style="font-size:12px">${esc(LOOP_LOOK[k].short)}</td></tr>`).join('')}
+    </tbody></table>
+    <p class="note"><b>Crowding in</b> is the state to read twice. It looks most like a winner — the crowd is arriving, attention is high — and behaves least like one, because the move stopped paying before they got there.</p>
+  </div>`;
+
+  return `<span class="eyebrow">Sentiment</span><h1>Kate</h1>
+   <p class="sub">The popularity contest — what the crowd believes is attractive, how full the trade already is, and whether the loop behind it still pays.</p>
+   ${gauge}${contestCard}${contrarian}${bookCard}${legend}`;
 }
 
 // ---------- Sven: market internals ----------
@@ -4561,6 +4726,7 @@ function agents() {
     ['megan', 'Megan', 'Planning ideas', false], ['annie', 'Annie', 'Decision quality', false],
     ['sisyphus', 'Sisyphus', 'Executive', false],
     ['sven', 'Sven', 'Market internals', true], ['gail', 'Gail', 'Geopolitics', true],
+    ['kate', 'Kate', 'Sentiment', false],
   ];
   return `<span class="eyebrow">Allocation model</span><h1>Agents</h1><p class="sub">Each agent's latest output, with its as-of date. Isolated agents are shown here to read, but their work never feeds a brief or the allocation process unless explicitly tapped in.</p>
   <div class="agents">${A.map(([k, n, r, isolated]) => { const o = D.outputs.find(x => x.agent === k);
