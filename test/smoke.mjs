@@ -823,6 +823,28 @@ if (!argRoute) {
       need(/class="vmark"/.test(d), '[classify-vol] no volatility verdict rendered on any unclassified row');
       need(/vol \d/.test(d), '[classify-vol] the fund volatility is not shown beside the weight');
     }
+    // A failing classification with a workable blend must arrive with that blend already
+    // selected, and must still be waiting on Update rather than saved.
+    {
+      const needsFix = fits.filter(f => f.passes !== true && f.suggested_mix);
+      const selectedSuggestions = (d.match(/<option value="custom:[^"]*" selected>Suggested —/g) || []).length;
+      const banner = /suggested blend(s)? have been selected for you|suggested blend has been selected for you/.test(d);
+      say(` ok  blend auto-select      -> ${needsFix.length} funds need a blend, ${selectedSuggestions} pre-selected in this drawer`);
+      if (needsFix.length) {
+        need(selectedSuggestions > 0, '[classify-vol] a suggested blend exists but none is pre-selected');
+        need(banner, '[classify-vol] blends were pre-selected without saying so');
+        need(/data-repupdate="1" >/.test(d) || /data-repupdate="1">/.test(d), '[classify-vol] the Update button is disabled though a change is staged');
+        // Pre-selected means staged, not written: the stored override must still be the old one.
+        const stored = await fetch(`${SUPABASE_URL}/rest/v1/holding_factor_overrides?select=security_id,split,mix`, { headers: REST }).then(r => r.json());
+        for (const f of needsFix) {
+          const row = stored.find(o => o.security_id === f.security_id);
+          const savedMix = row && row.mix && Object.keys(row.mix).length ? row.mix : null;
+          if (savedMix && JSON.stringify(savedMix) === JSON.stringify(f.suggested_mix)) {
+            errors.push('[classify-vol] a suggestion was written to the database without Update being pressed');
+          }
+        }
+      }
+    }
     // The duration tile replaced Weight priced; both must not be present, and the tile must not
     // invent a number when the model has no measured fixed income.
     need(!d.includes('Weight priced'), '[duration] the Weight priced tile is still rendered');

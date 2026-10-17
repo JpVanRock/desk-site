@@ -3013,6 +3013,28 @@ function modelDashboard(m) {
 
   // ---- the two allocation panels ----
   const ovBySec = Object.fromEntries((D.factorOverrides || []).map(o => [o.security_id, o]));
+
+  // Where the volatility check failed and a blend exists that passes, that blend is STAGED
+  // automatically: selected in the dropdown, previewed in the donut, and counted by the tick.
+  // It is not saved. Nothing in this panel is written until Update is pressed, and a
+  // classification is a judgment about client money — the suggestion arrives made rather than
+  // offered, and still waits for the owner to agree with it.
+  //
+  // Only where the owner has expressed no view of their own: `in` rather than a truthiness test,
+  // so a deliberate "Leave unclassified" is a view and is left alone.
+  for (const f of (D.blendFit || [])) {
+    if (f.passes === true || !f.suggested_mix) continue;
+    if (f.security_id in repPending) continue;
+    const cur = mixOf(ovBySec[f.security_id]);
+    if (cur && mixKey(cur) === mixKey(f.suggested_mix)) continue;   // already on it
+    repPending[f.security_id] = mixKey(f.suggested_mix);
+  }
+  // Counted from what is STAGED, not from what this render happened to stage. The drawer renders
+  // more than once — opening it, previewing a change, switching a period — and a counter
+  // incremented in the loop above reads 3 the first time and 0 every time after, so the banner
+  // would vanish while the selections it describes stayed on screen.
+  const autoStaged = (D.blendFit || []).filter(f =>
+    f.suggested_mix && repPending[f.security_id] === mixKey(f.suggested_mix)).length;
   const staged = { ...ovBySec };
   for (const [sid, split] of Object.entries(repPending)) {
     if (!split) { staged[sid] = undefined; continue; }
@@ -3095,6 +3117,7 @@ function modelDashboard(m) {
       <div class="unc"><h3>Unclassified positions</h3>
         ${unres.length || res.length ? [...unres, ...res].map(rowFor).join('') : '<p style="color:var(--muted);font-size:12.5px;font-style:italic">None. Every position is classified.</p>'}
         ${(unres.length || res.length) ? `<button class="btn" data-repupdate="1" ${dirty ? '' : 'disabled'}>${dirty ? `Update allocation (${Object.keys(repPending).length} change${Object.keys(repPending).length === 1 ? '' : 's'})` : 'Update allocation'}</button>` : ''}
+        ${autoStaged ? `<p class="note" style="margin:8px 0 0;font-size:11.5px;color:var(--warn)"><b>${autoStaged} suggested blend${autoStaged === 1 ? ' has' : 's have'} been selected for you</b>, chosen to bring the blend's standard deviation within ${Math.round(((D.blendFit || [])[0]?.tolerance ?? 0.10) * 100)}% of the fund's own. Nothing is saved until you press Update, and changing a dropdown overrides the suggestion.</p>` : ''}
         ${(unres.length || res.length) ? `<p class="note" style="margin:8px 0 0;font-size:11.5px">A classification is stored against the security, not this model, so it applies everywhere the name is held${(() => {
           const ids = [...unres, ...res].map(h => h.security_id).filter(Boolean);
           const others = (D.models || []).filter(x => x.id !== m.id && ((D.currentHoldings || []).some(c => c.strategy_id === x.id && ids.includes(c.security_id)) || (x.holdings || []).some(c => ids.includes(c.security_id))));
