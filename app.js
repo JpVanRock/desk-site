@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, crowdReading, crowdComponents] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -181,8 +181,10 @@ async function load() {
     qAllSoft(() => sb.from('latest_security_factor_fingerprint').select('security_id,betas,r_squared'), 'security fingerprint'),
     qAllSoft(() => sb.from('latest_security_style_fit').select('security_id,lens,mix'), 'security style'),
     qAllSoft(() => sb.from('latest_security_crowding').select('security_id,attention,stretch_pctile,momentum_6m,persistence,crowd_score,crowd_rank,up_down_volume,return_autocorr,stretch_trend,loop_state,loop_note,as_of'), 'crowding'),
-    qSoft(sb.from('crowd_sentiment_readings').select('as_of,score,stance,n_live,n_total,n_universe,n_excluded,headline').order('as_of', { ascending: false }).limit(1), 'crowd reading'),
-    qSoft(sb.from('latest_crowd_sentiment_components').select('as_of,component,label,score,status,measure,value_text,headline,n'), 'crowd components'),
+    qSoft(sb.from('narrative_sentiment_readings').select('as_of,score,stance,n_live,n_total,n_narratives,top_narrative,concentration,headline').order('as_of', { ascending: false }).limit(1), 'narrative reading'),
+    qSoft(sb.from('latest_narrative_sentiment_components').select('as_of,component,label,score,status,measure,value_text,headline,how_to_supply,n'), 'narrative components'),
+    qAllSoft(() => sb.from('latest_narrative_attention').select('narrative,wiki_ratio,wiki_pctile,hn_ratio,chatter_per_day,chatter_bull,chatter_tagged,attention_ratio,attention_pctile,attention_share,attention_rank,price_1m,price_3m,state,state_note,trail,n_sources,as_of'), 'narrative attention'),
+    qAllSoft(() => sb.from('narratives').select('slug,label,kind,proxy_ticker,wiki_articles,hn_query,sort_order'), 'narratives'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -271,7 +273,8 @@ async function load() {
     openLots: openLots || [], journal: journal || [], journalVerdicts: journalVerdicts || [],
     sandboxTargets: sandboxTargets || [], secDuration: secDuration || [], secFingerprint: secFingerprint || [],
     secStyle: (secStyle || []).filter(r => r.lens === 'sector'),
-    crowding: crowding || [], crowdReading: crowdReading || [], crowdComponents: crowdComponents || [] };
+    crowding: crowding || [], narReading: narReading || [], narComponents: narComponents || [],
+    narAttention: narAttention || [], narratives: narratives || [] };
 }
 
 // ---------- Views ----------
@@ -297,12 +300,18 @@ function route() {
   if (page === 'overview') { location.replace('#sisyphus' + (arg ? '/' + arg : '')); return; }
   // The Playground is a section of Views now. The hash still resolves, so a saved link or an old
   // bookmark lands where the content went rather than on an empty page.
-  if (page === 'playground') { location.replace('#views'); return; }
+  if (page === 'playground') { location.replace('#admin'); return; }
+  // Views, Sources, Agents and Status were four tabs and are now four sections of Admin. Each
+  // hash still resolves -- these are the links most likely to be sitting in a note or a bookmark,
+  // and #views carried a sub-route for the macro charts, so the argument travels with it.
+  if (page === 'views' || page === 'sources' || page === 'agents' || page === 'status') {
+    location.replace('#admin' + (arg ? '/' + arg : '')); return;
+  }
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
   // Keyed lookup, so this order is cosmetic rather than load-bearing — but it is kept in step
   // with the nav in index.html so the two read the same way.
-  const pages = { sisyphus, stan, adam, kate, sven, gail, markets, views: viewsPage, signals, agents, annie, sandbox, briefs, inbox, status, sources };
+  const pages = { markets, sisyphus, stan, annie, adam, sven, kate, gail, sandbox, signals, briefs, inbox, admin };
   $('#app').innerHTML = (pages[page] || sisyphus)();
   if (page === 'stan' && arg) {
     // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
@@ -318,7 +327,7 @@ function route() {
   if (page === 'sven' && arg) { $('#drawer').innerHTML = svenDrawer(arg); $('#drawer').hidden = false; $('#scrim').hidden = false; }
   if (page === 'markets' && arg) openChart(arg);
   if (page === 'sisyphus' && arg) openExposureChart(arg);
-  if (page === 'views' && arg) openMacroChart(arg);
+  if (page === 'admin' && arg) openMacroChart(arg);
 }
 
 function sisyphus() {
@@ -1528,6 +1537,72 @@ const LOOP_LOOK = {
   faltering: { label: 'loop faltering', tone: 'var(--warn)', short: 'Participation has turned while the crowd is still in it.' },
   cold:      { label: 'cold',          tone: 'var(--muted)', short: 'No crowd here to be late to.' },
 };
+// The flock's four states. A murmuration has no leader: each bird watches the six or seven nearest
+// it, and the turn shows in the shape before it shows in any single bird. These are the four things
+// a narrative can be doing -- attention rising or falling, against a proxy that is paying or not.
+const FLOCK_LOOK = {
+  gathering:  { label: 'gathering',  tone: 'var(--pos)',   short: 'Attention rising and the proxy rising with it. The flock is turning toward this and being paid for it.' },
+  crowding:   { label: 'crowding',   tone: 'var(--neg)',   short: 'Attention rising while the proxy is not. The crowd is arriving after the move stopped paying.' },
+  dispersing: { label: 'dispersing', tone: 'var(--muted)', short: 'Attention and price falling together. The flock is leaving.' },
+  unwatched:  { label: 'unwatched',  tone: 'var(--flat)',  short: 'The proxy is rising while attention falls. Working without an audience — the opposite of a crowded trade.' },
+};
+const KIND_LOOK = { asset_class: 'Asset class', sector: 'Sector', theme: 'Theme' };
+
+// The murmuration. Each narrative is a bird placed by how unusual its attention is (across) and
+// what its tradeable proxy has done over the month (up). The trail behind it is where it actually
+// sat four, eight and twelve weeks ago, each percentile computed against the year that preceded
+// THAT date rather than against today's -- a trail drawn with hindsight's baseline would move for
+// reasons the flock never saw. The heavy marker is the flock's centre of mass.
+function murmuration(rows, labelOf, kindOf) {
+  const pts = rows.filter(r => r.attention_pctile !== null && r.price_1m !== null);
+  if (pts.length < 4) return '<div class="empty">Not enough measured narratives to draw the flock.</div>';
+  const W = 860, Hh = 430, pad = { l: 52, r: 16, t: 18, b: 44 };
+  const rets = pts.flatMap(r => [+r.price_1m, ...(Array.isArray(r.trail) ? r.trail.map(t => t.price_1m).filter(v => v !== null && v !== undefined).map(Number) : [])]);
+  const lim = Math.max(0.05, Math.max(...rets.map(Math.abs)) * 1.1);
+  const X = v => pad.l + v * (W - pad.l - pad.r);
+  const Y = v => pad.t + (1 - (v + lim) / (2 * lim)) * (Hh - pad.t - pad.b);
+  const marker = (kind, x, y, tone, op) => kind === 'sector'
+    ? `<rect x="${(x - 3.2).toFixed(1)}" y="${(y - 3.2).toFixed(1)}" width="6.4" height="6.4" fill="${tone}" opacity="${op}"/>`
+    : kind === 'theme'
+      ? `<path d="M${x.toFixed(1)} ${(y - 4).toFixed(1)}L${(x + 3.8).toFixed(1)} ${(y + 3).toFixed(1)}L${(x - 3.8).toFixed(1)} ${(y + 3).toFixed(1)}Z" fill="${tone}" opacity="${op}"/>`
+      : `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.6" fill="${tone}" opacity="${op}"/>`;
+  // Only the busiest handful are labelled. Thirty-two labels on one chart is not a flock, it is a
+  // list with a background.
+  const named = pts.slice().sort((a, b) => (a.attention_rank ?? 99) - (b.attention_rank ?? 99)).slice(0, 6).map(r => r.narrative);
+  const com = w => {
+    const v = pts.map(r => w === 0 ? { a: +r.attention_pctile, p: +r.price_1m }
+      : (() => { const t = (r.trail || []).find(x => x.weeks_ago === w); return t && t.attention_pctile !== null && t.price_1m !== null ? { a: +t.attention_pctile, p: +t.price_1m } : null; })()).filter(Boolean);
+    return v.length ? { a: v.reduce((s, x) => s + x.a, 0) / v.length, p: v.reduce((s, x) => s + x.p, 0) / v.length, n: v.length } : null;
+  };
+  const coms = [12, 8, 4, 0].map(w => ({ w, c: com(w) })).filter(x => x.c);
+  return `<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto" role="img" aria-label="Narrative attention against proxy return, with each narrative's path over the last twelve weeks">
+    <rect x="${X(0.5)}" y="${pad.t}" width="${W - pad.r - X(0.5)}" height="${(Hh - pad.t - pad.b) / 2}" fill="var(--pos)" opacity="0.035"/>
+    <rect x="${X(0.5)}" y="${pad.t + (Hh - pad.t - pad.b) / 2}" width="${W - pad.r - X(0.5)}" height="${(Hh - pad.t - pad.b) / 2}" fill="var(--neg)" opacity="0.045"/>
+    <line x1="${pad.l}" y1="${Y(0)}" x2="${W - pad.r}" y2="${Y(0)}" stroke="var(--line)"/>
+    <line x1="${X(0.5)}" y1="${pad.t}" x2="${X(0.5)}" y2="${Hh - pad.b}" stroke="var(--line)" stroke-dasharray="3 3"/>
+    ${[-lim, -lim / 2, 0, lim / 2, lim].map(v => `<text x="${pad.l - 7}" y="${(Y(v) + 3.5).toFixed(1)}" font-size="10" text-anchor="end" fill="var(--muted)">${(v * 100).toFixed(0)}%</text>`).join('')}
+    ${[0, 0.25, 0.5, 0.75, 1].map(v => `<text x="${X(v).toFixed(1)}" y="${Hh - pad.b + 14}" font-size="10" text-anchor="middle" fill="var(--muted)">${(v * 100).toFixed(0)}%</text>`).join('')}
+    <text x="${X(0.5).toFixed(1)}" y="${Hh - 6}" font-size="10" text-anchor="middle" fill="var(--muted)">attention, as a percentile of each narrative's own year →</text>
+    <text x="14" y="${(pad.t + 10).toFixed(1)}" font-size="10" fill="var(--muted)">proxy, 1 month</text>
+    <text x="${(W - pad.r - 6).toFixed(1)}" y="${(pad.t + 12).toFixed(1)}" font-size="10" text-anchor="end" fill="var(--pos)">gathering</text>
+    <text x="${(W - pad.r - 6).toFixed(1)}" y="${(Hh - pad.b - 6).toFixed(1)}" font-size="10" text-anchor="end" fill="var(--neg)">crowding</text>
+    <text x="${(pad.l + 6).toFixed(1)}" y="${(pad.t + 12).toFixed(1)}" font-size="10" fill="var(--flat)">unwatched</text>
+    <text x="${(pad.l + 6).toFixed(1)}" y="${(Hh - pad.b - 6).toFixed(1)}" font-size="10" fill="var(--muted)">dispersing</text>
+    ${pts.map(r => {
+      const tone = (FLOCK_LOOK[r.state] || { tone: 'var(--muted)' }).tone;
+      const tr = (Array.isArray(r.trail) ? r.trail : []).filter(t => t.attention_pctile !== null && t.price_1m !== null)
+        .slice().sort((a, b) => b.weeks_ago - a.weeks_ago);
+      const path = tr.length < 2 ? '' : `<path d="${tr.map((t, i) => `${i ? 'L' : 'M'}${X(+t.attention_pctile).toFixed(1)} ${Y(+t.price_1m).toFixed(1)}`).join('')}" fill="none" stroke="${tone}" stroke-width="1.2" opacity="0.38"/>`;
+      const ghosts = tr.slice(0, -1).map(t => marker(kindOf(r.narrative), X(+t.attention_pctile), Y(+t.price_1m), tone, 0.22)).join('');
+      const x = X(+r.attention_pctile), y = Y(+r.price_1m);
+      const lbl = named.includes(r.narrative)
+        ? `<text x="${(x + 7).toFixed(1)}" y="${(y + 3.5).toFixed(1)}" font-size="10" fill="var(--text)">${esc(labelOf(r.narrative))}</text>` : '';
+      return `${path}${ghosts}<g><title>${esc(labelOf(r.narrative))} — ${esc(r.state_note || '')}</title>${marker(kindOf(r.narrative), x, y, tone, 0.95)}</g>${lbl}`;
+    }).join('')}
+    ${coms.length < 2 ? '' : `<path d="${coms.map((c, i) => `${i ? 'L' : 'M'}${X(c.c.a).toFixed(1)} ${Y(c.c.p).toFixed(1)}`).join('')}" fill="none" stroke="var(--accent)" stroke-width="2.4" opacity="0.75" stroke-dasharray="5 3"/>`}
+    ${coms.map((c, i) => `<circle cx="${X(c.c.a).toFixed(1)}" cy="${Y(c.c.p).toFixed(1)}" r="${i === coms.length - 1 ? 6.5 : 3.5}" fill="none" stroke="var(--accent)" stroke-width="${i === coms.length - 1 ? 2.4 : 1.4}" opacity="${i === coms.length - 1 ? 1 : 0.5}"><title>Flock centre, ${c.w === 0 ? 'today' : c.w + ' weeks ago'}</title></circle>`).join('')}
+  </svg>`;
+}
 const STANCE_CROWD = {
   crowded:   ['Crowded',  'var(--neg)'],
   mixed:     ['Mixed',    'var(--flat)'],
@@ -1538,8 +1613,6 @@ function kate() {
   const n = v => v === null || v === undefined ? null : +v;
   const pc = v => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : ''}${(+v * 100).toFixed(1)}%`;
   const pct0 = v => v === null || v === undefined ? '—' : `${(+v * 100).toFixed(0)}%`;
-  const reading = (D.crowdReading || [])[0] || null;
-  const comps = D.crowdComponents || [];
   const crowd = (D.crowding || []).slice().sort((a, b) => (a.crowd_rank ?? 9e9) - (b.crowd_rank ?? 9e9));
   const regime = (D.macroRegime || [])[0] || null;
   const ranks = D.beautyRanks || [];
@@ -1547,40 +1620,63 @@ function kate() {
   const tkr = id => (secById[id] || {}).ticker || '?';
   const nameOf = id => (secById[id] || {}).name || '';
 
-  if (!reading && !crowd.length && !ranks.length) {
+  if (!(D.narReading || []).length && !(D.narAttention || []).length && !crowd.length && !ranks.length) {
     return `<span class="eyebrow">Sentiment</span><h1>Kate</h1>
      <p class="sub">The popularity contest.</p>
-     <div class="card"><div class="empty">Nothing computed yet. Run jobs/compute-sentiment-crowding.mjs and jobs/compute-beauty-contest.mjs.</div></div>`;
+     <div class="card"><div class="empty">Nothing computed yet. Run jobs/compute-narrative-sentiment.mjs, jobs/compute-sentiment-crowding.mjs and jobs/compute-beauty-contest.mjs.</div></div>`;
   }
 
   const loopChip = st => !st || !LOOP_LOOK[st] ? '<span style="color:var(--muted)">—</span>'
     : `<span style="color:${LOOP_LOOK[st].tone};font-weight:600">${esc(LOOP_LOOK[st].label)}</span>`;
 
-  // ---- the gauge ----
-  const score = reading ? n(reading.score) : null;
-  const [stLabel, stTone] = reading && reading.stance && STANCE_CROWD[reading.stance] ? STANCE_CROWD[reading.stance] : ['Not yet reading', 'var(--muted)'];
+  // ---- the crowd, measured on narratives ----
+  // Reworked: the popularity contest is about what the crowd is TALKING ABOUT, not which tickers
+  // are extended. Nobody is bullish on a three-letter symbol; they are bullish on artificial
+  // intelligence, or nuclear power, or the end of the dollar, and the symbol is only how they say
+  // so. Four legs, each a share of the flock, so a crowd that is not leaning sits near 50 on all
+  // of them and the mean is a reading rather than an index with an arbitrary centre.
+  const nReading = (D.narReading || [])[0] || null;
+  const nComps = D.narComponents || [];
+  const flock = (D.narAttention || []).slice().sort((a, b) => (a.attention_rank ?? 9e9) - (b.attention_rank ?? 9e9));
+  const narMeta = Object.fromEntries((D.narratives || []).map(x => [x.slug, x]));
+  const labelOf = slug => (narMeta[slug] || {}).label || slug;
+  const kindOf = slug => (narMeta[slug] || {}).kind || 'theme';
+  const proxyOf = slug => (narMeta[slug] || {}).proxy_ticker || '';
+  const flockChip = st => !st || !FLOCK_LOOK[st] ? '<span style="color:var(--muted)">—</span>'
+    : `<span style="color:${FLOCK_LOOK[st].tone};font-weight:600">${esc(FLOCK_LOOK[st].label)}</span>`;
+
+  const nScore = nReading ? n(nReading.score) : null;
+  const [nLabel, nTone] = nReading && nReading.stance && STANCE_CROWD[nReading.stance] ? STANCE_CROWD[nReading.stance] : ['Not yet reading', 'var(--muted)'];
   const gauge = `<div class="card" style="margin-bottom:14px">
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
       <h2 style="margin:0">Crowd sentiment</h2>
-      <span style="font-size:12px;color:var(--muted)">${reading ? `${reading.n_live} of ${reading.n_total} legs live · ${reading.n_universe} securities scored · as of ${esc(reading.as_of)}` : ''}</span></div>
+      <span style="font-size:12px;color:var(--muted)">${nReading ? `${nReading.n_live} of ${nReading.n_total} legs live · ${nReading.n_narratives} narratives · as of ${esc(nReading.as_of)}` : ''}</span></div>
+    <p class="note" style="margin:6px 0 0">What the crowd is <b>talking about</b> — asset classes, sectors and themes, not individual securities. Each narrative is measured against its <b>own</b> trailing year before anything is compared: artificial intelligence draws 11,784 Wikipedia views a day and corporate bonds draw 35, and ranking the raw numbers would only rediscover that AI is a more famous subject than credit.</p>
     <div style="display:flex;align-items:center;gap:28px;flex-wrap:wrap;margin-top:14px">
       <div style="min-width:150px">
-        <div style="font-size:52px;font-weight:700;line-height:1;color:${stTone}">${score === null ? '—' : score.toFixed(0)}</div>
-        <div style="font-size:17px;font-weight:600;color:${stTone};margin-top:4px">${esc(stLabel)}</div>
+        <div style="font-size:52px;font-weight:700;line-height:1;color:${nTone}">${nScore === null ? '—' : nScore.toFixed(0)}</div>
+        <div style="font-size:17px;font-weight:600;color:${nTone};margin-top:4px">${esc(nLabel)}</div>
       </div>
       <div style="flex:1;min-width:260px">
-        <div class="dialtrack"><div class="dialmark" style="left:${score === null ? 50 : score}%;background:${score === null ? 'var(--line)' : stTone}"></div></div>
+        <div class="dialtrack"><div class="dialmark" style="left:${nScore === null ? 50 : nScore}%;background:${nScore === null ? 'var(--line)' : nTone}"></div></div>
         <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:6px">
           <span>Scattered</span><span>Mixed</span><span>Crowded</span></div>
       </div>
     </div>
-    ${!comps.length ? '' : `<table style="margin-top:16px"><thead><tr><th>Leg</th><th class="num">Reading</th><th>What is counted</th></tr></thead><tbody>
-      ${comps.slice().sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).map(c => `<tr>
-        <td><b>${esc(c.label)}</b>${c.status === 'live' ? '' : ` <span class="chip">${esc(c.status.replace('_', ' '))}</span>`}</td>
+    ${!nComps.length ? '' : `<div style="overflow-x:auto;margin-top:16px"><table style="min-width:620px"><thead><tr><th>Leg</th><th class="num">Reading</th><th>What is counted</th></tr></thead><tbody>
+      ${nComps.slice().sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).map(c => `<tr>
+        <td><b>${esc(c.label)}</b>${c.status === 'live' ? '' : ` <span class="chip" title="${esc(c.how_to_supply || '')}">${esc(c.status.replace('_', ' '))}</span>`}</td>
         <td class="num">${c.score === null ? '<span style="color:var(--muted)">—</span>' : (+c.score).toFixed(0)}${c.value_text ? `<br><span style="font-size:11px;color:var(--muted)">${esc(c.value_text)}</span>` : ''}</td>
-        <td style="font-size:12px;color:var(--muted)">${esc(c.measure)}</td></tr>`).join('')}
-      </tbody></table>`}
-    <p class="note">${reading ? esc(reading.headline) + ' ' : ''}Three legs are shares of the universe, so a tape with two opinions sits near 50 on each; one-sidedness is the average pairwise correlation stated as a percentage rather than scaled onto the dial, because an invented transformation could not be audited. <b>High is not a sell.</b> A crowded tape can stay crowded, which is why the loop states below matter more than the level. ${reading && reading.n_excluded ? `${reading.n_excluded} tracked names could not be scored: mutual-fund share classes print no exchange volume, cash substitutes have no extension to measure, and a short series has no baseline.` : ''}</p>
+        <td style="font-size:12px;color:var(--muted)">${esc(c.measure)}${c.how_to_supply ? ` <b>${esc(c.how_to_supply)}</b>` : ''}</td></tr>`).join('')}
+      </tbody></table></div>`}
+    <p class="note">${nReading ? esc(nReading.headline) + ' ' : ''}<b>High is not a sell.</b> A talked-about narrative can stay talked-about for a long time, which is why the state of each one matters more than the level of the gauge.</p>
+    <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
+      <div class="eyebrow" style="margin-bottom:4px">The murmuration</div>
+      <p class="note" style="margin:0 0 10px">A flock of starlings has no leader and no plan. Each bird watches the six or seven nearest it, and the whole thing turns as one — the turn visible in the <b>shape</b> long before it is visible in any single bird. Sentiment moves the same way, so this is the flock rather than a snapshot: each narrative sits where its attention and its proxy put it, with the faint path behind it showing where it was four, eight and twelve weeks ago. The dashed line is the flock's centre of mass on the same journey. Circles are asset classes, squares sectors, triangles themes.</p>
+      ${murmuration(flock, labelOf, kindOf)}
+      <p class="note">Each trail point's percentile is computed against the year that preceded <b>that date</b>, not against today's — a trail drawn with hindsight's baseline would move for reasons the flock never saw. Hover a bird for what it is doing and why.</p>
+    </div>
+    <p class="note"><b>What these sources are.</b> Wikipedia pageviews (what the public looks up), Hacker News story counts where a query cannot match something else — "nuclear power" counts, "gold" does not, because it matches "golden" — and StockTwits message velocity and tone on proxies specific to a narrative, never on a broad index. ${nComps.some(c => c.component === 'reddit' && c.status !== 'live') ? '<b>Reddit refuses unauthenticated reads</b>, so that leg is shown with no data rather than hidden.' : ''} <b>None of it is positioning.</b> Pageviews measure public curiosity, not capital: a narrative can be enormously talked about and barely owned, and the reverse.</p>
   </div>`;
 
   // ---- the beauty contest, recreated with the reflexivity test ----
@@ -1630,39 +1726,39 @@ function kate() {
   </div>`;
 
   // ---- the contrarian Top 5 ----
-  // The five most crowded names by the popularity contest, each with its loop verdict. Crowded is
-  // not a sell: crowded and "running" can stay that way for a long time, and fading a live loop is
-  // how people lose money being early. The combination worth saying out loud is crowded while the
-  // loop is crowding in or faltering.
-  const top = crowd.filter(r => r.crowd_score !== null).slice(0, 5);
-  const fadeable = top.filter(r => r.loop_state === 'crowding' || r.loop_state === 'faltering');
-  const contrarian = !top.length ? `<div class="card" style="margin-bottom:14px"><h2>Contrarian Top 5</h2>
-    <div class="empty">No security could be scored. The crowding job needs two years of history and real exchange volume.</div></div>`
+  // The five most talked-about narratives, and what each is doing. Crowded is not a sell: a
+  // narrative that is gathering can gather for a long time, and fading a live loop is how people
+  // lose money being early. The row worth saying out loud is CROWDING -- attention still rising
+  // after the proxy stopped paying for it.
+  const topN5 = flock.filter(r => r.attention_ratio !== null).slice(0, 5);
+  const crowdingNow = flock.filter(r => r.state === 'crowding');
+  const contrarian = !topN5.length ? `<div class="card" style="margin-bottom:14px"><h2>Contrarian Top 5</h2>
+    <div class="empty">No narrative could be measured. Run jobs/compute-narrative-sentiment.mjs.</div></div>`
     : `<div class="card" style="margin-bottom:14px">
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
       <h2 style="margin:0">Contrarian Top 5</h2>
-      <span style="font-size:12px;color:var(--muted)">the most crowded names on the desk's tape</span></div>
-    <p class="note" style="margin:8px 0 14px">Ranked by a popularity score: how much more attention a name is getting than its own normal, how far above its own trend it sits, what it has returned over six months, and how one-sided its tape has been. Each leg is measured against the security's <b>own</b> history before being ranked against the others, so a quiet bond fund and a volatile equity are compared on how unusual each is for itself.</p>
-    <div style="overflow-x:auto"><table style="min-width:720px"><thead><tr>
-      <th class="num">#</th><th>Ticker</th><th class="num">Crowd score</th><th class="num">Attention</th>
-      <th class="num">Above own trend</th><th class="num">6 months</th><th class="num">Up days</th><th class="num">Up/down volume</th><th>Feedback loop</th></tr></thead><tbody>
-      ${top.map(r => `<tr>
-        <td class="num">${r.crowd_rank}</td>
-        <td><b>${esc(tkr(r.security_id))}</b><br><span style="font-size:11px;color:var(--muted)">${esc(nameOf(r.security_id).slice(0, 34))}</span></td>
-        <td class="num"><b>${(+r.crowd_score).toFixed(0)}</b></td>
-        <td class="num">${r.attention === null ? '—' : (+r.attention).toFixed(2) + '×'}</td>
-        <td class="num">${pct0(r.stretch_pctile)}</td>
-        <td class="num" style="color:${(n(r.momentum_6m) ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(r.momentum_6m)}</td>
-        <td class="num">${pct0(r.persistence)}</td>
-        <td class="num" style="color:${r.up_down_volume === null ? 'var(--muted)' : +r.up_down_volume > 1 ? 'var(--pos)' : 'var(--neg)'}">${r.up_down_volume === null ? '—' : (+r.up_down_volume).toFixed(2) + '×'}</td>
-        <td title="${esc(r.loop_note || '')}">${loopChip(r.loop_state)}</td></tr>`).join('')}
+      <span style="font-size:12px;color:var(--muted)">the most talked-about narratives, against their own normal</span></div>
+    <p class="note" style="margin:8px 0 14px">Ranked by how unusual each narrative's attention is for <b>itself</b>, not by how much of it there is. A narrative at 1.6× its own normal is being talked about more than it usually is, which is the thing that moves; a famous subject sitting at 1.0× is not news.</p>
+    <div style="overflow-x:auto"><table style="min-width:760px"><thead><tr>
+      <th class="num">#</th><th>Narrative</th><th>Kind</th><th class="num">Attention</th><th class="num">Own year</th>
+      <th>Proxy</th><th class="num">1 month</th><th class="num">3 months</th><th>State</th></tr></thead><tbody>
+      ${topN5.map(r => `<tr>
+        <td class="num">${r.attention_rank}</td>
+        <td><b>${esc(labelOf(r.narrative))}</b>${r.n_sources > 1 ? `<br><span style="font-size:11px;color:var(--muted)">${r.n_sources} sources agree it is ${(+r.attention_ratio) >= 1 ? 'busier' : 'quieter'} than normal</span>` : ''}</td>
+        <td style="font-size:12px;color:var(--muted)">${esc(KIND_LOOK[kindOf(r.narrative)] || '')}</td>
+        <td class="num"><b>${(+r.attention_ratio).toFixed(2)}×</b></td>
+        <td class="num">${r.attention_pctile === null ? '—' : pct0(r.attention_pctile)}</td>
+        <td><span class="chip">${esc(proxyOf(r.narrative))}</span></td>
+        <td class="num" style="color:${(n(r.price_1m) ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(r.price_1m)}</td>
+        <td class="num" style="color:${(n(r.price_3m) ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(r.price_3m)}</td>
+        <td title="${esc(r.state_note || '')}">${flockChip(r.state)}</td></tr>`).join('')}
     </tbody></table></div>
-    ${!fadeable.length ? `<p class="note" style="margin-top:12px">None of the five has a loop that has turned. Every one of them is either still being funded by fresh participation or is not extended in the first place, which is the case where a contrarian list is a watchlist rather than a trade.</p>`
+    ${!crowdingNow.length ? `<p class="note" style="margin-top:12px">Nothing in the flock is <b>crowding</b> right now — no narrative is drawing rising attention while its proxy falls. That is the case where a contrarian list is a watchlist rather than a trade.</p>`
       : `<div style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
-      <div class="eyebrow" style="margin-bottom:8px">Where the boat is leaning hardest</div>
-      ${fadeable.map(r => `<p class="note" style="margin:0 0 8px"><b>${esc(tkr(r.security_id))}</b> — ${esc(r.loop_note || '')}</p>`).join('')}
-      <p class="note">These are the rows where the crowd is still in the position and the tape has stopped paying them for it. It is the combination worth naming, not a signal to sell: being early into a reversal costs the same as being wrong about it.</p></div>`}
-    <p class="note" style="margin-top:12px"><b>This is not positioning data.</b> The desk has no Commitment of Traders report, no short interest, no fund flows and no sentiment survey. Everything above is what the tape implies about how full a trade is, which is a weaker claim than seeing who owns it — and the weaker claim is the true one. Mutual-fund share classes print no exchange volume and cash substitutes have no extension to measure, so neither appears here.</p>
+      <div class="eyebrow" style="margin-bottom:8px">Where the boat is leaning hardest — ${crowdingNow.length} narrative${crowdingNow.length === 1 ? '' : 's'} crowding</div>
+      ${crowdingNow.slice(0, 6).map(r => `<p class="note" style="margin:0 0 8px"><b>${esc(labelOf(r.narrative))}</b> <span class="chip">${esc(proxyOf(r.narrative))}</span> — ${esc(r.state_note || '')}</p>`).join('')}
+      <p class="note">These are the narratives the crowd is still turning toward after the price stopped rewarding it. It is the combination worth naming, not a signal to sell: being early into a reversal costs the same as being wrong about it.</p></div>`}
+    <p class="note" style="margin-top:12px"><b>This is not positioning data.</b> The desk has no Commitment of Traders report, no short interest, no fund flows and no investor survey. What is measured here is public attention — pageviews, forum posts, message velocity — set against what the tradeable proxy actually did. That is a weaker claim than knowing who owns what, and the weaker claim is the true one.</p>
   </div>`;
 
   // ---- where the desk's own book sits ----
@@ -1673,9 +1769,9 @@ function kate() {
   const ownRows = crowd.filter(r => held.has(r.security_id) && r.crowd_score !== null);
   const bookCard = !ownRows.length ? '' : `<div class="card" style="margin-bottom:14px">
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
-      <h2 style="margin:0">What the desk owns, by popularity</h2>
+      <h2 style="margin:0">What the desk owns, by the tape</h2>
       <span style="font-size:12px;color:var(--muted)">${ownRows.length} held name${ownRows.length === 1 ? '' : 's'} scored</span></div>
-    <p class="note" style="margin:8px 0 14px">Every position the models currently hold that could be scored, most crowded first. This is the column that turns the contest into a decision: a crowded holding is not a problem, but a crowded holding whose loop has turned is the one to have an answer ready for.</p>
+    <p class="note" style="margin:8px 0 14px">The narratives above are what the crowd is <b>saying</b>. This is what the desk actually <b>holds</b>, scored on the tape instead — attention against its own normal, distance above its own trend, six-month return, one-sidedness of its own days — most crowded first. Two different measurements of two different things, and the pair is the point: a holding can be quiet on the tape while the narrative behind it is the loudest in the flock.</p>
     <div style="overflow-x:auto"><table style="min-width:560px"><thead><tr>
       <th class="num">Rank</th><th>Ticker</th><th class="num">Crowd score</th><th class="num">Attention</th>
       <th class="num">Above own trend</th><th class="num">6 months</th><th>Feedback loop</th></tr></thead><tbody>
@@ -1688,23 +1784,31 @@ function kate() {
         <td class="num" style="color:${(n(r.momentum_6m) ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(r.momentum_6m)}</td>
         <td title="${esc(r.loop_note || '')}">${loopChip(r.loop_state)}</td></tr>`).join('')}
     </tbody></table></div>
-    <p class="note">Rank is against the whole scored universe of ${reading ? reading.n_universe : crowd.length} securities, not against this list, so a rank of 40 means fortieth most crowded thing the desk tracks. Holdings with no exchange volume or too little history are absent rather than shown at zero.</p>
+    <p class="note">Rank is against the whole scored universe of ${crowd.length} securities, not against this list, so a rank of 40 means fortieth most crowded thing the desk tracks. Holdings with no exchange volume or too little history are absent rather than shown at zero.</p>
   </div>`;
 
   // ---- how the loop states are defined ----
   const legend = `<div class="card" style="margin-bottom:14px">
     <h2>Reading the loop</h2>
-    <p class="note" style="margin:0 0 12px">Soros's addition to Keynes: belief and price are a two-way street, so a rising price can recruit the buying that raises it further. The loop runs until it does not — reflexivity is not a reason a trend continues, it is a reason it eventually breaks hard. Three measurements decide which state a name is in: whether it is extended against its own three-year history, whether dollar volume still favours up days over down days, and whether the extension is still widening.</p>
+    <p class="note" style="margin:0 0 12px">Soros's addition to Keynes: belief and price are a two-way street, so a rising price can recruit the buying that raises it further. The loop runs until it does not — reflexivity is not a reason a trend continues, it is a reason it eventually breaks hard. Two vocabularies, because two things are being watched.</p>
+    <div class="eyebrow" style="margin-bottom:6px">The flock — a narrative's attention against its proxy</div>
+    <table><thead><tr><th>State</th><th>What it means</th></tr></thead><tbody>
+      ${['gathering', 'crowding', 'dispersing', 'unwatched'].map(k => `<tr>
+        <td><span style="color:${FLOCK_LOOK[k].tone};font-weight:600">${esc(FLOCK_LOOK[k].label)}</span></td>
+        <td style="font-size:12px">${esc(FLOCK_LOOK[k].short)}</td></tr>`).join('')}
+    </tbody></table>
+    <p class="note"><b>Crowding</b> is the state to read twice. It looks most like a winner — attention rising, the subject everywhere — and behaves least like one, because the price stopped paying before the crowd got there.</p>
+    <div class="eyebrow" style="margin:16px 0 6px">The loop — a contest dimension, or a single holding</div>
+    <p class="note" style="margin:0 0 10px">Measured from the tape rather than from attention: whether the winning side is still pulling away, and whether dollar volume is still arriving at it.</p>
     <table><thead><tr><th>State</th><th>What it means</th></tr></thead><tbody>
       ${['running', 'crowding', 'faltering', 'cold'].map(k => `<tr>
         <td><span style="color:${LOOP_LOOK[k].tone};font-weight:600">${esc(LOOP_LOOK[k].label)}</span></td>
         <td style="font-size:12px">${esc(LOOP_LOOK[k].short)}</td></tr>`).join('')}
     </tbody></table>
-    <p class="note"><b>Crowding in</b> is the state to read twice. It looks most like a winner — the crowd is arriving, attention is high — and behaves least like one, because the move stopped paying before they got there.</p>
   </div>`;
 
   return `<span class="eyebrow">Sentiment</span><h1>Kate</h1>
-   <p class="sub">The popularity contest — what the crowd believes is attractive, how full the trade already is, and whether the loop behind it still pays.</p>
+   <p class="sub">The popularity contest — which narratives the crowd is talking about, how full each one already is, and whether the loop behind it still pays.</p>
    ${gauge}${contestCard}${contrarian}${bookCard}${legend}`;
 }
 
@@ -4663,7 +4767,34 @@ function gail() {
   <p class="note"><b>${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}.</b> A journal entry is a decision record and nothing more: it reaches no broker and moves no allocation. The tax figure beside one is the estimate made at the time it was written, priced off the open lots then — it is not re-costed as prices move, because what matters later is what the desk believed when it decided.</p>`;
 }
 
-function viewsPage() {
+// ---------- Admin: status, sources, views and agents under one roof ----------
+//
+// Four tabs that were each consulted rather than read. Status goes first because it is the one
+// that answers "can I trust what the rest of this site just told me" -- a degraded query or a
+// stale price run changes how every other number should be taken, so it belongs above the things
+// it qualifies. Sources second, for the same reason one level down: whose calls are behind the
+// views. Then the views themselves, then the agents' latest output.
+//
+// Each section is the original page rendered with its banner suppressed, not a copy of it. One
+// implementation, four places it can appear, and no chance of the Admin version drifting from
+// what the standalone page used to say.
+function admin() {
+  const sec = (eyebrow, title, body, note) => `<div style="margin:0 0 10px">
+    <span class="eyebrow">${esc(eyebrow)}</span>
+    <h2 style="margin:2px 0 0;font-size:20px">${esc(title)}</h2>
+    ${note ? `<p class="note" style="margin:4px 0 0">${note}</p>` : ''}</div>${body}`;
+  return `<span class="eyebrow">Allocation model</span><h1>Admin</h1>
+   <p class="sub">What is running, what the data came from, the allocation views behind it, and the agents' latest output. Everything here qualifies the rest of the site rather than adding to it.</p>
+   ${sec('Housekeeping', 'Status', status(true), 'Read this first: a failed query or a stale price run changes how every other figure on the site should be taken.')}
+   <div style="height:26px;border-top:1px solid var(--line);margin:22px 0 0"></div>
+   ${sec('Provenance', 'Sources', sources(true))}
+   <div style="height:26px;border-top:1px solid var(--line);margin:22px 0 0"></div>
+   ${sec('Allocation', 'Views', viewsPage(true))}
+   <div style="height:26px;border-top:1px solid var(--line);margin:22px 0 0"></div>
+   ${sec('The desk', 'Agents', agents(true))}`;
+}
+
+function viewsPage(embed) {
   const cell = v => v === null ? ['M', 'UNSCORED'] : v > 0.4 ? ['L', 'LONG'] : v < -0.75 ? ['S', 'SHORT'] : v < -0.25 ? ['M', 'FLAT / SHORT'] : ['F', 'FLAT'];
   const rows = D.matrix.map(r => `<div class="rl">${esc(r.name)}</div>${r.v.map(x => { const [c, t] = cell(x === null ? null : +x); return `<div class="${c}">${t}</div>`; }).join('')}`).join('');
 
@@ -4684,11 +4815,11 @@ function viewsPage() {
     const rows = (D.macroByFactor[f.slug] || []).sort((a, b) => a.fred_code.localeCompare(b.fred_code));
     if (!rows.length) return '';
     return `<div class="card" style="margin-bottom:10px"><h2>${esc(fname(f))}</h2><table><thead><tr><th>Series</th><th class="num">Value</th><th>As of</th></tr></thead><tbody>
-     ${rows.map(r => `<tr class="click" data-go="#views/${esc(r.series_id)}"><td>${esc(r.name)} <small style="color:var(--muted)">(${esc(r.fred_code)})</small></td><td class="num">${r.value}${/percent/i.test(r.unit || '') ? '%' : ''}</td><td>${esc(r.obs_date)}</td></tr>`).join('')}
+     ${rows.map(r => `<tr class="click" data-go="#admin/${esc(r.series_id)}"><td>${esc(r.name)} <small style="color:var(--muted)">(${esc(r.fred_code)})</small></td><td class="num">${r.value}${/percent/i.test(r.unit || '') ? '%' : ''}</td><td>${esc(r.obs_date)}</td></tr>`).join('')}
      </tbody></table></div>`;
   }).join('');
 
-  return `<span class="eyebrow">Allocation model</span><h1>Views</h1><p class="sub">Exposure of each asset class, the desk's current stance where recorded, the macro data behind it, and a sandbox for trying a different mix. Click a macro series for its chart.</p>
+  return `${embed ? '' : '<span class="eyebrow">Allocation model</span><h1>Views</h1>'}<p class="sub">Exposure of each asset class, the desk's current stance where recorded, the macro data behind it, and a sandbox for trying a different mix. Click a macro series for its chart.</p>
   <div class="card" style="margin-bottom:14px"><h2>Exposure matrix</h2><div class="mx"><div class="hd"></div>${D.factors.map(f => `<div class="hd">${esc(fname(f).toUpperCase())}</div>`).join('')}${rows}</div>
   <p class="note">Long +1, Flat 0, Short −1, Flat/Short −0.5. Subjective judgments.</p></div>
   <h2 style="margin:18px 0 10px">Stances</h2>
@@ -4718,7 +4849,7 @@ function indexSection() {
    </tbody></table><p class="note">Click an index for its full chart on the Markets tab. Descriptive price action and trend only — no rating, for the same reason given on Markets.</p></div>`;
 }
 
-function agents() {
+function agents(embed) {
   // isolated: true for agents whose output never feeds a brief or Stan's process unless
   // explicitly tapped in — worth showing on the card so the distinction stays visible.
   const A = [
@@ -4728,7 +4859,7 @@ function agents() {
     ['sven', 'Sven', 'Market internals', true], ['gail', 'Gail', 'Geopolitics', true],
     ['kate', 'Kate', 'Sentiment', false],
   ];
-  return `<span class="eyebrow">Allocation model</span><h1>Agents</h1><p class="sub">Each agent's latest output, with its as-of date. Isolated agents are shown here to read, but their work never feeds a brief or the allocation process unless explicitly tapped in.</p>
+  return `${embed ? '' : '<span class="eyebrow">Allocation model</span><h1>Agents</h1>'}<p class="sub">Each agent's latest output, with its as-of date. Isolated agents are shown here to read, but their work never feeds a brief or the allocation process unless explicitly tapped in.</p>
   <div class="agents">${A.map(([k, n, r, isolated]) => { const o = D.outputs.find(x => x.agent === k);
    return `<div class="card"><span class="eyebrow">${r}</span><h2 style="font-size:18px">${n} ${isolated ? '<span class="chip">isolated</span>' : ''}</h2>${o ? `<div><b>${esc(o.title)}</b> <span class="chip">${esc(o.as_of)}</span></div><p style="white-space:pre-wrap;color:var(--muted)">${esc(o.body_md.slice(0, 900))}${o.body_md.length > 900 ? '…' : ''}</p>` : '<div class="empty">No output yet.</div>'}</div>`; }).join('')}</div>`;
 }
@@ -4787,13 +4918,13 @@ function stnCard() {
    <p class="note">Signal is the mean return in the <b>direction</b> of the call; noise is its standard deviation; the figure shown is the two divided. So a source right by a hair every time scores below one right by a lot, and a scattered source scores below a consistent one at the same hit rate — an information ratio applied to opinions. Windows are anchored on when the call was <b>made</b>, not when it settled. Hover for the underlying hit rate, signal and noise. ${thin ? '<b>Every row here is below ten scored calls, which is too few to mean anything</b> — they are shown faded for that reason. The intended use, once there is volume, is to let consistently strong sources earn more weight in the traffic lights than the framework\'s flat lens weights give them.' : ''}</p></div>`;
 }
 
-function sources() {
+function sources(embed) {
   const src = D.sources || [], calls = D.calls || [];
   const hitColor = h => h === null || h === undefined ? 'var(--muted)' : h ? 'var(--pos)' : 'var(--neg)';
   const dirChip = d => { const cls = d === 'bullish' ? 'long' : d === 'bearish' ? 'short' : 'flat'; return `<span class="chip ${cls}">${esc(d)}</span>`; };
   const totalScored = src.reduce((a, s) => a + (s.n_directional || 0), 0);
   const totalOpen = src.reduce((a, s) => a + (s.n_open || 0), 0);
-  return `<span class="eyebrow">Allocation model</span><h1>Sources</h1>
+  return `${embed ? '' : '<span class="eyebrow">Allocation model</span><h1>Sources</h1>'}
   <p class="sub">Which research sources have actually been right. Each directional call a source makes is papertraded against that asset class's benchmark once the horizon passes — this is measured, not a feeling.</p>
   <div class="kpis">
    <div class="card kpi"><span class="eyebrow">Sources tracked</span><b>${src.length}</b><small></small></div>
@@ -4818,7 +4949,7 @@ function sources() {
   </div>`;
 }
 
-function status() {
+function status(embed) {
   const items = D.roadmap || [];
   // If an optional dataset failed to load, say so here rather than letting its card render empty
   // and read as "nothing to show". An empty panel and a broken query look identical otherwise.
@@ -4831,7 +4962,7 @@ function status() {
   const doneCount = items.filter(i => i.status === 'done').length;
   const dot = s => ({ done: 'var(--pos)', in_progress: 'var(--flat)', deferred: 'var(--muted)', not_started: 'var(--neg)' }[s] || 'var(--muted)');
   const label = s => ({ done: 'Done', in_progress: 'In progress', deferred: 'Deferred', not_started: 'Not started' }[s] || s);
-  return `<span class="eyebrow">Allocation model</span><h1>Status</h1><p class="sub">What's built, in progress, or not started — kept in sync with the project roadmap.</p>
+  return `${embed ? '' : '<span class="eyebrow">Allocation model</span><h1>Status</h1>'}<p class="sub">What's built, in progress, or not started — kept in sync with the project roadmap.</p>
   ${degraded}
   <div class="kpis">
    <div class="card kpi"><span class="eyebrow">Items</span><b>${items.length}</b><small>tracked</small></div>

@@ -52,6 +52,10 @@ if (!KEY) {
 const REST = { apikey: KEY, Authorization: `Bearer ${KEY}` };
 
 const errors = [];
+// Captured before anything renders, so "did the page write to the database" can be asked by
+// comparing write times rather than by comparing values -- a value that matches a suggestion may
+// simply be a suggestion someone accepted last week.
+const suiteStarted = Date.now();
 let currentRoute = 'boot';
 // A direct read, for checking what the page shows against what the database holds. Paged, because
 // a table that gains a row per security per night walks into PostgREST's 1000-row cap on its own.
@@ -228,12 +232,11 @@ const series = await pick('current_macro_readings', 'series_id,fred_code');
 // 1. Every route renders something that is not an error or a loading state.
 // ---------------------------------------------------------------------------
 const routes = argRoute ? [argRoute] : [
-  '#sisyphus', '#stan', '#adam', '#kate', '#sven', '#gail', '#annie', '#sandbox', '#markets', '#views', '#signals', '#agents',
-  '#briefs', '#sources', '#inbox', '#status',
+  '#markets', '#sisyphus', '#stan', '#annie', '#adam', '#sven', '#kate', '#gail', '#sandbox', '#signals', '#briefs', '#inbox', '#admin',
   strat ? `#sisyphus/${strat.id}` : null,
   strat ? `#stan/${strat.id}` : null,
   sec ? `#markets/${sec.id}` : null,
-  series ? `#views/${series.series_id}` : null,
+  series ? `#admin/${series.series_id}` : null,
   '#stan/speed-limit', strat ? `#stan/top3-${strat.id}` : null,
   '#stan/snr-predictive', '#stan/snr-descriptive', '#stan/snr-positioning', '#stan/snr-sentiment',
   '#annie/steel-KSPY', '#sven/SPY',
@@ -265,7 +268,7 @@ if (!argRoute) {
   //    sitting in a bookmark, and without the redirect every stale link looks like a deleted page.
   // -------------------------------------------------------------------------
   currentRoute = 'legacy-hashes';
-  for (const [from, to, h1] of [['#overview', '#sisyphus', 'Sisyphus'], ['#decisions', '#annie', 'Decision Coach'], ['#playground', '#views', 'Views']]) {
+  for (const [from, to, h1] of [['#overview', '#sisyphus', 'Sisyphus'], ['#decisions', '#annie', 'Decision Coach'], ['#playground', '#admin', 'Admin'], ['#views', '#admin', 'Admin'], ['#sources', '#admin', 'Admin'], ['#agents', '#admin', 'Admin'], ['#status', '#admin', 'Admin']]) {
     await go(from);
     const ok = location.hash === to && new RegExp(`<h1>${h1}</h1>`).test(app());
     say(` ok  ${from} -> ${location.hash}${ok ? '' : '  DID NOT REDIRECT'}`);
@@ -944,9 +947,9 @@ if (!argRoute) {
   {
     const nav = readFileSync(join(SITE, 'index.html'), 'utf8');
     const order = [...nav.matchAll(/<a href="#([a-z]+)">/g)].map(m => m[1]);
-    const want = ['sisyphus', 'stan', 'adam', 'kate', 'sven', 'gail', 'annie', 'sandbox'];
-    say(` ok  nav order              -> ${order.slice(0, 8).join(' · ')}`);
-    need(want.every((w, i) => order[i] === w), `[nav] expected ${want.join(' · ')}, found ${order.slice(0, 8).join(' · ')}`);
+    const want = ['markets', 'sisyphus', 'stan', 'annie', 'adam', 'sven', 'kate', 'gail', 'sandbox', 'signals', 'briefs', 'inbox', 'admin'];
+    say(` ok  nav order              -> ${order.join(' · ')}`);
+    need(want.length === order.length && want.every((w, i) => order[i] === w), `[nav] expected ${want.join(' · ')}, found ${order.join(' · ')}`);
   }
 
   // -------------------------------------------------------------------------
@@ -968,22 +971,59 @@ if (!argRoute) {
     need(/not positioning data/i.test(k), '[kate] the page does not say the crowding is inferred from the tape');
     need(!/short interest is|positioning shows|investors are positioned/i.test(k), '[kate] the page claims to see positioning');
 
-    const reading = await rest('crowd_sentiment_readings', 'as_of,score,stance,n_live,n_total,n_universe,n_excluded', '&order=as_of.desc&limit=1');
-    const comps = await rest('latest_crowd_sentiment_components', 'component,score,status,n');
-    const rows = await rest('latest_security_crowding', 'security_id,crowd_score,crowd_rank,attention,stretch_pctile,momentum_6m,persistence,up_down_volume,loop_state', '&order=crowd_rank.asc');
-    need(rows.length > 20, `[kate] only ${rows.length} securities were scored for crowding`);
-    need(comps.length === 4, `[kate] the gauge has ${comps.length} legs, expected 4`);
+    // The gauge is measured on NARRATIVES now -- asset classes, sectors and themes -- not on
+    // individual securities. The page must be reading the narrative tables, and the murmuration
+    // must be drawn from real trails rather than a single frozen point per bird.
+    const reading = await rest('narrative_sentiment_readings', 'as_of,score,stance,n_live,n_total,n_narratives,top_narrative,concentration', '&order=as_of.desc&limit=1');
+    const comps = await rest('latest_narrative_sentiment_components', 'component,score,status,n');
+    const nar = await rest('latest_narrative_attention', 'narrative,attention_ratio,attention_pctile,attention_share,attention_rank,price_1m,state,trail,n_sources', '&order=attention_rank.asc');
+    const taxonomy = await rest('narratives', 'slug,label,kind,proxy_ticker');
+    need(nar.length > 20, `[kate] only ${nar.length} narratives were scored`);
+    need(comps.length >= 4, `[kate] the gauge has ${comps.length} legs, expected at least 4`);
+    need(new Set(taxonomy.map(t => t.kind)).size === 3, '[kate] the taxonomy is missing a kind; asset classes, sectors and themes should all be present');
     const r0 = reading[0];
     if (r0) {
-      say(` ok  kate gauge             -> ${(+r0.score).toFixed(1)} / 100 ${r0.stance}, ${r0.n_live}/${r0.n_total} legs, ${r0.n_universe} scored`);
+      say(` ok  kate gauge             -> ${(+r0.score).toFixed(1)} / 100 ${r0.stance}, ${r0.n_live}/${r0.n_total} legs, ${r0.n_narratives} narratives`);
       need(+r0.n_live === comps.filter(c => c.score !== null).length, '[kate] the reading disagrees with its own legs about how many are live');
       const want = +r0.score >= 60 ? 'crowded' : +r0.score <= 40 ? 'scattered' : 'mixed';
       need(r0.stance === want, `[kate] a score of ${r0.score} is labelled ${r0.stance}, not ${want}`);
-      // The gauge must be shown with the figure the database holds, to one decimal or rounded.
       need(k.includes(String(Math.round(+r0.score))), `[kate] the page does not show the gauge reading of ${r0.score}`);
+      // A dead leg must be visible as a dead leg. Reddit refuses unauthenticated reads, and a
+      // five-leg gauge quietly running on four is the thing this guard exists to catch.
+      const dead = comps.filter(c => c.score === null);
+      if (dead.length) need(/awaiting data/.test(k), '[kate] a leg has no data but the page does not say so');
     }
-    // The ranking has to be a ranking, and the loop verdicts have to follow their own figures.
+    // Narrative scoring must be self-consistent, and must never be a ranking of raw fame.
     let bad = [];
+    const shareSum = nar.reduce((a, r) => a + (+r.attention_share || 0), 0);
+    if (Math.abs(shareSum - 1) > 1e-4) bad.push(`attention shares sum to ${shareSum.toFixed(4)}, not 1`);
+    for (let i = 1; i < nar.length; i++) if (+nar[i].attention_ratio > +nar[i - 1].attention_ratio + 1e-9) bad.push(`rank ${nar[i].attention_rank} is busier than rank ${nar[i - 1].attention_rank}`);
+    for (const r of nar) {
+      if (!(+r.attention_ratio > 0)) bad.push(`${r.narrative} has an attention ratio of ${r.attention_ratio}`);
+      if (r.state === null) continue;
+      const tr = Array.isArray(r.trail) ? r.trail : [];
+      const now = tr.find(t => t.weeks_ago === 0), then = tr.find(t => t.weeks_ago === 4);
+      if (!now || !then) { bad.push(`${r.narrative} has a state but no four-week trail behind it`); continue; }
+      const up = +now.attention_pctile > +then.attention_pctile, paid = +r.price_1m > 0;
+      const want = up ? (paid ? 'gathering' : 'crowding') : (paid ? 'unwatched' : 'dispersing');
+      if (r.state !== want) bad.push(`${r.narrative} is ${r.state} but its attention and price say ${want}`);
+    }
+    // The murmuration needs paths, not points: a trail of one is a scatter plot wearing a metaphor.
+    const withTrail = nar.filter(r => Array.isArray(r.trail) && r.trail.filter(t => t.attention_pctile !== null && t.price_1m !== null).length >= 2);
+    need(withTrail.length >= 10, `[kate] only ${withTrail.length} narratives carry a usable trail, so the flock has no shape`);
+    bad = [...new Set(bad)];
+    for (const b of bad) errors.push(`[kate] ${b}`);
+    say(` ok  kate narratives        -> ${nar.length} scored, ${withTrail.length} with trails, top ${(+nar[0].attention_ratio).toFixed(2)}x, ${bad.length} problems`);
+    // The five most talked-about narratives must be the five the page prints, by label.
+    const labelBySlug = Object.fromEntries(taxonomy.map(t => [t.slug, t.label]));
+    for (const r of nar.slice(0, 5)) need(k.includes(labelBySlug[r.narrative]), `[kate] ${labelBySlug[r.narrative]} is in the top five by attention but is not on the page`);
+    need(/murmuration|flock/i.test(k), '[kate] the flock is not described on the page');
+    need(/Wikipedia/.test(k) && /StockTwits/.test(k), '[kate] the page does not say which public sources the attention came from');
+    // The per-security crowding still runs: it is what the desk's OWN holdings are read against,
+    // one section down, and its ranking has to be a ranking.
+    const rows = await rest('latest_security_crowding', 'security_id,crowd_score,crowd_rank,attention,stretch_pctile,momentum_6m,persistence,up_down_volume,loop_state', '&order=crowd_rank.asc');
+    need(rows.length > 20, `[kate] only ${rows.length} securities were scored for crowding`);
+    bad = [];
     for (let i = 1; i < rows.length; i++) if (+rows[i].crowd_score > +rows[i - 1].crowd_score + 1e-9) bad.push(`rank ${rows[i].crowd_rank} scores above rank ${rows[i - 1].crowd_rank}`);
     for (const r of rows) {
       if (!(+r.crowd_score >= 0 && +r.crowd_score <= 100)) bad.push(`${r.crowd_rank} scores ${r.crowd_score}, outside 0-100`);
@@ -996,12 +1036,8 @@ if (!argRoute) {
     }
     bad = [...new Set(bad)];
     for (const b of bad) errors.push(`[kate] ${b}`);
-    const top5 = rows.slice(0, 5);
-    say(` ok  kate crowding          -> ${rows.length} scored, top 5 ${top5.map(r => r.crowd_rank + ':' + (+r.crowd_score).toFixed(0)).join(' ')}, ${bad.length} problems`);
-    // The five most crowded names must be the five the page actually prints.
-    const secs = await rest('securities', 'id,ticker');
-    const byId = Object.fromEntries(secs.map(x => [x.id, x.ticker]));
-    for (const r of top5) need(k.includes(byId[r.security_id]), `[kate] ${byId[r.security_id]} is in the top five by crowd score but is not on the page`);
+    say(` ok  kate crowding          -> ${rows.length} securities scored on the tape, ${bad.length} problems`);
+    for (const b of bad) errors.push(`[kate] ${b}`);
 
     // The reflexivity test on the contest: the loop must be read on whichever side the TAPE
     // favours. Testing the regime's preferred side regardless reported a loop "running" on a
@@ -1029,6 +1065,20 @@ if (!argRoute) {
     need(/Kate/.test(a), '[adam] the page does not point at Kate, so the contest just vanished');
     need(/Macro Beauty Contest/.test(a), '[adam] the risk-on gauge went with it; only the contest was meant to move');
     say(` ok  kate handover          -> the contest is on Kate's tab, the regime gauge stayed with Adam`);
+
+    // Admin: four tabs became four sections, in the order asked for, and each old hash still lands.
+    await go('#admin');
+    const adm = app();
+    for (const want of ['Status', 'Sources', 'Views', 'Agents'])
+      need(new RegExp(`<h2[^>]*>${want}</h2>`).test(adm), `[admin] the ${want} section is missing`);
+    need(adm.indexOf('>Status<') < adm.indexOf('>Sources<'), '[admin] Sources is above Status; status was asked for first');
+    need(adm.indexOf('>Sources<') < adm.indexOf('>Views<'), '[admin] Views is above Sources; sources was asked for second');
+    need((adm.match(/<h1>/g) || []).length === 1, '[admin] a merged section kept its own page heading');
+    for (const old of ['#views', '#sources', '#agents', '#status']) {
+      await go(old);
+      need(/<h1>Admin<\/h1>/.test(app()), `[admin] ${old} no longer lands anywhere`);
+    }
+    say(` ok  admin merge            -> status, sources, views, agents in one tab; four old hashes still land`);
   }
 
   // -------------------------------------------------------------------------
@@ -1076,13 +1126,16 @@ if (!argRoute) {
         need(selectedSuggestions > 0, '[classify-vol] a suggested blend exists but none is pre-selected');
         need(banner, '[classify-vol] blends were pre-selected without saying so');
         need(/data-repupdate="1" >/.test(d) || /data-repupdate="1">/.test(d), '[classify-vol] the Update button is disabled though a change is staged');
-        // Pre-selected means staged, not written: the stored override must still be the old one.
-        const stored = await fetch(`${SUPABASE_URL}/rest/v1/holding_factor_overrides?select=security_id,split,mix`, { headers: REST }).then(r => r.json());
+        // Pre-selected means staged, not written. The invariant is that rendering the drawer
+        // writes NOTHING -- not that no stored override can ever match a suggestion. Comparing
+        // the values alone flagged three funds whose overrides were accepted days ago and whose
+        // suggestion has been stable since, which is the system working rather than failing. What
+        // actually matters is the write time, so that is what is checked.
+        const stored = await fetch(`${SUPABASE_URL}/rest/v1/holding_factor_overrides?select=security_id,split,mix,updated_at`, { headers: REST }).then(r => r.json());
         for (const f of needsFix) {
           const row = stored.find(o => o.security_id === f.security_id);
-          const savedMix = row && row.mix && Object.keys(row.mix).length ? row.mix : null;
-          if (savedMix && JSON.stringify(savedMix) === JSON.stringify(f.suggested_mix)) {
-            errors.push('[classify-vol] a suggestion was written to the database without Update being pressed');
+          if (row && row.updated_at && Date.parse(row.updated_at) >= suiteStarted) {
+            errors.push(`[classify-vol] an override for ${f.ticker || f.security_id} was written during the run, without Update being pressed`);
           }
         }
       }
