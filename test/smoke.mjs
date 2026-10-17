@@ -481,6 +481,18 @@ if (!argRoute) {
       if (chips.length) need(chips.length <= 10, `[annie] streak on tab ${tab} shows ${chips.length} chips, expected at most 10`);
     }
     say(` ok  annie streak order     -> newest first on ${Math.min(4, tabIds0.length)} tabs`);
+    // On Overall the ledger holds one row per model per trade, so without collapsing them a
+    // single call across seven models fills seven of the ten chips and the streak contradicts
+    // the win rate beside it. No two chips may describe the same ticker leaving on the same day.
+    await click('[data-anniemodel]', { anniemodel: 'overall' });
+    {
+      const h = app();
+      const keys = [...h.matchAll(/class="stk [wl]" data-tip="([A-Z]+) · opened [^"]*?closed ([\d-]+)/g)].map(m => `${m[1]}|${m[2]}`);
+      const dupes = keys.filter((k, i) => keys.indexOf(k) !== i);
+      const wins = (h.match(/class="stk w"/g) || []).length, losses = (h.match(/class="stk l"/g) || []).length;
+      say(` ok  annie overall streak   -> ${wins}W ${losses}L of ${keys.length} decisions, ${dupes.length} duplicated`);
+      need(dupes.length === 0, `[annie] the Overall streak repeats the same decision: ${[...new Set(dupes)].join(', ')}`);
+    }
     await click('[data-anniemodel]', { anniemodel: tabIds0[0] });
   }
 

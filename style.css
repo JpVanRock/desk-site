@@ -169,14 +169,16 @@ select{font:inherit;font-size:12.5px;padding:5px 7px;border-radius:7px;border:1p
 .unc .vmark{margin-left:7px;font-size:13px;font-weight:700}
 .unc .vsug{font-size:11.5px;color:var(--muted);margin:-3px 0 8px;line-height:1.45;padding-left:2px}
 /* The hot-hand playing card in the scorecard header. Proportioned like a real card (the poker
-   ratio is 2.5 by 3.5) so it reads as one at a glance rather than as another KPI tile. */
-.pcard{width:74px;height:104px;border-radius:7px;border:1px solid var(--line);background:var(--panel2);
-  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;position:relative;flex:none;
-  box-shadow:0 1px 3px rgba(0,0,0,.35)}
-.pcard .pcorner{position:absolute;top:4px;left:6px;font-size:10px;font-weight:700;font-variant-numeric:tabular-nums}
-.pcard .pface{display:flex;align-items:center;justify-content:center;margin-top:4px}
-.pcard .plabel{font-size:9.5px;font-weight:700;letter-spacing:.02em;text-align:center;line-height:1.15;padding:0 4px}
-.pcard .psub{font-size:8px;color:var(--muted);text-align:center;line-height:1.2;padding:0 3px}
+   ratio is 2.5 by 3.5) so it reads as one at a glance rather than as another KPI tile.
+   Scaled to two thirds of its first size. The sub-line went with it rather than shrinking to
+   an unreadable 5px: its content — the count, the window and the verdict — is already in the
+   card's tooltip, so nothing was lost by taking it off the face. */
+.pcard{width:49px;height:69px;border-radius:5px;border:1px solid var(--line);background:var(--panel2);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;position:relative;flex:none;
+  box-shadow:0 1px 2px rgba(0,0,0,.35)}
+.pcard .pcorner{position:absolute;top:2px;left:4px;font-size:8px;font-weight:700;font-variant-numeric:tabular-nums}
+.pcard .pface{display:flex;align-items:center;justify-content:center;margin-top:3px}
+.pcard .plabel{font-size:7.5px;font-weight:700;letter-spacing:.02em;text-align:center;line-height:1.15;padding:0 2px}
 .pcard-hot{border-color:color-mix(in srgb, var(--neg) 55%, var(--line))}
 .pcard-cold{border-color:color-mix(in srgb, var(--accent) 55%, var(--line))}
 .pcard-none{opacity:.6}

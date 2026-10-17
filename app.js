@@ -1688,8 +1688,8 @@ function annie() {
   function hotHandCard(rate, wins, n, windowDays) {
     if (rate === null) {
       return `<div class="pcard pcard-none" title="No trade has closed in the last ${windowDays} days, so there is no current form to read. Blank rather than cold: nothing closing is not the same as closing badly.">
-        <div class="pcorner">—</div><div class="pface" style="color:var(--muted)">?</div>
-        <div class="plabel">No recent trades</div></div>`;
+        <div class="pcorner">—</div><div class="pface" style="color:var(--muted);font-size:20px">?</div>
+        <div class="plabel">No trades</div></div>`;
     }
     const pct = rate * 100;
     // The owner's thresholds: 51% or above is hot, exactly 50% is even, below 50% is cold. That
@@ -1699,10 +1699,10 @@ function annie() {
     const k = pct >= 51 ? 'hot' : pct >= 50 ? 'even' : 'cold';
     const f = HOT_FACE[k];
     const glyph = k === 'hot'
-      ? `<svg viewBox="0 0 24 24" width="46" height="46" aria-hidden="true"><path d="M12 2c.6 3.2-1.4 4.6-2.8 6.1C7.6 9.8 6 11.5 6 14.2 6 17.9 8.9 21 12.3 21c3.4 0 6-2.6 6-6 0-2.4-1-3.8-2.3-5.3-.5 1-1.2 1.7-2 2 .5-2.6-.6-6.4-4-9.7z" fill="currentColor"/></svg>`
+      ? `<svg viewBox="0 0 24 24" width="31" height="31" aria-hidden="true"><path d="M12 2c.6 3.2-1.4 4.6-2.8 6.1C7.6 9.8 6 11.5 6 14.2 6 17.9 8.9 21 12.3 21c3.4 0 6-2.6 6-6 0-2.4-1-3.8-2.3-5.3-.5 1-1.2 1.7-2 2 .5-2.6-.6-6.4-4-9.7z" fill="currentColor"/></svg>`
       : k === 'cold'
-      ? `<svg viewBox="0 0 24 24" width="46" height="46" aria-hidden="true" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"><path d="M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7"/><path d="M12 5.4 9.6 3.6M12 5.4l2.4-1.8M12 18.6l-2.4 1.8M12 18.6l2.4 1.8M5.1 9.2 4.3 6.4M5.1 9.2 2.2 9.5M18.9 14.8l.8 2.8M18.9 14.8l2.9-.3M5.1 14.8l-2.9-.3M5.1 14.8l-.8 2.8M18.9 9.2l2.9.3M18.9 9.2l.8-2.8"/></svg>`
-      : `<svg class="logo" style="width:46px;height:46px" role="img" aria-label="Sisyphus"><use href="#sisyphus-mark"/></svg>`;
+      ? `<svg viewBox="0 0 24 24" width="31" height="31" aria-hidden="true" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"><path d="M12 2v20M3.3 7l17.4 10M3.3 17 20.7 7"/><path d="M12 5.4 9.6 3.6M12 5.4l2.4-1.8M12 18.6l-2.4 1.8M12 18.6l2.4 1.8M5.1 9.2 4.3 6.4M5.1 9.2 2.2 9.5M18.9 14.8l.8 2.8M18.9 14.8l2.9-.3M5.1 14.8l-2.9-.3M5.1 14.8l-.8 2.8M18.9 9.2l2.9.3M18.9 9.2l.8-2.8"/></svg>`
+      : `<svg class="logo" style="width:31px;height:31px" role="img" aria-label="Sisyphus"><use href="#sisyphus-mark"/></svg>`;
     const tip = `${f.label} — ${wins} of ${n} trades closed in the last ${windowDays} days exited profitable (${pct.toFixed(0)}%). ${
       k === 'hot' ? 'At or above 51% the desk is running well.'
       : k === 'cold' ? 'Below 50% the desk is running cold.'
@@ -1710,8 +1710,7 @@ function annie() {
     return `<div class="pcard pcard-${k}" title="${esc(tip)}">
       <div class="pcorner" style="color:${f.tone}">${pct.toFixed(0)}%</div>
       <div class="pface" style="color:${f.tone}">${glyph}</div>
-      <div class="plabel">${esc(f.label)}</div>
-      <div class="psub">${wins}/${n} in ${windowDays}d · ${esc(f.sub)}</div></div>`;
+      <div class="plabel">${esc(f.label)}</div></div>`;
   }
 
   const scorecard = (() => {
@@ -1782,22 +1781,51 @@ function annie() {
       const chips = list.map(t => {
         const won = +t.total_return > 0;
         const r = n(t.total_return);
-        const tip = `${t.ticker} · opened ${t.entry_date}\n${won ? 'Win' : 'Loss'} ${r === null ? '—' : (r >= 0 ? '+' : '') + (r * 100).toFixed(1) + '%'} · closed ${t.exit_date}`;
+        const tip = `${t.ticker} · opened ${t.entry_date}\n${won ? 'Win' : 'Loss'} ${r === null ? '—' : (r >= 0 ? '+' : '') + (r * 100).toFixed(1) + '%'} · closed ${t.exit_date}`
+          + (t.n_models > 1 ? `\nOne call across ${t.n_models} models${t.split ? ` — ${t.split}, so this is their average` : ', averaged'}` : '');
         return `<span class="stk ${won ? 'w' : 'l'}" data-tip="${esc(tip)}">${won ? 'W' : 'L'}</span>`;
       }).join('');
-      return `<div class="card kpi" title="The last ten completed trades, most recent on the left. Hover one for the ticker, the date it was opened and what it returned.">
+      return `<div class="card kpi" title="${isOverall ? 'The last ten allocation decisions, most recent on the left. One call made across several models counts once here, not once per model.' : 'The last ten completed trades, most recent on the left.'} Hover one for the ticker, the date it was opened and what it returned.">
         <span class="eyebrow">Current streak</span>
         <div style="display:flex;gap:5px;margin:6px 0 4px;flex-wrap:wrap">${chips || '<span style="color:var(--muted);font-size:22px">—</span>'}</div>
-        <small>${list.length ? 'last ' + list.length + ', most recent first' : 'no closed trades'}</small></div>`;
+        <small>${list.length ? `last ${list.length}, most recent first${isOverall ? ' · one per decision' : ''}` : 'no closed trades'}</small></div>`;
     };
 
     const isOverall = annieModel === 'overall';
     const s = isOverall ? overall : (stats.find(x => x.strategy_id === annieModel) || null);
     const label = isOverall ? 'Overall' : bare(modelName(annieModel));
 
-    const closedTrades = trades
+    // On Overall, the ledger carries one row per model per trade, so a single allocation call
+    // made across seven models arrives as seven rows. Left as rows, the last ten chips showed
+    // the AGGH exit of 2026-09-29 seven times and read 3W/7L — a 30% streak sitting beside a
+    // 75% batting average, which is how this was caught. They are collapsed to DECISIONS here:
+    // the same ticker leaving on the same date is one call, however many models held it.
+    //
+    // Per-model tabs are left alone. There one row already is one trade, and collapsing would
+    // merge genuine re-entries of the same name.
+    const rawClosed = trades
       .filter(t => t.status === 'closed' && t.total_return !== null && (isOverall || t.strategy_id === annieModel))
       .sort((a, b) => String(b.exit_date).localeCompare(String(a.exit_date)));
+    const closedTrades = !isOverall ? rawClosed : (() => {
+      const by = new Map();
+      for (const t of rawClosed) {
+        const k = `${t.ticker}|${t.exit_date}`;
+        if (!by.has(k)) by.set(k, []);
+        by.get(k).push(t);
+      }
+      return [...by.values()].map(v => {
+        const ret = v.reduce((a, t) => a + +t.total_return, 0) / v.length;
+        const wins = v.filter(t => +t.total_return > 0).length;
+        return {
+          ...v[0], total_return: ret, n_models: v.length,
+          // Ten of the 165 decisions split: the same name left on the same day having made money
+          // in one model and lost it in another, because the models bought it on different dates.
+          // The chip follows the average, and the tooltip says the models disagreed.
+          split: wins > 0 && wins < v.length ? `${wins} of ${v.length} models profited` : null,
+          entry_date: v.map(t => t.entry_date).sort()[0],
+        };
+      }).sort((a, b) => String(b.exit_date).localeCompare(String(a.exit_date)));
+    })();
     const streak = closedTrades.slice(0, 10);
 
     // Hot hand, over the last ninety days of CLOSED trades. A rolling window rather than the
@@ -1888,7 +1916,7 @@ function annie() {
     const note = !s
       ? `This model has target weights but no dated holdings history, so there is nothing to compare over time and no trades to grade. The boxes are blank rather than zero — a zero would say it batted .000, which is a different and much worse claim than "not measured". Load a history with <code>jobs/load-holdings-history.mjs</code> and the figures compute themselves.`
       : `${isOverall ? `<b>Overall averages the ${graded.length} model${graded.length === 1 ? '' : 's'} that can be graded, each counting once</b> — a model with four trades weighs the same as one with fifty. The ${(D.models || []).length - graded.length} without a holdings history are left out rather than entered as zero: averaging in a zero would say they graded badly when the truth is they were not graded. Rates are that equal-weighted average; the counts beside them are totals. ` : ''}${beatRate !== null && ba !== null && beatRate < ba - 0.05
-          ? `<b>These two counts disagree, and the disagreement is the finding.</b> ${s.n_wins} of ${s.n_closed} trades exited profitable; ${s.n_beat_benchmark} of the same ${s.n_closed} beat the benchmark${ex === null ? '' : `, and the per-trade excess sums to ${ex >= 0 ? '+' : ''}${ex.toFixed(0)} bps`}. A trade can exit profitable having cost the model everything the index would have paid instead — a cash line is the clean case, with a permanent perfect batting average and a permanently negative decision score in a rising market. <i>That excess total is a rough aggregate across trades that ran over different, non-overlapping spans; it answers "how did these decisions fare against the index, added up" and is not the model's underperformance over any period.</i> ` : ''}${s.n_unpriced ? `<b>${s.n_unpriced} position${s.n_unpriced === 1 ? '' : 's'} could not be priced</b> and ${s.n_unpriced === 1 ? 'is' : 'are'} excluded from every figure here. ` : ''}${s.gap_days ? `The history has a ${s.gap_days}-day hole, and a round trip that opened and closed inside it is invisible — not counted as a win or a loss, simply absent. ` : ''}Trades are derived from the dated snapshots, not from a broker file: a ticker present in one snapshot and absent from the one before was bought, present and then absent was sold. A round trip that opened and closed between two snapshots cannot be seen at all. ${ERROR_CAVEAT}`;
+          ? `<b>These two counts disagree, and the disagreement is the finding.</b> ${s.n_wins} of ${s.n_closed} trades exited profitable; ${s.n_beat_benchmark} of the same ${s.n_closed} beat the benchmark${ex === null ? '' : `, and the per-trade excess sums to ${ex >= 0 ? '+' : ''}${ex.toFixed(0)} bps`}. A trade can exit profitable having cost the model everything the index would have paid instead — a cash line is the clean case, with a permanent perfect batting average and a permanently negative decision score in a rising market. <i>That excess total is a rough aggregate across trades that ran over different, non-overlapping spans; it answers "how did these decisions fare against the index, added up" and is not the model's underperformance over any period.</i> ` : ''}${isOverall ? `<b>The streak and the hot-hand card count DECISIONS, not ledger rows.</b> A single call made across several models arrives here as one row per model, and left that way the last ten chips showed one AGGH exit seven times — a 30% streak sitting beside a 75% batting average. The same ticker leaving on the same date is collapsed into one chip, averaged across the models that held it; ten of the 165 decisions made money in one model and lost it in another, because the models bought in on different dates, and those chips say so on hover. The batting average beside them is a different figure and stays row-based, averaged equally across models over the whole record rather than over the last ninety days. ` : ''}${s.n_unpriced ? `<b>${s.n_unpriced} position${s.n_unpriced === 1 ? '' : 's'} could not be priced</b> and ${s.n_unpriced === 1 ? 'is' : 'are'} excluded from every figure here. ` : ''}${s.gap_days ? `The history has a ${s.gap_days}-day hole, and a round trip that opened and closed inside it is invisible — not counted as a win or a loss, simply absent. ` : ''}Trades are derived from the dated snapshots, not from a broker file: a ticker present in one snapshot and absent from the one before was bought, present and then absent was sold. A round trip that opened and closed between two snapshots cannot be seen at all. ${ERROR_CAVEAT}`;
 
     return `<div class="card" style="margin-bottom:14px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
