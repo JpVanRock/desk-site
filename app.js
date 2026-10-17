@@ -4041,7 +4041,11 @@ function sandbox() {
     sizePct === null ? 'sizing' : '', sbHorizon ? '' : 'time horizon', sbModels.size ? '' : 'at least one model',
   ].filter(Boolean);
 
-  return `<span class="eyebrow">Sandbox</span><h1>Sandbox</h1>
+  // The Grid. Scoped to this wrapper so the look cannot reach another tab, and the semantic
+  // colours inside it are untouched: a gain stays green and a loss stays red, because a reader
+  // should never have to translate a colour through a theme to know what a number means.
+  return `<div class="tron">
+  <span class="eyebrow">Sandbox</span><h1>Sandbox</h1>
   <p class="sub">Write down a decision before taking it, and try an allocation before committing to it. Nothing on this page reaches a broker, and nothing changes a model until it is explicitly submitted.</p>
 
   <div class="card" style="margin-bottom:14px">
@@ -4096,7 +4100,8 @@ function sandbox() {
       ${missing.length ? `<small style="color:var(--muted)">Still needed: ${esc(missing.join(', '))}</small>` : ''}</div>
     <p class="note">Submitting files the entry with Gail, who keeps the catalogue. <b>Analyze</b> asks Annie, Adam, Sven and Kate to read the same entry through their own lens and return Go, Go Fish or No Go. They are agents, not scripts in this page: the request is recorded and the verdicts appear on Gail's tab when they run. A button that appeared to think while inventing four opinions in JavaScript would be the worst thing this desk could ship.</p>
   </div>
-  ${sandboxAllocation()}`;
+  ${sandboxAllocation()}
+  </div>`;
 }
 
 // ---------- Sandbox: the target allocation editor ----------

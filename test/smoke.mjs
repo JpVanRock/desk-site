@@ -267,6 +267,17 @@ if (!argRoute) {
     need(!/<h1>The Playground<\/h1>/.test(v), '[views] the Playground still renders its own page heading');
     const nav = readFileSync(join(SITE, 'index.html'), 'utf8');
     need(!/href="#playground"/.test(nav), '[views] the nav still carries a Playground link');
+    // The header mark is sized in auth.css, which loads after style.css and wins. A duplicate
+    // rule in style.css sat there looking authoritative while doing nothing, and two separate
+    // requests to enlarge the logo were spent on the sheet that loses.
+    const cssMain = readFileSync(join(SITE, 'style.css'), 'utf8');
+    const cssAuth = readFileSync(join(SITE, 'auth.css'), 'utf8');
+    const sized = f => (f.match(/\.logo-header\s*\{[^}]*\}/g) || []);
+    need(sized(cssMain).length === 0, '[logo] style.css defines .logo-header again; auth.css loads later and overrides it');
+    need(sized(cssAuth).length === 1, '[logo] auth.css should carry exactly one .logo-header rule');
+    const px = (sized(cssAuth)[0].match(/height:\s*(\d+)px/) || [])[1];
+    say(` ok  header logo           -> ${px}px, sized in auth.css only`);
+    need(+px === 60, `[logo] the header mark is ${px}px, expected 60`);
     // Its controls must still drive it from inside Views.
     const models = [...v.matchAll(/data-pgmodel="([^"]+)"/g)].map(m => m[1]);
     if (models.length > 1) {

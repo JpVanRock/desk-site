@@ -23,7 +23,8 @@ body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system
    rather than the mark being squeezed to fit the header. */
 .logo{color:#F0EFEC;display:block;flex:none}
 :root[data-theme="light"] .logo{color:#111111}
-.logo-header{height:136px;width:86px}
+/* The header mark is sized in auth.css, which loads after this file and wins. A rule here was
+   dead weight that read as though it were in charge -- it is deliberately not replaced. */
 .logo-gate{height:88px;width:56px;margin:0 auto 4px}
 .top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:28px;padding:16px 28px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
 .brand{display:flex;gap:16px;align-items:center}.brand b{display:block;font-size:24px;letter-spacing:.2px;line-height:1.15}.brand small{color:var(--muted);font-size:13px;letter-spacing:.9px;text-transform:uppercase}
@@ -182,3 +183,96 @@ select{font:inherit;font-size:12.5px;padding:5px 7px;border-radius:7px;border:1p
 .pcard-hot{border-color:color-mix(in srgb, var(--neg) 55%, var(--line))}
 .pcard-cold{border-color:color-mix(in srgb, var(--accent) 55%, var(--line))}
 .pcard-none{opacity:.6}
+
+/* ---------------------------------------------------------------------------
+   Sandbox: the Grid.
+   ---------------------------------------------------------------------------
+   Scoped entirely to .tron, which only the Sandbox page sets, so nothing here can reach
+   another tab. The look is Tron's: near-black, a faint perspective grid, cyan edges that
+   emit rather than reflect, and type that reads like it is lit from behind.
+
+   Two rules keep it usable rather than just atmospheric. Numbers stay in the desk's own
+   semantic colours -- green is still a gain and red still a loss, because a reader must never
+   have to translate a colour through a theme to know whether they made money. And every glow
+   is on a border or a shadow, never on the text of a figure: a blurred digit is a misread
+   digit, and this page carries tax estimates and allocation weights.                        */
+.tron{
+  --tron-cyan:#5ff2ff; --tron-cyan-dim:#1b6b78; --tron-amber:#ffb648; --tron-deep:#04080c;
+  position:relative; isolation:isolate;
+}
+/* The Grid, drawn behind everything and held at a constant faint level the whole way down --
+   it is the floor the page stands on, not a header decoration, so it does not fade out after the
+   first screen. Attached to the viewport so it stays put while the content scrolls over it. */
+.tron::before{
+  content:""; position:absolute; inset:-24px -24px -24px; z-index:-1; pointer-events:none;
+  background:
+    repeating-linear-gradient(90deg, rgba(95,242,255,.055) 0 1px, transparent 1px 64px),
+    repeating-linear-gradient(0deg,  rgba(95,242,255,.04)  0 1px, transparent 1px 64px);
+  background-attachment:fixed;
+  border-radius:16px;
+}
+/* A brighter band at the top, so the eye reads a horizon rather than wallpaper. */
+.tron::after{
+  content:""; position:absolute; inset:-24px -24px auto; height:260px; z-index:-1; pointer-events:none;
+  background:
+    repeating-linear-gradient(90deg, rgba(95,242,255,.1) 0 1px, transparent 1px 64px),
+    radial-gradient(120% 90% at 50% 0%, rgba(95,242,255,.1), transparent 70%);
+  mask-image:linear-gradient(180deg, rgba(0,0,0,.9) 0, transparent 100%);
+  border-radius:16px 16px 0 0;
+}
+.tron h1{
+  color:#eafcff; letter-spacing:.06em; text-transform:uppercase;
+  text-shadow:0 0 18px rgba(95,242,255,.45), 0 0 44px rgba(95,242,255,.18);
+}
+.tron > .eyebrow, .tron .eyebrow{ color:var(--tron-cyan); letter-spacing:.16em }
+.tron > .sub{ color:#9fc6ce }
+.tron .card{
+  background:linear-gradient(180deg, rgba(10,22,30,.92), rgba(4,10,14,.92));
+  border:1px solid rgba(95,242,255,.26);
+  box-shadow:0 0 0 1px rgba(95,242,255,.07) inset, 0 0 28px rgba(95,242,255,.07), 0 14px 40px rgba(0,0,0,.55);
+  border-radius:12px;
+}
+/* The light line along the top edge, which is the motif the whole look hangs on. */
+.tron .card{ position:relative; overflow:hidden }
+.tron .card::after{
+  content:""; position:absolute; top:0; left:12px; right:12px; height:1px; pointer-events:none;
+  background:linear-gradient(90deg, transparent, var(--tron-cyan), transparent); opacity:.65;
+}
+.tron h2, .tron h3{ color:#d6f6fb; letter-spacing:.05em }
+.tron .note{ color:#8fb4bd }
+.tron table th{ color:var(--tron-cyan); border-bottom-color:rgba(95,242,255,.3); letter-spacing:.09em }
+.tron table td{ border-bottom-color:rgba(95,242,255,.12) }
+.tron table tbody tr:hover td{ background:rgba(95,242,255,.05) }
+.tron input[type="text"], .tron input[type="number"], .tron textarea, .tron select{
+  background:rgba(4,12,16,.9) !important; border:1px solid rgba(95,242,255,.32) !important;
+  color:#eafcff !important; border-radius:4px !important;
+}
+.tron input:focus, .tron textarea:focus, .tron select:focus{
+  outline:none; border-color:var(--tron-cyan) !important;
+  box-shadow:0 0 0 1px var(--tron-cyan), 0 0 14px rgba(95,242,255,.4);
+}
+.tron input[type="radio"], .tron input[type="checkbox"]{ accent-color:var(--tron-cyan) !important }
+.tron input[type="range"]{ accent-color:var(--tron-amber) !important }
+.tron .btn{
+  background:linear-gradient(180deg, rgba(95,242,255,.17), rgba(95,242,255,.07));
+  color:#eafcff; border:1px solid var(--tron-cyan); border-radius:4px;
+  letter-spacing:.1em; text-transform:uppercase; font-size:12px; font-weight:700;
+  box-shadow:0 0 16px rgba(95,242,255,.22), 0 0 0 1px rgba(95,242,255,.1) inset;
+  /* The base .btn is width:100% for the full-width Update button in a model drawer. Every button
+     on this page sits in an inline row, so they size to their own label instead. */
+  width:auto; margin-top:0;
+}
+.tron .btn:hover:not([disabled]){ box-shadow:0 0 26px rgba(95,242,255,.45); background:linear-gradient(180deg, rgba(95,242,255,.3), rgba(95,242,255,.12)) }
+.tron .btn[disabled]{ border-color:var(--tron-cyan-dim); box-shadow:none; color:#6f9aa3 }
+.tron .tabs .tab{ border-radius:3px; letter-spacing:.08em; text-transform:uppercase; font-size:11.5px }
+.tron .tabs .tab[aria-selected="true"]{
+  background:rgba(95,242,255,.16); color:#eafcff;
+  box-shadow:inset 0 -2px 0 var(--tron-cyan), 0 0 14px rgba(95,242,255,.25);
+}
+.tron .chip{ border-color:rgba(95,242,255,.4); color:#bfe9f1 }
+.tron .eqscroll, .tron details summary{ color:#cdeef5 }
+/* Deliberately NOT restyled: --pos, --neg and --flat keep their meaning, so a gain is green and
+   a loss is red on this page exactly as on every other. The Grid is a skin, not a dialect. */
+@media (prefers-reduced-motion: no-preference){
+  .tron .card{ transition:box-shadow .25s ease }
+}
