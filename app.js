@@ -998,19 +998,194 @@ function stan() {
    ${riskTable}${flagsCard}${positionScatter()}${docsCard}`;
 }
 
+// ---------- Markets: a trading desk's wall, not a spreadsheet ----------
+//
+// What this page was: one flat table of 150 securities sorted alphabetically, which answered
+// "what is CPAI doing" and no other question. What a desk actually wants on arrival is the shape
+// of the day -- where equities are, what volatility is saying, what the curve is doing, which
+// sectors led -- in one screen, with the full table underneath for when a specific name matters.
+//
+// RISK SITS BESIDE THE VIX, which is what was asked for. The MOVE index is ICE BofA's and no
+// connected source publishes it, so it is NOT here under its own name and nothing is dressed up
+// as it. What fills that gap is realised Treasury volatility computed from the desk's own TLT and
+// IEF closes, labelled realised rather than implied, because implied and realised are different
+// quantities and the gap between them is the thing a volatility desk is actually looking at.
+//
+// Australia and South Africa were removed from the country list at the owner's request, to give
+// the panel room. They remain in the universe and in the table below: the geography fits are
+// built from those indices, so dropping the securities would quietly degrade a different page.
+const PERF_TICKERS = ['SPY', 'QQQ', 'IWM', 'DIA', 'TLT', 'IEF'];
+const PERF_COLORS = { SPY: '#4ea1ff', QQQ: '#a78bfa', IWM: '#fbbf24', DIA: '#fb923c' };
+const PERF_WINDOWS = [['1M', 21], ['3M', 63], ['6M', 126], ['YTD', null], ['1Y', 252], ['3Y', 756]];
+let perfPeriod = 'YTD';
+let perfSeries = null, perfLoading = false, perfError = null;
+
+async function loadPerfSeries() {
+  if (perfSeries || perfLoading) return;
+  perfLoading = true;
+  try {
+    const out = {};
+    for (const t of PERF_TICKERS) {
+      const row = D.markets.find(m => m.ticker === t);
+      if (!row) continue;
+      // PostgREST caps a response at 1000 rows whatever the limit says, so three years of daily
+      // closes comes back in two ranges rather than one request that silently truncates.
+      const bars = [];
+      for (let from = 0; from < 1200; from += 600) {
+        const page = await q(sb.from('market_data').select('price_date,close,adj_close')
+          .eq('security_id', row.id).order('price_date', { ascending: false }).range(from, from + 599));
+        for (const b of page) bars.push(b);
+        if (page.length < 600) break;
+      }
+      bars.reverse();
+      out[t] = bars.map(b => ({ d: b.price_date, px: +(b.adj_close ?? b.close) })).filter(x => x.px > 0);
+    }
+    perfSeries = out;
+  } catch (ex) { perfError = ex.message; }
+  perfLoading = false;
+  if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
+}
+
+// Annualised volatility of the last n daily returns. Used for the bond-volatility line that
+// stands in for MOVE, and said out loud to be realised rather than implied.
+function realisedVol(series, n = 30) {
+  if (!series || series.length < n + 2) return null;
+  const px = series.slice(-(n + 1)).map(x => x.px);
+  const r = [];
+  for (let i = 1; i < px.length; i++) r.push(px[i] / px[i - 1] - 1);
+  const m = r.reduce((a, v) => a + v, 0) / r.length;
+  const sd = Math.sqrt(r.reduce((a, v) => a + (v - m) ** 2, 0) / (r.length - 1));
+  return sd * Math.sqrt(252);
+}
+
 function markets() {
   const rows = D.markets;
+  const byTicker = Object.fromEntries(rows.map(r => [r.ticker, r]));
   const withPrice = rows.filter(r => r.price).length;
-  const chg = v => v === null || v === undefined ? '<span style="color:var(--muted)">–</span>' : `<span style="color:${v > 0 ? 'var(--pos)' : v < 0 ? 'var(--neg)' : 'var(--muted)'}">${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%</span>`;
+  const macro = Object.values(D.macroByFactor || {}).flat();
+  const mac = code => macro.find(m => m.fred_code === code) || null;
+  const macV = code => { const m = mac(code); return m && m.value !== null ? +m.value : null; };
+
+  const chg = v => v === null || v === undefined ? '<span style="color:var(--muted)">–</span>'
+    : `<span style="color:${v > 0 ? 'var(--pos)' : v < 0 ? 'var(--neg)' : 'var(--muted)'}">${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%</span>`;
   const rsiColor = v => v === null || v === undefined ? 'var(--muted)' : v >= 70 ? 'var(--neg)' : v <= 30 ? 'var(--pos)' : 'var(--text)';
-  return `<span class="eyebrow">Allocation model</span><h1>Markets</h1>
-  <p class="sub">Latest close and standard technicals for every security in the universe, from the daily job. Click a row for its chart.</p>
-  <div class="kpis">
-   <div class="card kpi"><span class="eyebrow">Universe</span><b>${rows.length}</b><small>tracked securities</small></div>
-   <div class="card kpi"><span class="eyebrow">Priced</span><b>${withPrice}/${rows.length}</b><small>have a latest close</small></div>
-   <div class="card kpi"><span class="eyebrow">As of</span><b style="font-size:20px">${esc(D.run ? D.run.latest_price_date || '—' : '—')}</b><small>last daily job: ${esc(D.run ? D.run.status : 'no run yet')}</small></div>
-  </div>
-  <div class="card"><table><thead><tr><th>Ticker</th><th>Class</th><th class="num">Close</th><th class="num">1-day</th><th class="num">RSI14</th><th>Trend</th><th class="num">vs SMA50</th><th class="num">vs SMA200</th><th class="num">RS vs class(63d)</th></tr></thead><tbody>
+
+  // A quote line: name, last, and the day. Clicking it opens that security's chart, exactly as a
+  // row of the table below does, so the panels are a view of the universe and not a copy of it.
+  const quote = (tkr, label) => {
+    const r = byTicker[tkr];
+    if (!r) return '';
+    return `<div class="prow click" data-go="#markets/${esc(r.id)}">
+      <span class="pname">${esc(label || r.name || tkr)}</span>
+      <span class="ptkr">${esc(tkr)}</span>
+      <span class="pval">${r.price ? Number(r.price.close).toFixed(2) : '–'}</span>
+      <span class="pchg">${r.price ? chg(r.price.day_change_pct) : '<span style="color:var(--muted)">–</span>'}</span></div>`;
+  };
+  const panel = (title, body, note) => `<div class="card panel">
+    <div class="phead">${esc(title)}</div>${body}${note ? `<p class="note" style="margin:8px 0 0">${note}</p>` : ''}</div>`;
+  const subhead = t => `<div class="psub">${esc(t)}</div>`;
+
+  // ---- the volatility and stress panel, beside the index quotes ----
+  const vix = macV('VIXCLS'), vix3m = macV('VXVCLS');
+  const term = vix !== null && vix3m > 0 ? vix / vix3m : null;
+  const tltVol = realisedVol(perfSeries && perfSeries.TLT, 30);
+  const iefVol = realisedVol(perfSeries && perfSeries.IEF, 30);
+  const spyVol = realisedVol(perfSeries && perfSeries.SPY, 30);
+  const mrow = (label, code, fmt = v => v.toFixed(2), tone = null) => {
+    const m = mac(code);
+    const v = m && m.value !== null ? +m.value : null;
+    return `<div class="prow"><span class="pname">${esc(label)}</span>
+      <span class="ptkr" title="${esc(m ? m.obs_date : 'not loaded')}">${esc(m ? m.obs_date.slice(5) : '–')}</span>
+      <span class="pval"${tone ? ` style="color:${tone(v)}"` : ''}>${v === null ? '–' : fmt(v)}</span><span class="pchg"></span></div>`;
+  };
+  const vrow = (label, v, suffix = '', title = '') => `<div class="prow"><span class="pname"${title ? ` title="${esc(title)}"` : ''}>${esc(label)}</span>
+    <span class="ptkr"></span><span class="pval">${v === null ? '<span style="color:var(--muted)">–</span>' : v + suffix}</span><span class="pchg"></span></div>`;
+  const riskPanel = panel('Risk and volatility', `
+    ${subhead('Implied volatility')}
+    ${mrow('CBOE VIX', 'VIXCLS', v => v.toFixed(2), v => v === null ? 'var(--muted)' : v >= 25 ? 'var(--neg)' : v <= 14 ? 'var(--pos)' : 'var(--text)')}
+    ${mrow('VIX, 3-month', 'VXVCLS')}
+    ${vrow('VIX / VIX3M', term === null ? null : term.toFixed(2), term !== null && term > 1 ? '  inverted' : '', 'One-month implied against three-month. Above 1 means the market is paying more for protection now than later, which is the shape that only appears under stress.')}
+    ${mrow('Nasdaq 100 (VXN)', 'VXNCLS')}
+    ${mrow('Russell 2000 (RVX)', 'RVXCLS')}
+    ${mrow('Crude oil (OVX)', 'OVXCLS')}
+    ${mrow('Gold (GVZ)', 'GVZCLS')}
+    ${subhead('Realised volatility, 30 sessions')}
+    ${vrow('Long Treasuries (TLT)', tltVol === null ? null : (tltVol * 100).toFixed(1), '%', 'The MOVE index is ICE BofA\'s and no connected source publishes it. This is realised volatility computed from the desk\'s own TLT closes — a different quantity from implied, and labelled as one.')}
+    ${vrow('7-10 year (IEF)', iefVol === null ? null : (iefVol * 100).toFixed(1), '%')}
+    ${vrow('S&P 500 (SPY)', spyVol === null ? null : (spyVol * 100).toFixed(1), '%')}
+    ${subhead('Credit and conditions')}
+    ${mrow('High yield OAS', 'BAMLH0A0HYM2', v => v.toFixed(2) + '%')}
+    ${mrow('Investment grade OAS', 'BAMLC0A0CM', v => v.toFixed(2) + '%')}
+    ${mrow('Financial conditions (NFCI)', 'NFCI', v => v.toFixed(2), v => v === null ? 'var(--muted)' : v > 0 ? 'var(--neg)' : 'var(--pos)')}
+    ${mrow('Financial stress (STLFSI4)', 'STLFSI4', v => v.toFixed(2), v => v === null ? 'var(--muted)' : v > 0 ? 'var(--neg)' : 'var(--pos)')}`,
+    `<b>MOVE is not here.</b> It is ICE BofA's index and no connected source publishes it, so rather than approximate it under its own name the panel shows <b>realised</b> Treasury volatility from the desk's own closes. Implied and realised are different quantities. The euro FX volatility index was left out too: FRED discontinued it in March 2025, and a stale number on a risk panel is worse than a missing one. Each FRED line carries its own observation date, because they do not all update daily.`);
+
+  // ---- normalised performance ----
+  const perfCard = (() => {
+    const inner = (() => {
+      if (perfError) return `<div class="empty">Could not load price history: ${esc(perfError)}</div>`;
+      if (!perfSeries) return `<div class="empty">Loading price history…</div>`;
+      const want = PERF_WINDOWS.find(w => w[0] === perfPeriod) || PERF_WINDOWS[3];
+      const tickers = ['SPY', 'QQQ', 'IWM', 'DIA'].filter(t => (perfSeries[t] || []).length > 2);
+      if (!tickers.length) return '<div class="empty">No price history for the index proxies.</div>';
+      const cal = perfSeries[tickers[0]].map(x => x.d);
+      const startDate = want[1] === null
+        ? `${cal.at(-1).slice(0, 4) - 1}-12-31`
+        : cal[Math.max(0, cal.length - 1 - want[1])];
+      const lines = tickers.map(t => {
+        const pts = perfSeries[t].filter(x => x.d >= startDate);
+        if (pts.length < 2) return null;
+        const base = pts[0].px;
+        return { t, pts: pts.map(x => ({ d: x.d, v: x.px / base - 1 })) };
+      }).filter(Boolean);
+      if (!lines.length) return '<div class="empty">Not enough history for this window.</div>';
+      const all = lines.flatMap(l => l.pts.map(p => p.v));
+      const lo = Math.min(0, ...all), hi = Math.max(0, ...all), span = Math.max(0.02, hi - lo);
+      const W = 820, Hh = 330, pad = { l: 10, r: 62, t: 14, b: 26 };
+      const nMax = Math.max(...lines.map(l => l.pts.length));
+      const X = i => pad.l + (i / Math.max(1, nMax - 1)) * (W - pad.l - pad.r);
+      const Y = v => pad.t + (1 - (v - lo) / span) * (Hh - pad.t - pad.b);
+      const ticks = [lo, lo + span / 2, hi].map(v => `<line x1="${pad.l}" y1="${Y(v).toFixed(1)}" x2="${W - pad.r}" y2="${Y(v).toFixed(1)}" stroke="var(--line)"/><text x="${W - pad.r + 6}" y="${(Y(v) + 3.5).toFixed(1)}" font-size="10" fill="var(--muted)">${(v * 100).toFixed(1)}%</text>`).join('');
+      return `<div class="perfbar">${PERF_WINDOWS.map(([k]) => `<button class="pill${k === perfPeriod ? ' on' : ''}" data-perf="${k}">${k}</button>`).join('')}</div>
+        <svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto" role="img" aria-label="Index performance, normalised to the start of the window">
+          ${ticks}
+          <line x1="${pad.l}" y1="${Y(0).toFixed(1)}" x2="${W - pad.r}" y2="${Y(0).toFixed(1)}" stroke="var(--line)" stroke-dasharray="3 3"/>
+          ${lines.map(l => `<path d="${l.pts.map((p, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(p.v).toFixed(1)}`).join('')}" fill="none" stroke="${PERF_COLORS[l.t]}" stroke-width="1.8"/>`).join('')}
+          ${lines.map(l => { const last = l.pts.at(-1); return `<text x="${(X(l.pts.length - 1) + 5).toFixed(1)}" y="${(Y(last.v) + 3.5).toFixed(1)}" font-size="11" font-weight="600" fill="${PERF_COLORS[l.t]}">${esc(l.t)} ${(last.v * 100).toFixed(1)}%</text>`; }).join('')}
+          <text x="${pad.l}" y="${Hh - 6}" font-size="10" fill="var(--muted)">${esc(lines[0].pts[0].d)}</text>
+          <text x="${(W - pad.r).toFixed(1)}" y="${Hh - 6}" font-size="10" text-anchor="end" fill="var(--muted)">${esc(lines[0].pts.at(-1).d)}</text>
+        </svg>
+        <p class="note">Total return from adjusted closes, rebased to zero at the first session of the window — dividends included, which is why these do not match an index level quoted on price alone. ${perfPeriod === 'YTD' ? 'Year to date runs from the last close of last year.' : ''}</p>`;
+    })();
+    return `<div class="card panel"><div class="phead">Normalised performance</div>${inner}</div>`;
+  })();
+
+  // ---- the curve ----
+  const yrow = (label, code) => { const m = mac(code); return `<td class="num">${m && m.value !== null ? (+m.value).toFixed(2) + '%' : '<span style="color:var(--muted)">–</span>'}</td>`; };
+  const intl = [['Germany', 'IRLTLT01DEM156N'], ['United Kingdom', 'IRLTLT01GBM156N'], ['Japan', 'IRLTLT01JPM156N'], ['Italy', 'IRLTLT01ITM156N']];
+  const yieldsPanel = panel('Government yields', `
+    <table style="margin-top:4px"><thead><tr><th></th><th class="num">2Y</th><th class="num">10Y</th><th class="num">30Y</th><th>As of</th></tr></thead><tbody>
+      <tr><td><b>United States</b></td>${yrow('2Y', 'DGS2')}${yrow('10Y', 'DGS10')}${yrow('30Y', 'DGS30')}<td style="font-size:11px;color:var(--muted)">${esc(mac('DGS10') ? mac('DGS10').obs_date : '–')}</td></tr>
+      ${intl.map(([name, code]) => `<tr><td>${esc(name)}</td>
+        <td class="num"><span style="color:var(--muted)" title="The connected source publishes long-term government yields only. There is no 2-year series for this country, and filling it in from the 10-year would be an invention.">–</span></td>
+        ${yrow('10Y', code)}<td class="num"><span style="color:var(--muted)">–</span></td>
+        <td style="font-size:11px;color:var(--muted)">${esc(mac(code) ? mac(code).obs_date : '–')}</td></tr>`).join('')}
+    </tbody></table>
+    ${subhead('The US curve in full')}
+    ${mrow('3-month', 'DGS3MO', v => v.toFixed(2) + '%')}
+    ${mrow('2-year', 'DGS2', v => v.toFixed(2) + '%')}
+    ${mrow('10-year', 'DGS10', v => v.toFixed(2) + '%')}
+    ${mrow('30-year', 'DGS30', v => v.toFixed(2) + '%')}
+    ${mrow('10Y real (TIPS)', 'DFII10', v => v.toFixed(2) + '%')}
+    ${mrow('10Y breakeven', 'T10YIE', v => v.toFixed(2) + '%')}
+    ${mrow('10Y − 2Y', 'T10Y2Y', v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%', v => v === null ? 'var(--muted)' : v < 0 ? 'var(--neg)' : 'var(--text)')}
+    ${mrow('10Y − 3M', 'T10Y3M', v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%', v => v === null ? 'var(--muted)' : v < 0 ? 'var(--neg)' : 'var(--text)')}`,
+    `<b>2-year yields are shown rather than 5-year</b>, as asked. The US curve is daily. The overseas rows are OECD long-term government yields, which are <b>monthly and a month or two behind</b> — each carries its own observation date rather than borrowing today's, and the 2-year column is empty for them because the connected source does not publish one. An inverted 10Y−2Y shows red.`);
+
+  const grp = (title, list) => panel(title, list.map(([t, l]) => quote(t, l)).join(''));
+
+  const table = `<div class="card" style="margin-top:14px"><div class="phead">Every tracked security</div>
+  <div style="overflow-x:auto"><table><thead><tr><th>Ticker</th><th>Class</th><th class="num">Close</th><th class="num">1-day</th><th class="num">RSI14</th><th>Trend</th><th class="num">vs SMA50</th><th class="num">vs SMA200</th><th class="num">RS vs class(63d)</th></tr></thead><tbody>
   ${rows.map(r => { const t = r.tech; const vs = (c, sma) => sma ? `<span style="color:${c > sma ? 'var(--pos)' : 'var(--neg)'}">${c > sma ? '+' : ''}${(((c - sma) / sma) * 100).toFixed(1)}%</span>` : '–';
     const rs = t?.rs_vs_class_63; const rsStr = rs === null || rs === undefined ? '–' : `<span style="color:${rs >= 0 ? 'var(--pos)' : 'var(--neg)'}">${rs >= 0 ? '+' : ''}${(rs * 100).toFixed(1)}%</span>`;
     return `<tr class="click" data-go="#markets/${esc(r.id)}"><td><b>${esc(r.ticker)}</b><br><small style="color:var(--muted)">${esc(r.name)}</small></td><td>${esc(D.classNames[r.cls] || r.cls)}</td>
@@ -1021,7 +1196,36 @@ function markets() {
      <td class="num">${t ? vs(t.close ?? r.price?.close, t.sma50) : '–'}</td>
      <td class="num">${t ? vs(t.close ?? r.price?.close, t.sma200) : '–'}</td>
      <td class="num">${rsStr}</td></tr>`; }).join('')}
-  </tbody></table><p class="note">RSI14 uses Wilder's smoothing; below 30 (green) is oversold, above 70 (red) is overbought by the standard convention, not a signal to act on alone. Trend: bullish = close &gt; SMA50 &gt; SMA200, bearish = the reverse, else neutral. RS vs class = 63-day return minus the median of same-asset-class peers. SMA200 and RS need ~10 months of history — newer listings show "–". This is price action and trend, not a rating: the desk decided the underlying trend-anchored rating hasn't earned a role in decisions yet (see ROADMAP.md / the Status tab). Parameters: desk-workspace/stan/technicals-parameters.md.</p></div>`;
+  </tbody></table></div><p class="note">RSI14 uses Wilder's smoothing; below 30 (green) is oversold, above 70 (red) is overbought by the standard convention, not a signal to act on alone. Trend: bullish = close &gt; SMA50 &gt; SMA200, bearish = the reverse, else neutral. RS vs class = 63-day return minus the median of same-asset-class peers. SMA200 and RS need ~10 months of history — newer listings show "–". This is price action and trend, not a rating: the desk decided the underlying trend-anchored rating hasn't earned a role in decisions yet (see ROADMAP.md / the Admin tab). Parameters: desk-workspace/stan/technicals-parameters.md.</p></div>`;
+
+  if (!perfSeries && !perfLoading) setTimeout(loadPerfSeries, 0);
+
+  return `<span class="eyebrow">Allocation model</span><h1>Markets</h1>
+  <p class="sub">The shape of the day — indices, volatility, the curve, sectors and the world — then every tracked security underneath. Prices from the daily job as of ${esc(D.run ? D.run.latest_price_date || '—' : '—')}; ${withPrice} of ${rows.length} carry a close. Click anything for its chart.</p>
+  <div class="mkgrid">
+    <div class="mkcol">
+      ${grp('US equity markets', [['DIA', 'Dow Jones'], ['SPY', 'S&P 500'], ['MDY', 'S&P MidCap 400'], ['IWM', 'Russell 2000'], ['QQQ', 'Nasdaq 100']])}
+      ${riskPanel}
+      ${grp('US equity sectors', [['XLE', 'Energy'], ['XLU', 'Utilities'], ['XLP', 'Consumer staples'], ['XLB', 'Materials'], ['XLF', 'Financials'], ['XLRE', 'Real estate'], ['XLI', 'Industrials'], ['XLV', 'Health care'], ['XLY', 'Consumer discretionary'], ['XLC', 'Communications'], ['XLK', 'Technology']])}
+    </div>
+    <div class="mkcol">
+      ${perfCard}
+      ${grp('US equity factors', [['MTUM', 'Momentum'], ['VLUE', 'Value'], ['QUAL', 'Quality'], ['USMV', 'Low volatility'], ['SIZE', 'Size'], ['SPY', 'Market']])}
+      ${yieldsPanel}
+    </div>
+    <div class="mkcol">
+      ${grp('Fixed income', [['SHY', '1-3 year Treasuries'], ['IEF', '7-10 year Treasuries'], ['TLT', '20+ year Treasuries'], ['TIP', 'TIPS'], ['AGG', 'Aggregate'], ['LQD', 'Investment grade'], ['HYG', 'High yield']])}
+      ${panel('Currencies', `${quote('UUP', 'US dollar')}${quote('BTCUSD', 'Bitcoin')}
+        ${mrow('Broad dollar index', 'DTWEXBGS', v => v.toFixed(2))}`,
+        'The desk tracks no spot FX crosses — the dollar is held through UUP and watched through the Fed\'s broad trade-weighted index, which is weekly.')}
+      ${panel('Global markets', `${subhead('Broad')}${quote('EFA', 'Developed ex-US')}${quote('EEM', 'Emerging')}
+        ${subhead('Developed')}${[['EWU', 'United Kingdom'], ['EWG', 'Germany'], ['EWQ', 'France'], ['EWL', 'Switzerland'], ['EWN', 'Netherlands'], ['EWI', 'Italy'], ['EWP', 'Spain'], ['EWD', 'Sweden'], ['EWC', 'Canada'], ['EWJ', 'Japan']].map(([t, l]) => quote(t, l)).join('')}
+        ${subhead('Emerging')}${[['MCHI', 'China'], ['INDA', 'India'], ['EWY', 'South Korea'], ['EWT', 'Taiwan'], ['EWZ', 'Brazil'], ['EWW', 'Mexico'], ['EWH', 'Hong Kong'], ['EWS', 'Singapore']].map(([t, l]) => quote(t, l)).join('')}`,
+        'Australia and South Africa were removed from this panel for room. Both are still tracked and still in the table below — the geography fits are built from these country indices, so dropping the securities would quietly degrade a different page.')}
+      ${grp('Commodities', [['USO', 'Crude oil'], ['DBC', 'Broad commodities'], ['GLD', 'Gold'], ['SLV', 'Silver']])}
+    </div>
+  </div>
+  ${table}`;
 }
 
 // Minimal markdown for agent output. Everything is HTML-escaped BEFORE any formatting is applied,
@@ -5002,6 +5206,14 @@ document.addEventListener('click', e => {
   if (!t) return;
   newsWindow = +t.dataset.newswin;
   $('#app').innerHTML = sven();
+});
+// The window selector on the Markets performance chart. One listener per control, because the
+// harness matches a selector string exactly and a grouped selector would ship untested.
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-perf]');
+  if (!t) return;
+  perfPeriod = t.dataset.perf;
+  $('#app').innerHTML = markets();
 });
 // Scorecard model tabs on Annie's page.
 document.addEventListener('click', e => {

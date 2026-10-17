@@ -953,6 +953,57 @@ if (!argRoute) {
   }
 
   // -------------------------------------------------------------------------
+  // 10a1. Markets: the desk wall. The panels must carry real quotes, the risk block must sit
+  //       beside the VIX, and the performance chart must actually draw once its history lands --
+  //       a synchronous render shows it mid-load, which is not proof that it works.
+  // -------------------------------------------------------------------------
+  currentRoute = 'markets';
+  await go('#markets');
+  {
+    for (const want of ['US equity markets', 'Risk and volatility', 'US equity sectors', 'Fixed income',
+                        'Currencies', 'Global markets', 'Commodities', 'Government yields', 'US equity factors',
+                        'Normalised performance'])
+      need(app().includes(want), `[markets] the ${want} panel is missing`);
+    // Removed at the owner's request, for room. Still tracked, so they must remain in the table.
+    // Check the quote ROWS, not the prose: the panel's own note explains the removal by name, and
+    // matching anywhere in the markup flagged that note as the thing it was describing.
+    const panelNames = [...app().split('Every tracked security')[0].matchAll(/<span class="pname"[^>]*>([^<]+)</g)].map(m => m[1]);
+    need(!panelNames.includes('Australia') && !panelNames.includes('South Africa'), '[markets] Australia or South Africa is still quoted in a panel');
+    need(/EWA/.test(app()) && /EZA/.test(app()), '[markets] EWA or EZA has been dropped from the universe table, which would degrade the geography fits');
+    // The risk block, and the honesty about MOVE.
+    need(/CBOE VIX/.test(app()), '[markets] the VIX is missing from the risk panel');
+    for (const want of ['VIX, 3-month', 'VIX / VIX3M', 'Nasdaq 100 (VXN)', 'Russell 2000 (RVX)', 'Crude oil (OVX)', 'Gold (GVZ)', 'High yield OAS'])
+      need(app().includes(want), `[markets] the risk panel is missing ${want}`);
+    need(/MOVE is not here/.test(app()), '[markets] the page does not say why MOVE is absent');
+    need(!panelNames.some(x => /\bMOVE\b/.test(x)), '[markets] something is being quoted under the MOVE name, which no connected source publishes');
+    // 2-year yields were asked for in place of 5-year.
+    need(/<th class="num">2Y<\/th>/.test(app()), '[markets] the yield table has no 2Y column');
+    need(!/<th class="num">5Y<\/th>/.test(app()), '[markets] the yield table still shows 5Y');
+
+    // app.js is one IIFE, so its internals are not reachable from here -- which is correct, and
+    // means this has to be driven the way a browser drives it. Rendering the page schedules the
+    // price-history fetch, which re-renders when it lands. So: wait, then read.
+    for (let i = 0; i < 40 && /Loading price history/.test(app()); i++) await sleep(250);
+    const m2 = app();
+    need(!/Loading price history/.test(m2), '[markets] the performance chart never finished loading');
+    need(/Could not load price history/.test(m2) === false, '[markets] the performance chart failed to load its history');
+    const labelled = ['SPY', 'QQQ', 'IWM', 'DIA'].filter(t => new RegExp(`>${t} [+-]?[\\d.]+%<`).test(m2));
+    need(labelled.length >= 3, `[markets] only ${labelled.length} index lines are drawn on the performance chart`);
+    // Realised Treasury volatility is the stand-in for MOVE and has to be a real number.
+    const rv = (m2.match(/Long Treasuries \(TLT\)<\/span>\s*<span class="ptkr"><\/span><span class="pval">([\d.]+)%/) || [])[1];
+    need(rv !== undefined, '[markets] realised Treasury volatility did not compute');
+    if (rv !== undefined) need(+rv > 2 && +rv < 60, `[markets] realised Treasury volatility of ${rv}% is not a bond fund`);
+    // The window selector has to actually change the window.
+    const ytdLen = (m2.match(/<path d="M[^"]+"/g) || []).length;
+    await click('[data-perf]', { perf: '1M' });
+    const m3 = app();
+    need(/class="pill on" data-perf="1M"|data-perf="1M"[^>]*>1M/.test(m3), '[markets] the 1M window is not selected after clicking it');
+    need(m3 !== m2, '[markets] switching the window redrew nothing');
+    say(` ok  markets wall           -> panels render, ${labelled.length} lines on the chart, TLT realised vol ${rv ?? '—'}%, ${ytdLen} paths`);
+    await click('[data-perf]', { perf: 'YTD' });
+  }
+
+  // -------------------------------------------------------------------------
   // 10a2. Kate: the popularity contest, the reflexivity test and the contrarian Top 5.
   //
   // The rule this page lives under is that nothing here may look like positioning data. Every
