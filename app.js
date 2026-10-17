@@ -838,21 +838,49 @@ function stan() {
    ${rows.map(r => {
      const p = (D.perfByStrategy?.[r.m.id] || []).find(x => x.period === 'YTD') || null;
      const num = v => v === null || v === undefined ? null : +v;
-     const mr = p ? num(p.portfolio_return) : null;
-     const br = p ? num(p.peer_benchmark_return) : null;
+     // MEASURED where it exists, target weights only where it does not.
+     //
+     // This column used to be the target basis for every model: today's target weights held
+     // fixed back through the window. That is a hypothetical buy-and-hold of the book the desk
+     // believes in NOW, applied to a year it had not yet made those decisions in, and it ran
+     // 3 to 7 points above what the models actually did on seven of the eight. The bias is
+     // one-way by construction, because current targets are the names that worked.
+     //
+     // Seven of eight models carry a dated holdings history, so the measured figure is available
+     // and is what the desk actually earned. The target basis stays as a fallback for a model
+     // with no history, and the cell says which one it is rather than leaving them to look alike.
+     const ps = (D.periodStats || []).find(x => x.strategy_id === r.m.id && x.period === 'YTD') || null;
+     const measuredYtd = ps ? num(ps.model_return) : null;
+     const measuredBench = ps ? num(ps.benchmark_return) : null;
+     const onTarget = measuredYtd === null;
+     const mr = onTarget ? (p ? num(p.portfolio_return) : null) : measuredYtd;
+     const br = onTarget ? (p ? num(p.peer_benchmark_return) : null) : measuredBench;
      const gr = p ? num(p.gold_return) : null;
      const btc = p ? num(p.btc_return) : null;
      const cash = (r.m.byClass.find(c => c[0] === 'cash') || [0, 0])[1];
      // The CPI leg and the model measured over the SAME, shorter window -- never portfolio_return
      // divided by cpi_return, which would be a nine-month return over an eight-month price level.
      const cpi = p ? num(p.cpi_return) : null;
-     const mCpi = p ? num(p.model_return_cpi_window) : null;
+     // Measured over the CPI window too, read straight off the model's own daily value series, so
+     // the inflation comparison is not left on the target basis once the YTD beside it has moved
+     // off it. Falls back to the stored target-basis figure where there is no series to read.
+     const vsRows = (D.valueSeries || []).filter(v => v.strategy_id === r.m.id);
+     const valAtOrBefore = d => { let best = null; for (const v of vsRows) { if (v.as_of <= d) { if (!best || v.as_of > best.as_of) best = v; } } return best; };
+     const measuredOver = (from, to) => {
+       if (!vsRows.length || !from || !to) return null;
+       const a = valAtOrBefore(from), b = valAtOrBefore(to);
+       if (!a || !b || !(+a.value > 0) || a.as_of === b.as_of) return null;
+       return +b.value / +a.value - 1;
+     };
+     const mCpiMeasured = p ? measuredOver(p.cpi_window_start, p.cpi_window_end) : null;
+     const mCpi = mCpiMeasured !== null ? mCpiMeasured : (p ? num(p.model_return_cpi_window) : null);
+     const cpiOnTarget = mCpiMeasured === null;
      const b = r.beta;
      const bandState = !b || !b.actual_beta ? null
        : b.target_low === null ? null
        : +b.actual_beta < +b.target_low ? 'below' : +b.actual_beta > +b.target_high ? 'above' : 'inside';
      return `<tr>
-       <td class="click" data-go="#stan/${esc(r.m.id)}" style="cursor:pointer"><b>${esc(r.m.name.replace(/\s*\([^)]*\)/g, ''))}</b> <span class="chip">${esc(r.m.label)}</span></td>
+       <td class="click" data-go="#stan/${esc(r.m.id)}" style="cursor:pointer"><b>${esc(r.m.name.replace(/\s*\([^)]*\)/g, ''))}</b> <span class="chip">${esc(r.m.label)}</span>${onTarget ? '<br><small style="color:var(--warn)" title="No dated holdings history for this model, so its performance columns are on target weights rather than measured.">target weights</small>' : ''}</td>
        <td class="num">${pct(cash)}</td>
        <td>${!b ? '<span style="color:var(--muted)">–</span>'
           : !b.light ? `<span class="chip" title="${esc(b.note || '')}">unrated</span>`
@@ -876,17 +904,19 @@ function stan() {
             })()}</td>
        <td class="num" title="${b && b.note ? esc(b.note) : 'Least-squares beta against the benchmark chosen for this model'}">${b && b.actual_beta !== null ? (+b.actual_beta).toFixed(2) + '×' : '<span style="color:var(--muted)">–</span>'}${b && b.r_squared !== null ? `<br><small style="color:${+b.r_squared < 0.5 ? 'var(--neg)' : 'var(--muted)'}">R² ${(+b.r_squared).toFixed(2)}</small>` : ''}</td>
        <td class="num">${r.measured ? `<span class="click" data-go="#stan/top3-${esc(r.m.id)}" style="cursor:pointer;text-decoration:underline dotted" title="Show the three largest risk contributors"><b>${(r.top3Risk * 100).toFixed(0)}%</b></span><br><small style="color:var(--muted)">on ${(r.top3Wt * 100).toFixed(0)}% wt</small>` : '<span style="color:var(--muted)">–</span>'}</td>
-       ${perfCell(mr, 'Year-to-date return, target weights, gross of fees')}
+       ${perfCell(mr, onTarget
+          ? 'Year-to-date on TARGET weights — this model has no dated holdings history, so there is nothing measured to use. Target weights are today\'s book held back through the window, which flatters a year the decisions had not been made in.'
+          : `Year-to-date on what the model actually held, gross of fees${ps.start_date ? `, ${ps.start_date} to ${ps.end_date}` : ''}${ps.window_starts_in_gap ? '. The window opens inside the stretch with no holdings snapshot, so the weights were carried forward unchanged into it.' : ''}`)}
        ${perfCell(vsNumeraire(mCpi, cpi), cpi === null
           ? 'No CPI reading covers this window. Check that the macro feed is still running.'
-          : `Model ${(mCpi * 100).toFixed(1)}% against CPI ${(cpi * 100).toFixed(1)}% over ${p.cpi_window_start} to ${p.cpi_window_end} — a SHORTER window than the YTD beside it, because CPI is monthly and published in arrears. Both legs run over the same dates.`)}
-       ${perfCell(vsNumeraire(mr, gr), gr === null ? 'No gold price for this window' : `Model ${((mr || 0) * 100).toFixed(1)}% against gold ${(gr * 100).toFixed(1)}% — the model measured in gold terms`)}
-       ${perfCell(vsNumeraire(mr, btc), btc === null ? 'No BTC price for this window' : `Model ${((mr || 0) * 100).toFixed(1)}% against bitcoin ${(btc * 100).toFixed(1)}% — the model measured in BTC terms`)}
+          : `Model ${(mCpi * 100).toFixed(1)}%${cpiOnTarget ? ' (target weights)' : ' (measured)'} against CPI ${(cpi * 100).toFixed(1)}% over ${p.cpi_window_start} to ${p.cpi_window_end} — a SHORTER window than the YTD beside it, because CPI is monthly and published in arrears. Both legs run over the same dates.`)}
+       ${perfCell(vsNumeraire(mr, gr), gr === null ? 'No gold price for this window' : `Model ${((mr || 0) * 100).toFixed(1)}% against gold ${(gr * 100).toFixed(1)}% over ${esc(p.start_date)} to ${esc(p.end_date)} — the model measured in gold terms. The gold leg runs over the performance job's window, which can open a day or two from the model's own.`)}
+       ${perfCell(vsNumeraire(mr, btc), btc === null ? 'No BTC price for this window' : `Model ${((mr || 0) * 100).toFixed(1)}% against bitcoin ${(btc * 100).toFixed(1)}% over ${esc(p.start_date)} to ${esc(p.end_date)} — the model measured in BTC terms.`)}
        ${perfCell(mr !== null && br !== null ? mr - br : null, br === null ? 'No benchmark return for this window' : `Model ${((mr || 0) * 100).toFixed(1)}% against its benchmark ${(br * 100).toFixed(1)}%`)}
      </tr>`;
    }).join('')}
    </tbody></table></div>
-   <p class="note"><b>Beta vs band</b> says only whether the model sits inside, below or above the band the master Speed Limit calls for, with the band beside it — green inside, red outside. The beta itself is the next column, not this one: carrying it twice invited reading the verdict cell as a measurement. Below the band is more defensive than the lights call for rather than worse, which is why the colour marks conformity and not quality. <b>Beta vs bench</b> is the figure itself, against that model's own benchmark — read R² first, since below 0.5 the regression is not describing risk posture and the band cell shows "unrated" instead. <b>Top-3 risk</b> is the share of model volatility carried by its three largest contributors, against the weight those same three hold; click it for the names. Performance is year-to-date on <b>target weights for every model</b>, gross of fees, so the eight are comparable with each other. That is not the same number a model's own drawer shows: where a model has a dated holdings history its drawer measures what it actually held, and the two will differ — for Balanced Core by several points. Cash is priced as BIL rather than dropped, which it used to be. <b>vs CPI</b>, <b>vs Gold</b> and <b>vs BTC</b> restate the model in that numeraire — (1+model)÷(1+numeraire)−1 — so green means the model held its value against that yardstick rather than merely rose. Gold is GLD and bitcoin is Tiingo spot, both over the model's own window. <b>CPI is different and the cell is honest about it:</b> headline CPI is monthly and published in arrears, so the newest reading always covers a month that ended some time ago. Rather than divide a longer investment return by a shorter inflation one — which would quietly flatter every model here — the comparison runs over the months CPI has actually reported, with the model re-measured over exactly those dates. Hover the cell for the window.</p></div>`;
+   <p class="note"><b>Beta vs band</b> says only whether the model sits inside, below or above the band the master Speed Limit calls for, with the band beside it — green inside, red outside. The beta itself is the next column, not this one: carrying it twice invited reading the verdict cell as a measurement. Below the band is more defensive than the lights call for rather than worse, which is why the colour marks conformity and not quality. <b>Beta vs bench</b> is the figure itself, against that model's own benchmark — read R² first, since below 0.5 the regression is not describing risk posture and the band cell shows "unrated" instead. <b>Top-3 risk</b> is the share of model volatility carried by its three largest contributors, against the weight those same three hold; click it for the names. <b>Performance is what each model actually held</b>, year to date, gross of fees — the same measured figure its own drawer shows, so the two can no longer disagree. This column used to be built on target weights for every model: today's book held fixed back through the window. That is a hypothetical, and a flattering one, because current targets are the names that worked — it ran 3 to 7 points above the measured return on seven of the eight models, with Diversified Growth overstated by 7.0 points. A model with no dated holdings history still falls back to target weights and is <span style="color:var(--warn)">marked</span> in the first column, since a hypothetical labelled as such is better than a blank. Cash is priced as BIL rather than dropped, which it used to be. <b>vs CPI</b>, <b>vs Gold</b> and <b>vs BTC</b> restate the model in that numeraire — (1+model)÷(1+numeraire)−1 — so green means the model held its value against that yardstick rather than merely rose. Gold is GLD and bitcoin is Tiingo spot, both over the model's own window. <b>CPI is different and the cell is honest about it:</b> headline CPI is monthly and published in arrears, so the newest reading always covers a month that ended some time ago. Rather than divide a longer investment return by a shorter inflation one — which would quietly flatter every model here — the comparison runs over the months CPI has actually reported, with the model re-measured over exactly those dates. Hover the cell for the window.</p></div>`;
 
   // Every position any model has flagged, gathered in one place so a name appearing in several
   // models is obvious — that is the concentration that matters at desk level, not model level.

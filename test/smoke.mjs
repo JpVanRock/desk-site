@@ -672,6 +672,33 @@ if (!argRoute) {
     '[adam] a leg awaiting data rendered a 0 score; it must render a dash');
 
   // -------------------------------------------------------------------------
+  // 9a. Stan's YTD column must be the MEASURED return, not the target-weight hypothetical.
+  // -------------------------------------------------------------------------
+  currentRoute = 'stan-ytd';
+  await go('#stan');
+  {
+    const page = app();
+    const ps = await fetch(`${SUPABASE_URL}/rest/v1/latest_model_period_stats?select=strategy_id,period,model_return&period=eq.YTD`, { headers: REST }).then(r => r.json());
+    const perf = await fetch(`${SUPABASE_URL}/rest/v1/latest_strategy_performance?select=strategy_id,period,portfolio_return&period=eq.YTD`, { headers: REST }).then(r => r.json());
+    const measured = Object.fromEntries(ps.filter(r => r.model_return !== null).map(r => [r.strategy_id, +r.model_return]));
+    const target = Object.fromEntries(perf.filter(r => r.portfolio_return !== null).map(r => [r.strategy_id, +r.portfolio_return]));
+    // Every YTD cell the page renders must match a measured figure, where one exists.
+    const shown = [...page.matchAll(/title="Year-to-date on what the model actually held[^"]*"[^>]*>([+-]?[\d.]+)%/g)].map(m => +m[1]);
+    const expect = Object.values(measured).map(v => +(v * 100).toFixed(1)).sort((a, b) => a - b);
+    const got = shown.map(v => +v.toFixed(1)).sort((a, b) => a - b);
+    say(` ok  stan ytd basis         -> ${shown.length} measured cells of ${Object.keys(measured).length} models with a measured figure`);
+    need(JSON.stringify(got) === JSON.stringify(expect), `[stan-ytd] the YTD column reads ${got.join('/')} but measured is ${expect.join('/')}`);
+    // A target-weight fallback is allowed only where nothing measured exists, and must be marked.
+    const fallbacks = (page.match(/>target weights</g) || []).length;
+    const noMeasured = Object.keys(target).filter(id => measured[id] === undefined).length;
+    need(fallbacks === noMeasured, `[stan-ytd] ${fallbacks} rows marked as target weights but ${noMeasured} models lack a measured figure`);
+    // The old wording must be gone, or the note describes a table that no longer exists.
+    // The old claim must be gone. It is quoted in the new note as history, so the test looks for
+    // the assertion rather than the words: "is ... on target weights for every model".
+    need(!/Performance is year-to-date on <b>target weights for every model<\/b>/.test(page), '[stan-ytd] the note still asserts every model is on target weights');
+  }
+
+  // -------------------------------------------------------------------------
   // 9c. Scatter: a position that lost money is red, in the dot and the ticker.
   // -------------------------------------------------------------------------
   currentRoute = 'scatter-colour';
