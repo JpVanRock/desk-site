@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -173,6 +173,9 @@ async function load() {
     qSoft(sb.from('latest_factor_fingerprint_coverage').select('scope,strategy_id,as_of,model_equity_weight,model_resolved,benchmark_resolved,unresolved,window_start,window_end'), 'factor fingerprint coverage'),
     qSoft(sb.from('latest_model_tax_efficiency').select('strategy_id,as_of,year,st_gain_bps,st_loss_bps,lt_gain_bps,lt_loss_bps,n_st,n_lt,bps_from_trims,n_sales,n_full_exits,n_trims'), 'tax efficiency'),
     qSoft(sb.from('latest_model_tax_coverage').select('strategy_id,as_of,first_snapshot,last_snapshot,n_lots_opened,n_sales,n_partial_sales,opening_lot_bps,unpriced_sales'), 'tax coverage'),
+    qAllSoft(() => sb.from('latest_model_open_lots').select('strategy_id,ticker,security_id,lot_date,weight,cost_price,current_price,unrealised_bps,held_days,is_long_term,from_opening_book,basis_estimated'), 'open lots'),
+    qSoft(sb.from('trade_journal').select('id,created_at,submitted_at,action,ticker,asset_class,rationale,setup,sizing,sizing_pct,horizon,loss_threshold,strategy_ids,tax_estimate,author').order('submitted_at', { ascending: false }).limit(200), 'trade journal'),
+    qSoft(sb.from('trade_journal_verdicts').select('journal_id,agent,verdict,headline,rationale,requested_at,answered_at'), 'journal verdicts'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -257,7 +260,8 @@ async function load() {
     blendFit: blendFit || [], modelDuration: modelDuration || [],
     geoExposure: geoExposure || [], geoCoverage: geoCoverage || [],
     fingerprint: fingerprint || [], fingerprintCov: fingerprintCov || [],
-    taxEff: taxEff || [], taxCov: taxCov || [] };
+    taxEff: taxEff || [], taxCov: taxCov || [],
+    openLots: openLots || [], journal: journal || [], journalVerdicts: journalVerdicts || [] };
 }
 
 // ---------- Views ----------
@@ -288,7 +292,7 @@ function route() {
   closeDrawer();
   // Keyed lookup, so this order is cosmetic rather than load-bearing — but it is kept in step
   // with the nav in index.html so the two read the same way.
-  const pages = { sisyphus, stan, adam, sven, markets, views: viewsPage, signals, agents, annie, briefs, inbox, status, sources };
+  const pages = { sisyphus, stan, adam, sven, gail, markets, views: viewsPage, signals, agents, annie, sandbox, briefs, inbox, status, sources };
   $('#app').innerHTML = (pages[page] || sisyphus)();
   if (page === 'stan' && arg) {
     // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
@@ -3890,6 +3894,270 @@ async function openMacroChart(seriesId) {
     <p class="note">Latest published value per date (a revised series like GDP can be restated after its first print). Source: FRED.</p></div>`;
 }
 
+// A model's name without its parenthetical short form. annie() has its own copy scoped to that
+// page; this is the module-level one the Sandbox and Gail use.
+const bareName = s => String(s || '').replace(/\s*\([^)]*\)/g, '');
+
+// ---------- Sandbox: the trade journal ----------
+//
+// A decision record, not an order. Nothing here reaches a broker, and submitting an entry moves
+// no allocation: the target allocation below is a separate object with its own explicit Submit
+// Final, so writing down a thought cannot change client money by accident.
+//
+// Form state is module-level so a re-render keeps it. Structural controls — the action, the
+// asset class, the sizing — re-render, because what the form shows depends on them. Free text
+// and the slider deliberately do NOT: re-rendering a textarea on every keystroke takes the
+// cursor with it, and re-rendering a range input mid-drag drops the drag.
+let sbAction = 'buy';
+let sbTicker = '';
+let sbClass = null;
+let sbRationale = '';
+let sbSetup = '';
+let sbSizing = null;
+let sbCustomPct = '';
+let sbHorizon = null;
+let sbLoss = -0.10;
+let sbModels = new Set();
+let sbSaveMsg = null;
+
+const SB_SETUPS = {
+  buy: ['MPH change', 'Swing Trade', 'Confirmed Bottom', 'Momentum Play', 'Quad Focused', 'Add-On', 'Cash Substitute', 'Sentiment'],
+  sell: ['Rebalance', 'Stop Loss', 'Top Confirmed', 'MPH Change', 'Quad Focused', 'Trim', 'Sentiment'],
+  rebalance: ['Time-Based', 'Risk-Based'],
+};
+const SB_CLASSES = [
+  ['equity', 'Equity'], ['fixed_income', 'Fixed Income'], ['commodities', 'Commodities'],
+  ['blended', 'Blended Asset'], ['cash_equivalent', 'Cash Equivalent'],
+];
+// Two sizing ladders. Equity-like risk is sized in 3s to a 12% cap -- the desk's single-position
+// limit -- and income-like risk in 4s to 16%, because a bond sleeve carries less of it per unit
+// of weight. Full Position is the cap, not an aspiration.
+const SB_SIZING = {
+  equityLike: [['starter', 'Starter Position', 0.03], ['half_max', 'Half Max', 0.06], ['full', 'Full Position', 0.12]],
+  incomeLike: [['starter', 'Starter Position', 0.04], ['half_max', 'Half Max', 0.08], ['full', 'Full Position', 0.16]],
+};
+const sbLadder = () => (sbClass === 'fixed_income' || sbClass === 'cash_equivalent') ? SB_SIZING.incomeLike : SB_SIZING.equityLike;
+const sbSizePct = () => {
+  if (sbSizing === 'custom') { const v = parseFloat(sbCustomPct); return Number.isFinite(v) ? v / 100 : null; }
+  const row = sbLadder().find(r => r[0] === sbSizing);
+  return row ? row[2] : null;
+};
+
+// The tax a proposed sale would realise, per model, straight off the open lots. FIFO, so the
+// oldest slice goes first and its own age decides its rate -- one sale can be part short and part
+// long term, which is what makes an average-cost shortcut wrong here.
+const SB_LT_RATE = 0.15, SB_ST_RATE = 0.24;
+function sbTaxFor(strategyId, ticker, sellWeight) {
+  const lots = (D.openLots || []).filter(l => l.strategy_id === strategyId && l.ticker === ticker)
+    .slice().sort((a, b) => String(a.lot_date).localeCompare(String(b.lot_date)));
+  if (!lots.length) return null;
+  const held = lots.reduce((a, l) => a + +l.weight, 0);
+  const take = Math.min(sellWeight, held);
+  let left = take, stGain = 0, ltGain = 0, stLoss = 0, ltLoss = 0, oldest = null, anyOpening = false, anyEstimated = false;
+  for (const l of lots) {
+    if (left <= 1e-9) break;
+    const part = Math.min(+l.weight, left);
+    if (l.current_price === null || !(+l.cost_price > 0)) { left -= part; continue; }
+    const g = part * (+l.current_price / +l.cost_price - 1) * 10000;
+    if (l.is_long_term) { if (g >= 0) ltGain += g; else ltLoss += -g; }
+    else { if (g >= 0) stGain += g; else stLoss += -g; }
+    if (!oldest) oldest = l.lot_date;
+    if (l.from_opening_book) anyOpening = true;
+    if (l.basis_estimated) anyEstimated = true;
+    left -= part;
+  }
+  // Netted the way the rule works, so a loss offsets rather than being taxed at zero and ignored.
+  let st = stGain - stLoss, lt = ltGain - ltLoss;
+  if (st < 0 && lt > 0) { const u = Math.min(-st, lt); lt -= u; st += u; }
+  else if (lt < 0 && st > 0) { const u = Math.min(-lt, st); st -= u; lt += u; }
+  const tax = Math.max(0, st) * SB_ST_RATE + Math.max(0, lt) * SB_LT_RATE;
+  return { held, sold: take, stGain, ltGain, stLoss, ltLoss, netSt: st, netLt: lt, taxBps: tax, oldest, anyOpening, anyEstimated, shortOfRequest: sellWeight > held + 1e-9 };
+}
+
+function sandbox() {
+  const models = D.models || [];
+  const setups = SB_SETUPS[sbAction] || [];
+  const sizePct = sbSizePct();
+  const isSell = sbAction === 'sell' || sbAction === 'rebalance';
+  const chosen = sbModels.size ? models.filter(m => sbModels.has(m.id)) : [];
+
+  const radio = (name, val, cur, label, attr) =>
+    `<label style="display:inline-flex;align-items:center;gap:6px;margin-right:16px;cursor:pointer;font-size:13px">
+      <input type="radio" name="${name}" ${attr}="${esc(val)}" ${cur === val ? 'checked' : ''} style="accent-color:var(--accent)">${esc(label)}</label>`;
+  const check = (val, cur, label, attr, sub) =>
+    `<label style="display:inline-flex;align-items:center;gap:6px;margin:0 14px 8px 0;cursor:pointer;font-size:13px">
+      <input type="checkbox" ${attr}="${esc(val)}" ${cur === val ? 'checked' : ''} style="accent-color:var(--accent)">${esc(label)}${sub ? `<span style="color:var(--muted)">${esc(sub)}</span>` : ''}</label>`;
+
+  // ---- tax estimate, only where a sale would realise something ----
+  const taxBlock = (() => {
+    if (!isSell) return '';
+    if (!sbTicker) return `<div class="note" style="margin-top:8px;color:var(--muted)">Enter a ticker and the tax a sale would realise appears here, model by model.</div>`;
+    const target = chosen.length ? chosen : models;
+    const rows = target.map(m => ({ m, t: sbTaxFor(m.id, sbTicker.toUpperCase(), sizePct === null ? Infinity : sizePct) }))
+      .filter(x => x.t);
+    if (!rows.length) return `<div class="note" style="margin-top:8px;color:var(--muted)">No open lots for <b>${esc(sbTicker.toUpperCase())}</b> in ${chosen.length ? 'the selected models' : 'any model'}, so there is nothing to realise.</div>`;
+    const totalTax = rows.reduce((a, x) => a + x.t.taxBps, 0) / rows.length;
+    return `<div style="margin-top:10px;border:1px solid var(--line);border-radius:8px;padding:11px 13px;background:var(--panel2)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
+        <b style="font-size:13px">Tax impact of selling ${esc(sbTicker.toUpperCase())}${sizePct === null ? ' in full' : ` ${(sizePct * 100).toFixed(0)}% of the model`}</b>
+        <span style="font-size:12px;color:var(--muted)">15% long-term · 24% short-term</span></div>
+      <div style="overflow-x:auto;margin-top:8px"><table style="min-width:520px"><thead><tr>
+        <th>Model</th><th class="num">Held</th><th class="num">Sold</th><th class="num">LT gain</th><th class="num">ST gain</th><th class="num">Tax</th><th>Oldest lot</th>
+      </tr></thead><tbody>
+      ${rows.map(({ m, t }) => `<tr><td>${esc(bareName(m.name))}</td>
+        <td class="num">${(t.held * 100).toFixed(1)}%</td>
+        <td class="num">${(t.sold * 100).toFixed(1)}%</td>
+        <td class="num" style="color:var(--pos)">${(t.netLt / 100).toFixed(2)}%</td>
+        <td class="num" style="color:var(--flat)">${(t.netSt / 100).toFixed(2)}%</td>
+        <td class="num"><b style="color:var(--neg)">−${(t.taxBps / 100).toFixed(2)}%</b></td>
+        <td style="font-size:12px;color:var(--muted)">${esc(t.oldest || '—')}${t.anyOpening ? ' *' : ''}${t.anyEstimated ? ' †' : ''}</td></tr>`).join('')}
+      </tbody></table></div>
+      <p class="note" style="margin:8px 0 0">Averaging <b>−${(totalTax / 100).toFixed(2)}%</b> of model value across ${rows.length} model${rows.length === 1 ? '' : 's'}. Priced off the open FIFO lots, so the oldest slice goes first and its own age sets its rate — one sale can be part short and part long term. Losses net against gains of the same character before tax is applied. ${rows.some(x => x.t.anyOpening) ? 'Lots marked <b>*</b> were already held when the records begin, so their basis and age are the first snapshot\'s rather than the true purchase, and the gain on them is understated. ' : ''}${rows.some(x => x.t.anyEstimated) ? 'Lots marked <b>†</b> had no price on the day they were acquired, so the earliest price the security has is used as the basis — the holding period is real, the gain is indicative. ' : ''}${rows.some(x => x.t.shortOfRequest) ? 'Where the position is smaller than the size chosen, only what is held is sold. ' : ''}Estimate only, federal rates, no state tax or wash-sale adjustment.</p></div>`;
+  })();
+
+  const canSubmit = sbAction && sbClass && sbRationale.trim().length > 0 && sbSetup && sbSizing && sizePct !== null && sbHorizon && sbModels.size > 0 && (sbAction === 'rebalance' || sbTicker.trim());
+  const missing = [
+    sbTicker.trim() || sbAction === 'rebalance' ? '' : 'ticker',
+    sbClass ? '' : 'asset class', sbRationale.trim() ? '' : 'rationale', sbSetup ? '' : 'set-up',
+    sizePct === null ? 'sizing' : '', sbHorizon ? '' : 'time horizon', sbModels.size ? '' : 'at least one model',
+  ].filter(Boolean);
+
+  return `<span class="eyebrow">Sandbox</span><h1>Sandbox</h1>
+  <p class="sub">Write down a decision before taking it, and try an allocation before committing to it. Nothing on this page reaches a broker, and nothing changes a model until it is explicitly submitted.</p>
+
+  <div class="card" style="margin-bottom:14px">
+    <h2 style="margin:0 0 4px">Journal entry</h2>
+    <p class="note" style="margin:0 0 14px">A decision record. Submitting files it with Gail; it moves no money and changes no allocation.</p>
+
+    <div style="margin-bottom:14px"><div class="eyebrow" style="margin-bottom:6px">Action</div>
+      ${['buy', 'sell', 'rebalance'].map(a => radio('sbaction', a, sbAction, a[0].toUpperCase() + a.slice(1), 'data-sbaction')).join('')}</div>
+
+    <div style="margin-bottom:14px;display:flex;gap:18px;flex-wrap:wrap;align-items:flex-end">
+      <div><div class="eyebrow" style="margin-bottom:6px">Ticker${sbAction === 'rebalance' ? ' <span style="color:var(--muted);text-transform:none">(optional for a rebalance)</span>' : ''}</div>
+        <input data-sbticker type="text" value="${esc(sbTicker)}" placeholder="e.g. KSPY" style="width:140px;padding:6px 9px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:13px;text-transform:uppercase"></div>
+    </div>
+
+    <div style="margin-bottom:14px"><div class="eyebrow" style="margin-bottom:6px">Asset class</div>
+      ${SB_CLASSES.map(([v, l]) => check(v, sbClass, l, 'data-sbclass')).join('')}</div>
+
+    ${taxBlock}
+
+    <div style="margin:16px 0 14px"><div class="eyebrow" style="margin-bottom:6px">Rationale</div>
+      <textarea data-sbrationale rows="3" placeholder="Why this, why now, and what would make it wrong." style="width:100%;padding:8px 10px;border-radius:7px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:13px;font-family:inherit;resize:vertical">${esc(sbRationale)}</textarea></div>
+
+    <div style="margin-bottom:14px"><div class="eyebrow" style="margin-bottom:6px">Set-Up <span style="color:var(--muted);text-transform:none">— the list follows the action</span></div>
+      <select data-sbsetup style="padding:6px 9px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:13px;min-width:220px">
+        <option value="">Choose a set-up…</option>
+        ${setups.map(o => `<option value="${esc(o)}" ${sbSetup === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
+      </select></div>
+
+    <div style="margin-bottom:14px"><div class="eyebrow" style="margin-bottom:6px">Sizing strategy${sbClass ? '' : ' <span style="color:var(--muted);text-transform:none">— choose an asset class first; the ladder depends on it</span>'}</div>
+      ${!sbClass ? '<span style="color:var(--muted);font-size:13px">—</span>' : `
+        ${sbLadder().map(([v, l, pc]) => check(v, sbSizing, l, 'data-sbsizing', ` (${(pc * 100).toFixed(0)}%)`)).join('')}
+        ${check('custom', sbSizing, 'Custom', 'data-sbsizing')}
+        ${sbSizing === 'custom' ? `<input data-sbcustom type="number" step="0.1" min="0" max="100" value="${esc(sbCustomPct)}" placeholder="%" style="width:86px;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:13px">` : ''}`}</div>
+
+    <div style="margin-bottom:14px"><div class="eyebrow" style="margin-bottom:6px">Time horizon</div>
+      ${radio('sbhorizon', 'strategic', sbHorizon, 'Strategic Position', 'data-sbhorizon')}
+      ${radio('sbhorizon', 'trading', sbHorizon, 'Trading Position', 'data-sbhorizon')}</div>
+
+    <div style="margin-bottom:14px"><div class="eyebrow" style="margin-bottom:6px">Loss threshold <span style="color:var(--muted);text-transform:none">— Stan alerts when it is breached</span></div>
+      <div style="display:flex;align-items:center;gap:12px;max-width:420px">
+        <input data-sbloss type="range" min="-30" max="-1" step="1" value="${(sbLoss * 100).toFixed(0)}" style="flex:1;accent-color:var(--neg)">
+        <b id="sbLossOut" style="color:var(--neg);font-variant-numeric:tabular-nums;min-width:48px">${(sbLoss * 100).toFixed(0)}%</b></div></div>
+
+    <div style="margin-bottom:14px"><div class="eyebrow" style="margin-bottom:6px">Models</div>
+      ${models.map(m => `<label style="display:inline-flex;align-items:center;gap:6px;margin:0 14px 8px 0;cursor:pointer;font-size:13px">
+        <input type="checkbox" data-sbmodel="${esc(m.id)}" ${sbModels.has(m.id) ? 'checked' : ''} style="accent-color:var(--accent)">${esc(bareName(m.name))}</label>`).join('')}</div>
+
+    ${sbSaveMsg ? `<div class="note" style="margin-bottom:10px;color:${sbSaveMsg.ok ? 'var(--pos)' : 'var(--neg)'}">${esc(sbSaveMsg.text)}</div>` : ''}
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <button class="btn" data-sbsubmit="1" ${canSubmit ? '' : 'disabled'} style="${canSubmit ? '' : 'opacity:.5'}">Submit Trade</button>
+      <button class="btn" data-sbanalyze="1" ${canSubmit ? '' : 'disabled'} style="${canSubmit ? '' : 'opacity:.5'};background:var(--panel2);color:var(--text)">Analyze Trade</button>
+      ${missing.length ? `<small style="color:var(--muted)">Still needed: ${esc(missing.join(', '))}</small>` : ''}</div>
+    <p class="note">Submitting files the entry with Gail, who keeps the catalogue. <b>Analyze</b> asks Annie, Adam, Sven and Kate to read the same entry through their own lens and return Go, Go Fish or No Go. They are agents, not scripts in this page: the request is recorded and the verdicts appear on Gail's tab when they run. A button that appeared to think while inventing four opinions in JavaScript would be the worst thing this desk could ship.</p>
+  </div>`;
+}
+
+// ---------- Gail: the catalogue ----------
+//
+// Gail is the desk's librarian, so the journal lives with her. This page does not grade anything
+// — it records what was decided, when, and what the four agents made of it. A verdict with no
+// answered_at is a request still outstanding, shown as pending rather than quietly omitted.
+const GAIL_VERDICT = {
+  go:      ['Go', 'var(--pos)', '&#10003;'],
+  go_fish: ['Go Fish', 'var(--flat)', '&#128031;'],
+  no_go:   ['No Go', 'var(--neg)', '&#10007;'],
+};
+const GAIL_AGENTS = [['annie', 'Annie'], ['adam', 'Adam'], ['sven', 'Sven'], ['kate', 'Kate']];
+
+function gail() {
+  // Submitted entries only. A draft is a thought that has not been filed, and the catalogue is
+  // for what was decided. Nothing in this build writes a draft, but the filter is the guarantee.
+  const entries = (D.journal || []).filter(e => e.submitted_at).slice().sort((a, b) =>
+    String(b.submitted_at || b.created_at).localeCompare(String(a.submitted_at || a.created_at)));
+  const verdicts = D.journalVerdicts || [];
+  const models = D.models || [];
+  const nameOf = id => bareName((models.find(m => m.id === id) || {}).name || '—');
+
+  if (!entries.length) {
+    return `<span class="eyebrow">The Librarian</span><h1>Gail</h1>
+      <p class="sub">The trade journal, catalogued. Every decision written in the Sandbox is filed here with what the agents made of it.</p>
+      <div class="card"><div class="empty">No journal entries yet. Write one in the Sandbox and it is filed here.</div></div>`;
+  }
+
+  const card = e => {
+    const vs = verdicts.filter(v => v.journal_id === e.id);
+    const answered = vs.filter(v => v.verdict);
+    const tally = GAIL_AGENTS.map(([k, label]) => {
+      const v = vs.find(x => x.agent === k);
+      if (!v) return `<div style="text-align:center;min-width:70px"><div style="font-size:11px;color:var(--muted)">${esc(label)}</div>
+        <div style="color:var(--muted);font-size:12px;margin-top:3px">not asked</div></div>`;
+      if (!v.verdict) return `<div style="text-align:center;min-width:70px"><div style="font-size:11px;color:var(--muted)">${esc(label)}</div>
+        <div style="color:var(--muted);font-size:12px;margin-top:3px">pending</div></div>`;
+      const [lbl, col, glyph] = GAIL_VERDICT[v.verdict] || GAIL_VERDICT.go_fish;
+      return `<div style="text-align:center;min-width:70px" title="${esc(v.rationale || v.headline || '')}">
+        <div style="font-size:11px;color:var(--muted)">${esc(label)}</div>
+        <div style="font-size:19px;color:${col};line-height:1.2">${glyph}</div>
+        <div style="font-size:11px;color:${col};font-weight:600">${esc(lbl)}</div></div>`;
+    }).join('');
+    const pc = v => v === null || v === undefined ? '—' : (+v * 100).toFixed(1) + '%';
+    const tax = e.tax_estimate && e.tax_estimate.per_model ? e.tax_estimate.per_model : null;
+    return `<div class="card" style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;align-items:baseline">
+        <h2 style="margin:0;font-size:16px">
+          <span style="color:${e.action === 'buy' ? 'var(--pos)' : e.action === 'sell' ? 'var(--neg)' : 'var(--flat)'};text-transform:uppercase;font-size:12px;letter-spacing:.06em">${esc(e.action)}</span>
+          ${e.ticker ? ` ${esc(e.ticker)}` : ''}
+          <span style="font-weight:400;color:var(--muted);font-size:13px"> · ${esc((e.asset_class || '').replace(/_/g, ' '))} · ${esc(e.setup || '')}</span></h2>
+        <small style="color:var(--muted)">${esc(String(e.submitted_at || e.created_at).slice(0, 16).replace('T', ' '))}${e.author ? ` · ${esc(e.author)}` : ''}</small></div>
+      <div style="display:flex;gap:26px;flex-wrap:wrap;margin-top:10px;align-items:flex-start">
+        <div style="flex:1;min-width:260px">
+          <p style="margin:0 0 8px;font-size:13.5px">${esc(e.rationale || '')}</p>
+          <div style="font-size:12px;color:var(--muted);line-height:1.7">
+            <b style="color:var(--text)">${pc(e.sizing_pct)}</b> ${esc((e.sizing || '').replace(/_/g, ' '))} · <b style="color:var(--text)">${esc(e.horizon || '—')}</b>
+            ${e.loss_threshold !== null && e.loss_threshold !== undefined ? ` · stop at <b style="color:var(--neg)">${(+e.loss_threshold * 100).toFixed(0)}%</b>` : ''}
+            <br>${(e.strategy_ids || []).map(id => esc(nameOf(id))).join(', ') || 'no models'}
+            ${tax ? `<br><span style="color:var(--neg)">Estimated tax −${(tax.reduce((a, x) => a + +x.tax_bps, 0) / tax.length / 100).toFixed(2)}%</span> of model value, averaged across ${tax.length} model${tax.length === 1 ? '' : 's'} at 15/24` : ''}
+          </div></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">${tally}</div>
+      </div>
+      ${answered.length ? `<details style="margin-top:10px;font-size:13px"><summary style="cursor:pointer;color:var(--text)">What the agents said</summary>
+        ${answered.map(v => { const [lbl, col] = GAIL_VERDICT[v.verdict] || GAIL_VERDICT.go_fish;
+          return `<div style="margin-top:8px"><b style="color:${col}">${esc((GAIL_AGENTS.find(a => a[0] === v.agent) || [,v.agent])[1])} — ${esc(lbl)}</b>
+            ${v.headline ? `<br><span style="font-size:13px">${esc(v.headline)}</span>` : ''}
+            ${v.rationale ? `<br><span style="color:var(--muted);font-size:12.5px">${esc(v.rationale)}</span>` : ''}</div>`; }).join('')}
+      </details>` : ''}
+    </div>`;
+  };
+
+  const pending = verdicts.filter(v => !v.verdict).length;
+  return `<span class="eyebrow">The Librarian</span><h1>Gail</h1>
+  <p class="sub">The trade journal, catalogued. Every decision written in the Sandbox is filed here with what the agents made of it.</p>
+  ${pending ? `<div class="card" style="margin-bottom:12px;border-left:3px solid var(--warn)"><p style="margin:0;font-size:13px"><b>${pending} analysis request${pending === 1 ? '' : 's'} outstanding.</b> The agents run outside this page, so a verdict appears once they have read the entry. Pending is pending — it is not a quiet No.</p></div>` : ''}
+  ${entries.map(card).join('')}
+  <p class="note"><b>${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}.</b> A journal entry is a decision record and nothing more: it reaches no broker and moves no allocation. The tax figure beside one is the estimate made at the time it was written, priced off the open lots then — it is not re-costed as prices move, because what matters later is what the desk believed when it decided.</p>`;
+}
+
 function viewsPage() {
   const cell = v => v === null ? ['M', 'UNSCORED'] : v > 0.4 ? ['L', 'LONG'] : v < -0.75 ? ['S', 'SHORT'] : v < -0.25 ? ['M', 'FLAT / SHORT'] : ['F', 'FLAT'];
   const rows = D.matrix.map(r => `<div class="rl">${esc(r.name)}</div>${r.v.map(x => { const [c, t] = cell(x === null ? null : +x); return `<div class="${c}">${t}</div>`; }).join('')}`).join('');
@@ -4140,6 +4408,127 @@ document.addEventListener('click', e => {
   const arg = (location.hash.split('/')[1] || '');
   if (arg.startsWith('snr-')) $('#drawer').innerHTML = snrDrawer(arg.slice(4));
 });
+
+// ---------- Sandbox form ----------
+//
+// Structural controls re-render, because what the form shows depends on them. Free text and the
+// slider do not: re-rendering a textarea on each keystroke takes the caret with it, and
+// re-rendering a range input mid-drag drops the drag. Those write to state and leave the DOM be.
+// One listener per control rather than one combined selector. Every other handler on this page
+// is written that way, and the smoke harness drives a click by matching the selector string
+// exactly -- a grouped selector is unreachable from a test, which is how four of these shipped
+// untested the first time.
+const sbRedraw = () => { $('#app').innerHTML = sandbox(); };
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-sbaction]'); if (!t) return;
+  sbSaveMsg = null; sbAction = t.dataset.sbaction; sbSetup = '';   // the set-up list changes with the action
+  sbRedraw();
+});
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-sbclass]'); if (!t) return;
+  sbSaveMsg = null;
+  sbClass = sbClass === t.dataset.sbclass ? null : t.dataset.sbclass;
+  sbSizing = null;                                                 // the ladder changes with the class
+  sbRedraw();
+});
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-sbsizing]'); if (!t) return;
+  sbSaveMsg = null; sbSizing = sbSizing === t.dataset.sbsizing ? null : t.dataset.sbsizing;
+  sbRedraw();
+});
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-sbhorizon]'); if (!t) return;
+  sbSaveMsg = null; sbHorizon = t.dataset.sbhorizon;
+  sbRedraw();
+});
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-sbmodel]'); if (!t) return;
+  sbSaveMsg = null;
+  const id = t.dataset.sbmodel;
+  sbModels.has(id) ? sbModels.delete(id) : sbModels.add(id);
+  sbRedraw();
+});
+// These write state WITHOUT redrawing: re-rendering a textarea on each keystroke takes the caret
+// with it, and re-rendering a range input mid-drag drops the drag.
+document.addEventListener('input', e => {
+  const r = e.target.closest('[data-sbrationale]'); if (!r) return;
+  sbRationale = r.value;
+});
+document.addEventListener('input', e => {
+  const c = e.target.closest('[data-sbcustom]'); if (!c) return;
+  sbCustomPct = c.value;
+});
+document.addEventListener('input', e => {
+  const tk = e.target.closest('[data-sbticker]'); if (!tk) return;
+  sbTicker = String(tk.value || '').toUpperCase();
+});
+document.addEventListener('input', e => {
+  const l = e.target.closest('[data-sbloss]'); if (!l) return;
+  sbLoss = +l.value / 100;
+  const out = document.getElementById('sbLossOut');              // updated in place, not redrawn
+  if (out) out.textContent = `${(+l.value).toFixed(0)}%`;
+});
+// The ticker and the size decide the tax estimate, so those two redraw once the field is left.
+document.addEventListener('change', e => {
+  const t = e.target.closest('[data-sbsetup]'); if (!t) return;
+  sbSetup = t.value; sbRedraw();
+});
+// The ticker and a custom size both feed the tax estimate, so leaving either field redraws it.
+document.addEventListener('change', e => {
+  const t = e.target.closest('[data-sbticker]'); if (!t) return;
+  sbTicker = String(t.value || '').toUpperCase(); sbRedraw();
+});
+document.addEventListener('change', e => {
+  const t = e.target.closest('[data-sbcustom]'); if (!t) return;
+  sbCustomPct = t.value; sbRedraw();
+});
+
+// Build the row once, so Submit and Analyze cannot disagree about what was decided.
+function sbEntry() {
+  const sizePct = sbSizePct();
+  const isSell = sbAction === 'sell' || sbAction === 'rebalance';
+  const ids = [...sbModels];
+  const perModel = !isSell || !sbTicker ? null : ids.map(id => {
+    const t = sbTaxFor(id, sbTicker.toUpperCase(), sizePct === null ? Infinity : sizePct);
+    return t ? { strategy_id: id, tax_bps: +t.taxBps.toFixed(3), lt_bps: +t.netLt.toFixed(3), st_bps: +t.netSt.toFixed(3), sold: +t.sold.toFixed(6), oldest_lot: t.oldest } : null;
+  }).filter(Boolean);
+  return {
+    action: sbAction,
+    ticker: sbTicker ? sbTicker.toUpperCase() : null,
+    asset_class: sbClass, rationale: sbRationale.trim(), setup: sbSetup,
+    sizing: sbSizing, sizing_pct: sizePct, horizon: sbHorizon,
+    loss_threshold: +sbLoss.toFixed(4), strategy_ids: ids,
+    // The estimate as it stood when the decision was written. Deliberately frozen: what matters
+    // later is what the desk believed when it decided, not what the price did afterwards.
+    tax_estimate: perModel && perModel.length ? { rates: { lt: 0.15, st: 0.24 }, per_model: perModel } : null,
+    author: 'desk',
+  };
+}
+document.addEventListener('click', async e => {
+  const sub = e.target.closest('[data-sbsubmit]'), ana = e.target.closest('[data-sbanalyze]');
+  if (!sub && !ana) return;
+  const row = { ...sbEntry(), submitted_at: new Date().toISOString() };
+  try {
+    const { data, error } = await sb.from('trade_journal').insert(row).select('id').single();
+    if (error) throw new Error(error.message);
+    if (ana) {
+      // A request, not an answer. The agents run outside this page; Gail shows these as pending
+      // until they do, which is the honest state rather than a silent gap.
+      const reqs = ['annie', 'adam', 'sven', 'kate'].map(agent => ({ journal_id: data.id, agent }));
+      const { error: ve } = await sb.from('trade_journal_verdicts').insert(reqs);
+      if (ve) throw new Error(ve.message);
+    }
+    sbSaveMsg = { ok: true, text: ana
+      ? 'Filed with Gail, and Annie, Adam, Sven and Kate have been asked to read it. Their verdicts appear on Gail’s tab once they run.'
+      : 'Filed with Gail.' };
+    sbRationale = ''; sbTicker = ''; sbSetup = ''; sbSizing = null; sbCustomPct = '';
+    D.journal = null;   // forces a reload next time Gail is opened
+  } catch (ex) {
+    sbSaveMsg = { ok: false, text: `Could not file that entry: ${ex.message}. Nothing was saved.` };
+  }
+  $('#app').innerHTML = sandbox();
+});
+
 // Donut and period toggles re-render the model drawer from data already loaded.
 // Playground controls: all client-side, nothing saved.
 // Reporting page controls. The split dropdown is a change event, not a click.

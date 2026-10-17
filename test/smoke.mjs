@@ -208,7 +208,7 @@ const series = await pick('current_macro_readings', 'series_id,fred_code');
 // 1. Every route renders something that is not an error or a loading state.
 // ---------------------------------------------------------------------------
 const routes = argRoute ? [argRoute] : [
-  '#sisyphus', '#stan', '#adam', '#sven', '#annie', '#markets', '#views', '#signals', '#agents',
+  '#sisyphus', '#stan', '#adam', '#sven', '#gail', '#annie', '#sandbox', '#markets', '#views', '#signals', '#agents',
   '#briefs', '#sources', '#inbox', '#status',
   strat ? `#sisyphus/${strat.id}` : null,
   strat ? `#stan/${strat.id}` : null,
@@ -795,14 +795,79 @@ if (!argRoute) {
   }
 
   // -------------------------------------------------------------------------
+  // 9d. Sandbox: the form's conditional parts, and the two sizing ladders.
+  // -------------------------------------------------------------------------
+  currentRoute = 'sandbox';
+  await go('#sandbox');
+  {
+    const lots = await fetch(`${SUPABASE_URL}/rest/v1/latest_model_open_lots?select=strategy_id,ticker,weight,is_long_term,cost_price,basis_estimated`, { headers: REST }).then(r => r.json());
+    function lotsForTicker(tk) { return new Set(lots.filter(l => l.ticker === tk).map(l => l.strategy_id)).size; }
+    const buy = app();
+    // Set-Up follows the action, and the three lists are different.
+    const opts = h => [...h.matchAll(/<option value="([^"]+)"[^>]*>(?!Choose)/g)].map(m => m[1]);
+    need(opts(buy).includes('Confirmed Bottom'), '[sandbox] the buy set-up list is missing Confirmed Bottom');
+    need(!opts(buy).includes('Stop Loss'), '[sandbox] a sell-only set-up appears under Buy');
+    await click('[data-sbaction]', { sbaction: 'sell' });
+    const sell = app();
+    need(opts(sell).includes('Stop Loss'), '[sandbox] the sell set-up list is missing Stop Loss');
+    need(!opts(sell).includes('Confirmed Bottom'), '[sandbox] a buy-only set-up appears under Sell');
+    need(/Tax impact of selling|tax a sale would realise/.test(sell), '[sandbox] no tax estimate section under Sell');
+    await click('[data-sbaction]', { sbaction: 'rebalance' });
+    need(opts(app()).join(',') === 'Time-Based,Risk-Based', '[sandbox] the rebalance set-up list is wrong');
+    await click('[data-sbaction]', { sbaction: 'buy' });
+
+    // Two ladders, and the class decides which. Equity-like is 3/6/12, income-like 4/8/16.
+    await click('[data-sbclass]', { sbclass: 'equity' });
+    const eq = app();
+    for (const p of ['(3%)', '(6%)', '(12%)']) need(eq.includes(p), `[sandbox] the equity ladder is missing ${p}`);
+    await click('[data-sbclass]', { sbclass: 'equity' });      // untick
+    await click('[data-sbclass]', { sbclass: 'fixed_income' });
+    const fi = app();
+    for (const p of ['(4%)', '(8%)', '(16%)']) need(fi.includes(p), `[sandbox] the fixed income ladder is missing ${p}`);
+    need(!fi.includes('(12%)'), '[sandbox] the equity ladder leaked into fixed income');
+    // Custom reveals its own input.
+    await click('[data-sbsizing]', { sbsizing: 'custom' });
+    need(/data-sbcustom/.test(app()), '[sandbox] Custom did not reveal a percentage field');
+    say(` ok  sandbox form           -> set-ups follow the action, ladders follow the class`);
+
+    // A real sell: the tax table must name the models that hold the ticker and cost it from lots.
+    await click('[data-sbaction]', { sbaction: 'sell' });
+    await change('[data-sbticker]', { sbticker: '' }, 'KSPY');
+    const sellTax = app();
+    const taxRows = [...sellTax.matchAll(/<td>([A-Za-z ]+)<\/td>\s*<td class="num">([\d.]+)%<\/td>\s*<td class="num">([\d.]+)%<\/td>/g)];
+    const holders = lotsForTicker('KSPY');
+    say(` ok  sandbox sell tax       -> ${taxRows.length} models costed for KSPY, ledger says ${holders} hold it`);
+    need(taxRows.length === holders, `[sandbox] the tax table costed ${taxRows.length} models but ${holders} hold KSPY`);
+    need(/15% long-term · 24% short-term/.test(sellTax), '[sandbox] the sell tax rates are not stated');
+    await click('[data-sbaction]', { sbaction: 'buy' });
+
+    // Submit stays disabled until the entry is complete, which is the guard against a half-written
+    // decision reaching the catalogue.
+    need(/data-sbsubmit="1" disabled/.test(app()), '[sandbox] Submit is enabled on an incomplete entry');
+    need(/Still needed:/.test(app()), '[sandbox] the form does not say what is still missing');
+
+    // Open lots back the tax estimate and must reconcile to the model.
+
+    const byStrat = {};
+    for (const l of lots) byStrat[l.strategy_id] = (byStrat[l.strategy_id] || 0) + +l.weight;
+    // Every model's lots must account for the whole model. A shortfall means a position has no
+    // lot, and a sale of it would report no tax -- the most flattering answer, reached by the
+    // holding being invisible.
+    const off = Object.entries(byStrat).filter(([, w]) => Math.abs(w - 1) > 0.02);
+    say(` ok  open lots              -> ${lots.length} lots across ${Object.keys(byStrat).length} models, ${off.length} not summing to 100%`);
+    for (const [sid, w] of off) errors.push(`[sandbox] open lots for ${sid} sum to ${(w * 100).toFixed(1)}%`);
+    for (const l of lots) if (!(+l.cost_price > 0)) errors.push(`[sandbox] a ${l.ticker} lot has no cost basis`);
+  }
+
+  // -------------------------------------------------------------------------
   // 10a. Nav order. Stan sits between Sisyphus and Adam; the page map matches the nav.
   // -------------------------------------------------------------------------
   {
     const nav = readFileSync(join(SITE, 'index.html'), 'utf8');
     const order = [...nav.matchAll(/<a href="#([a-z]+)">/g)].map(m => m[1]);
-    const want = ['sisyphus', 'stan', 'adam', 'sven', 'annie'];
-    say(` ok  nav order              -> ${order.slice(0, 5).join(' · ')}`);
-    need(want.every((w, i) => order[i] === w), `[nav] expected ${want.join(' · ')}, found ${order.slice(0, 5).join(' · ')}`);
+    const want = ['sisyphus', 'stan', 'adam', 'sven', 'gail', 'annie', 'sandbox'];
+    say(` ok  nav order              -> ${order.slice(0, 7).join(' · ')}`);
+    need(want.every((w, i) => order[i] === w), `[nav] expected ${want.join(' · ')}, found ${order.slice(0, 7).join(' · ')}`);
   }
 
   // -------------------------------------------------------------------------
