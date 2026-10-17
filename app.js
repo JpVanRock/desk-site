@@ -4218,6 +4218,50 @@ function saStats(series, bench) {
   return { total, benchTotal, vol: sd * Math.sqrt(252), maxDD: dd, upside: cap(up), downside: cap(down), beta, r2, n: series.length, coverage: Math.min(...series.map(s => s.covered)) };
 }
 
+
+// The fingerprint and the sector breakdown are weighted sums of figures already measured per
+// security and already loaded, so they need no prices and must not wait for Test. They move with
+// a weight exactly as the two pies do; Test is only for the figures that need a price series.
+function saFingerprint(rows, againstStrategyId) {
+  const fps = D.secFingerprint || [];
+  const FAC = [['value', 'Value'], ['momentum', 'Momentum'], ['quality', 'Quality'], ['low_volatility', 'Low Volatility'], ['size', 'Size (small)']];
+  let cov = 0, tot = 0; const acc = {};
+  for (const r of rows) {
+    if (!(+r.weight > 0)) continue;
+    tot += +r.weight;
+    const f = fps.find(x => x.security_id === r.security_id);
+    if (!f || !f.betas) continue;
+    cov += +r.weight;
+    for (const [k] of FAC) acc[k] = (acc[k] || 0) + (+r.weight) * (+f.betas[k] || 0);
+  }
+  if (!(cov > 0)) return null;
+  const cur = (D.fingerprint || []).filter(x => x.scope === 'model' && x.strategy_id === againstStrategyId);
+  return {
+    coverage: tot > 0 ? cov / tot : 0,
+    rows: FAC.map(([k, label], i) => ({
+      factor: k, label, sort_order: i,
+      model_beta: +(acc[k] / cov).toFixed(4),
+      benchmark_beta: cur.find(c => c.factor === k)?.model_beta ?? null,
+    })),
+  };
+}
+function saSectors(rows) {
+  const se = D.styleExposure || [];
+  let cov = 0, tot = 0; const acc = {};
+  for (const r of rows) {
+    if (!(+r.weight > 0)) continue;
+    tot += +r.weight;
+    const mix = (D.secStyle || []).find(x => x.security_id === r.security_id);
+    if (!mix || !mix.mix) continue;
+    cov += +r.weight;
+    for (const [b, share] of Object.entries(mix.mix)) acc[b] = (acc[b] || 0) + (+r.weight) * share;
+  }
+  const sum = Object.values(acc).reduce((a, b) => a + b, 0);
+  if (!(sum > 0)) return null;
+  const label = b => (se.find(x => x.bucket === b) || {}).label || String(b).replace(/_/g, ' ');
+  return { coverage: tot > 0 ? cov / tot : 0, rows: Object.entries(acc).map(([b, v]) => ({ label: label(b), v: v / sum })).sort((a, b) => b.v - a.v) };
+}
+
 // The editor itself, appended to the Sandbox page below the journal.
 function sandboxAllocation() {
   const models = D.models || [];
@@ -4303,11 +4347,12 @@ function sandboxAllocation() {
       </div>
       <p class="note">Rebuilt from these weights as a <b>buy and hold</b> from each window’s first day — a target rebalanced daily would be a different strategy from the one proposed. ${t.ytd && t.ytd.coverage < 0.999 ? `Only ${(t.ytd.coverage * 100).toFixed(0)}% of the weight could be priced across the year; the rest is excluded and the figures renormalise over what remains. ` : ''}Gross of fees, no transaction costs, and not a backtest of a strategy — it is this one book held still.</p>`;
 
-  const fp = t?.fingerprint;
+  const priced = saRows.filter(r => r.security_id && +r.weight > 0);
+  const fp = saFingerprint(priced, m.id);
   // A book with no equity has no style to fingerprint, and that is a fact about the book rather
   // than a gap in the measurement. Saying so beats an absent section the reader has to interpret.
-  const fpBlock = (t && !fp) ? `<h3 style="margin:18px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Factor fingerprint</h3>
-    <p class="note" style="margin:0">None of the proposed holdings carries a measured factor fingerprint, so there is no style tilt to report. For a book with little or no equity that is the right answer rather than a missing one — the five factors are equity styles.</p>` : !fp ? '' : `<h3 style="margin:18px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Factor fingerprint</h3>
+  const fpBlock = !fp ? `<h3 style="margin:18px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Factor fingerprint</h3>
+    <p class="note" style="margin:0">None of the proposed holdings carries a measured factor fingerprint, so there is no style tilt to report. For a book with little or no equity that is the right answer rather than a missing one — the five factors are equity styles.</p>` : `<h3 style="margin:18px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Factor fingerprint</h3>
     <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:center">
       ${factorRadar(fp.rows, 'Current', 'Proposed')}
       <div style="flex:1;min-width:260px;overflow-x:auto"><table style="min-width:300px"><thead><tr><th>Factor</th><th class="num">Proposed</th><th class="num">Current</th><th class="num">Change</th></tr></thead><tbody>
@@ -4318,9 +4363,9 @@ function sandboxAllocation() {
       </tbody></table></div></div>
     <p class="note">Each holding’s measured factor tilts, weighted by the proposed book and set against the model as it stands. Tilts are per unit of equity exposure, so a change here is a change of style rather than of how much equity is held. ${fp.coverage < 0.999 ? `Covers ${(fp.coverage * 100).toFixed(0)}% of the proposed equity; holdings without a fingerprint are left out rather than averaged in at zero.` : ''}</p>`;
 
-  const sec = t?.sectors;
-  const secBlock = (t && (!sec || !sec.rows.length)) ? `<h3 style="margin:18px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Sector weighting</h3>
-    <p class="note" style="margin:0">No proposed holding carries a sector fit, so there is no breakdown to show. Sector is a property of equity; a fixed income or cash book has none to report.</p>` : !sec || !sec.rows.length ? '' : `<h3 style="margin:18px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Sector weighting</h3>
+  const sec = saSectors(priced);
+  const secBlock = (!sec || !sec.rows.length) ? `<h3 style="margin:18px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Sector weighting</h3>
+    <p class="note" style="margin:0">No proposed holding carries a sector fit, so there is no breakdown to show. Sector is a property of equity; a fixed income or cash book has none to report.</p>` : `<h3 style="margin:18px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Sector weighting</h3>
     <div style="overflow-x:auto"><table style="min-width:360px"><thead><tr><th>Sector</th><th class="num">Share of equity</th></tr></thead><tbody>
     ${sec.rows.map(r => `<tr><td>${esc(r.label)}</td><td class="num">${(r.v * 100).toFixed(1)}%</td></tr>`).join('')}
     </tbody></table></div>
@@ -4912,44 +4957,10 @@ document.addEventListener('click', async e => {
       }
       return w > 0 ? wd / w : null;
     })();
-    const fingerprint = (() => {
-      const fps = D.secFingerprint || [];
-      const FAC = [['value', 'Value'], ['momentum', 'Momentum'], ['quality', 'Quality'], ['low_volatility', 'Low Volatility'], ['size', 'Size (small)']];
-      let cov = 0, tot = 0; const acc = {};
-      for (const r of rows) {
-        tot += +r.weight;
-        const f = fps.find(x => x.security_id === r.security_id);
-        if (!f || !f.betas) continue;
-        cov += +r.weight;
-        for (const [k] of FAC) acc[k] = (acc[k] || 0) + (+r.weight) * (+f.betas[k] || 0);
-      }
-      if (!(cov > 0)) return null;
-      const cur = (D.fingerprint || []).filter(x => x.scope === 'model' && x.strategy_id === saModelId);
-      return {
-        coverage: tot > 0 ? cov / tot : 0,
-        rows: FAC.map(([k, label], i) => ({
-          factor: k, label, sort_order: i,
-          model_beta: +(acc[k] / cov).toFixed(4),
-          benchmark_beta: cur.find(c => c.factor === k)?.model_beta ?? null,
-        })),
-      };
-    })();
-    const sectors = (() => {
-      const se = (D.styleExposure || []);
-      let cov = 0, tot = 0; const acc = {};
-      for (const r of rows) {
-        tot += +r.weight;
-        const mix = (D.secStyle || []).find(x => x.security_id === r.security_id);
-        if (!mix || !mix.mix) continue;
-        cov += +r.weight;
-        for (const [b, share] of Object.entries(mix.mix)) acc[b] = (acc[b] || 0) + (+r.weight) * share;
-      }
-      const sum = Object.values(acc).reduce((a, b) => a + b, 0);
-      if (!(sum > 0)) return null;
-      const label = b => (se.find(x => x.bucket === b) || {}).label || String(b).replace(/_/g, ' ');
-      return { coverage: tot > 0 ? cov / tot : 0, rows: Object.entries(acc).map(([b, v]) => ({ label: label(b), v: v / sum })).sort((a, b) => b.v - a.v) };
-    })();
-    saTested = { ytd: mk(ytdFrom), oneY: mk(oneYFrom), duration: dur, fingerprint, sectors };
+    // The fingerprint and the sector breakdown are rendered live from the weights by
+    // saFingerprint and saSectors -- neither needs a price, so neither waits for this.
+    // Test carries only the figures that genuinely need a price series.
+    saTested = { ytd: mk(ytdFrom), oneY: mk(oneYFrom), duration: dur };
     if (!saTested.ytd && !saTested.oneY) saMsg = { ok: false, text: 'Not enough overlapping price history to measure these weights.' };
   } catch (ex) {
     saMsg = { ok: false, text: `Could not measure that: ${ex.message}` };
