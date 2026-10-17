@@ -885,6 +885,21 @@ if (!argRoute) {
     need(/data-satest/.test(ed0) && /data-safinal/.test(ed0), '[sandbox] Test or Submit Final is missing');
     const totalShown = (ed0.match(/<b style="color:var\(--(?:pos|warn)\)">([\d.]+)%<\/b>/) || [])[1];
     need(totalShown && Math.abs(+totalShown - 100) < 0.6, `[sandbox] the editor total reads ${totalShown}%, expected the model's own weights to sum to 100%`);
+    // The fingerprint and the sector breakdown must be on the page BEFORE Test is pressed. Both
+    // are weighted sums of per-security figures already loaded, so gating them on Test left the
+    // section showing two pies and nothing else on arrival -- which read as the fingerprint simply
+    // not having been built. Assert the real content, not just the heading: a book with equity in
+    // it must produce a radar and at least one sector row without any price fetch at all.
+    need(/Factor fingerprint/.test(ed0), '[sandbox] no factor fingerprint before Test was pressed');
+    need(/Sector weighting/.test(ed0), '[sandbox] no sector breakdown before Test was pressed');
+    need(!/no style tilt to report/.test(ed0), '[sandbox] the fingerprint is empty for a book that holds equity');
+    need(!/no breakdown to show|no sector fit/.test(ed0), '[sandbox] the sector breakdown is empty for a book that holds equity');
+    need(/Share of equity/.test(ed0), '[sandbox] the sector table has no rows before Test');
+    need(ed0.indexOf('Factor fingerprint') < ed0.indexOf('Portfolio statistics'),
+      '[sandbox] the fingerprint is not directly below the two pies');
+    need(ed0.indexOf('>Regimes<') < ed0.indexOf('Factor fingerprint'),
+      '[sandbox] the fingerprint is above the Regimes pie rather than below both pies');
+    say(` ok  sandbox fingerprint    -> radar and sector table render on arrival, no Test needed`);
     await click('[data-satest]', { satest: '1' });
     await sleep(2500);                                  // the price fetch is a real round trip
     const tested = app();
