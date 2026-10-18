@@ -866,6 +866,25 @@ if (!argRoute) {
     need(/data-sbcustom/.test(app()), '[sandbox] Custom did not reveal a percentage field');
     say(` ok  sandbox form           -> set-ups follow the action, ladders follow the class`);
 
+    // The five lenses on a journal entry. Kate carried portfolio construction when she was the
+    // implementation analyst; she reads the crowd now and construction is Stan's. Three places
+    // name the roster -- the Analyze note, the Fine Tune note and Gail's catalogue -- and they
+    // drift silently, because nothing breaks when one of them is left behind.
+    const LENSES = ['Annie', 'Adam', 'Sven', 'Kate', 'Stan'];
+    const sb0 = app();
+    for (const a of LENSES) need(new RegExp(`\\b${a}\\b`).test(sb0), `[sandbox] the Analyze note does not name ${a}`);
+    need(/Stan on what it does to the book/.test(sb0), '[sandbox] Stan is named without saying which lens he holds');
+    need(!/Kate[^.]{0,80}(concentration|12% cap|tax this realises)/.test(sb0), '[sandbox] Kate is still described as the construction lens');
+    await go('#gail');
+    const g0 = app();
+    // Gail renders the per-agent columns only once something has been filed. With an empty
+    // catalogue there is no roster on the page to check, and asserting one would be asserting
+    // that the empty state is wrong.
+    const gailFiled = !/No journal entries yet/.test(g0);
+    if (gailFiled) for (const a of LENSES) need(new RegExp(`\\b${a}\\b`).test(g0), `[gail] the catalogue has no column for ${a}`);
+    say(` ok  sandbox lenses         -> ${LENSES.join(', ')}; construction is Stan's${gailFiled ? '; Gail shows all five' : '; Gail is empty so its columns were not checked'}`);
+    await go('#sandbox');
+
     // A real sell: the tax table must name the models that hold the ticker and cost it from lots.
     await click('[data-sbaction]', { sbaction: 'sell' });
     await change('[data-sbticker]', { sbticker: '' }, 'KSPY');

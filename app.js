@@ -4571,7 +4571,7 @@ function sandbox() {
       <button class="btn" data-sbsubmit="1" ${canSubmit ? '' : 'disabled'} style="${canSubmit ? '' : 'opacity:.5'}">Submit Trade</button>
       <button class="btn" data-sbanalyze="1" ${canSubmit ? '' : 'disabled'} style="${canSubmit ? '' : 'opacity:.5'};background:var(--panel2);color:var(--text)">Analyze Trade</button>
       ${missing.length ? `<small style="color:var(--muted)">Still needed: ${esc(missing.join(', '))}</small>` : ''}</div>
-    <p class="note">Submitting files the entry with Gail, who keeps the catalogue. <b>Analyze</b> asks Annie, Adam, Sven and Kate to read the same entry through their own lens and return Go, Go Fish or No Go. They are agents, not scripts in this page: the request is recorded and the verdicts appear on Gail's tab when they run. A button that appeared to think while inventing four opinions in JavaScript would be the worst thing this desk could ship.</p>
+    <p class="note">Submitting files the entry with Gail, who keeps the catalogue. <b>Analyze</b> asks Annie, Adam, Sven, Kate and Stan to read the same entry through their own lens and return Go, Go Fish or No Go — Annie on process, Adam on regime, Sven on the tape, Kate on whether the crowd is already on this side, and Stan on what it does to the book and what it costs to do. They are agents, not scripts in this page: the request is recorded and the verdicts appear on Gail's tab when they run. A button that appeared to think while inventing five opinions in JavaScript would be the worst thing this desk could ship.</p>
   </div>
   ${sandboxAllocation()}
   </div>`;
@@ -4888,7 +4888,7 @@ function sandboxAllocation() {
       <button class="btn" data-satune="1" ${saBusy ? 'disabled' : ''} style="background:var(--panel2);color:var(--text)">Agent Fine Tune</button>
       <input data-sanote type="text" value="${esc(saNote)}" placeholder="Note for the record (optional)" style="flex:1;min-width:180px;padding:6px 9px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:13px">
     </div>
-    <p class="note"><b>Submit Final</b> timestamps this allocation and the Target Allocation pie in this model’s drawer starts showing it. Nothing else moves: the factor pie on the actual book, the stress scores, duration, geography and every return figure stay on what the model holds, because a target is an intention and an intention must not restate performance. <b>Agent Fine Tune</b> asks Adam, Sven and Kate to propose changes with reasons; like the trade analysis, they run outside this page and their answer appears once they have.</p>
+    <p class="note"><b>Submit Final</b> timestamps this allocation and the Target Allocation pie in this model’s drawer starts showing it. Nothing else moves: the factor pie on the actual book, the stress scores, duration, geography and every return figure stay on what the model holds, because a target is an intention and an intention must not restate performance. <b>Agent Fine Tune</b> asks Adam, Sven, Kate and Stan to propose changes with reasons; like the trade analysis, they run outside this page and their answer appears once they have.</p>
   </div>`;
 }
 
@@ -4902,7 +4902,7 @@ const GAIL_VERDICT = {
   go_fish: ['Go Fish', 'var(--flat)', '&#128031;'],
   no_go:   ['No Go', 'var(--neg)', '&#10007;'],
 };
-const GAIL_AGENTS = [['annie', 'Annie'], ['adam', 'Adam'], ['sven', 'Sven'], ['kate', 'Kate']];
+const GAIL_AGENTS = [['annie', 'Annie'], ['adam', 'Adam'], ['sven', 'Sven'], ['kate', 'Kate'], ['stan', 'Stan']];
 
 function gail() {
   // Submitted entries only. A draft is a thought that has not been filed, and the catalogue is
@@ -5363,12 +5363,12 @@ document.addEventListener('click', async e => {
     if (ana) {
       // A request, not an answer. The agents run outside this page; Gail shows these as pending
       // until they do, which is the honest state rather than a silent gap.
-      const reqs = ['annie', 'adam', 'sven', 'kate'].map(agent => ({ journal_id: data.id, agent }));
+      const reqs = ['annie', 'adam', 'sven', 'kate', 'stan'].map(agent => ({ journal_id: data.id, agent }));
       const { error: ve } = await sb.from('trade_journal_verdicts').insert(reqs);
       if (ve) throw new Error(ve.message);
     }
     sbSaveMsg = { ok: true, text: ana
-      ? 'Filed with Gail, and Annie, Adam, Sven and Kate have been asked to read it. Their verdicts appear on Gail’s tab once they run.'
+      ? 'Filed with Gail, and Annie, Adam, Sven, Kate and Stan have been asked to read it. Their verdicts appear on Gail’s tab once they run.'
       : 'Filed with Gail.' };
     sbRationale = ''; sbTicker = ''; sbSetup = ''; sbSizing = null; sbCustomPct = '';
     D.journal = null;   // forces a reload next time Gail is opened
@@ -5514,10 +5514,10 @@ document.addEventListener('click', async e => {
       submitted_at: new Date().toISOString(),
     }).select('id').single();
     if (error) throw new Error(error.message);
-    const reqs = ['adam', 'sven', 'kate'].map(agent => ({ journal_id: data.id, agent }));
+    const reqs = ['adam', 'sven', 'kate', 'stan'].map(agent => ({ journal_id: data.id, agent }));
     const { error: ve } = await sb.from('trade_journal_verdicts').insert(reqs);
     if (ve) throw new Error(ve.message);
-    saMsg = { ok: true, text: 'Adam, Sven and Kate have been asked to tune this allocation. Their proposals appear on Gail’s tab once they run.' };
+    saMsg = { ok: true, text: 'Adam, Sven, Kate and Stan have been asked to tune this allocation. Their proposals appear on Gail’s tab once they run.' };
   } catch (ex) {
     saMsg = { ok: false, text: `Could not request a tune: ${ex.message}` };
   }
