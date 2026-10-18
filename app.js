@@ -307,12 +307,15 @@ function route() {
   if (page === 'views' || page === 'sources' || page === 'agents' || page === 'status') {
     location.replace('#admin' + (arg ? '/' + arg : '')); return;
   }
+  // Briefs and the Inbox are shelves in Gail's Library now. Both were header tabs for months, so
+  // these are among the likeliest hashes to be sitting in a note.
+  if (page === 'briefs' || page === 'inbox') { location.replace('#gail/' + page); return; }
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   closeDrawer();
   // Keyed lookup, so this order is cosmetic rather than load-bearing — but it is kept in step
   // with the nav in index.html so the two read the same way.
-  const pages = { markets, sisyphus, stan, annie, adam, sven, kate, gail, sandbox, signals, briefs, inbox, admin };
-  $('#app').innerHTML = (pages[page] || sisyphus)();
+  const pages = { markets, sisyphus, stan, annie, adam, sven, kate, gail, sandbox, signals, admin };
+  $('#app').innerHTML = page === 'gail' ? gail(arg) : (pages[page] || sisyphus)();
   if (page === 'stan' && arg) {
     // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
     // button all close them the same way a model drawer closes.
@@ -2965,7 +2968,7 @@ function annie() {
    <p class="note">Everything above the written sections is arithmetic: the trades come from dated holdings snapshots and the returns from adjusted closing prices, computed by <code>jobs/compute-decision-ledger.mjs</code>. Everything in the written sections is judgment formed by reading something, and each one carries the date it was formed and what it was formed from. The two are kept apart on purpose — a batting average and a steel man are not the same kind of claim, and a page that styles them alike invites them to be trusted alike.</p>`;
 }
 
-function briefs() {
+function briefs(embed) {
   const morning = outputsFor('sisyphus', ['morning_brief']).slice().sort((a, b) => b.as_of.localeCompare(a.as_of));
   const primers = outputsFor('sisyphus', ['sunday_primer']).slice().sort((a, b) => b.as_of.localeCompare(a.as_of));
   const list = (title, rows, emptyMsg) => `
@@ -2974,7 +2977,7 @@ function briefs() {
         <summary style="cursor:pointer;padding:6px 0"><b>${esc(o.title)}</b></summary>
         <div style="padding-top:6px">${md(o.body_md)}</div></details>`).join('')
       : `<div class="empty">${esc(emptyMsg)}</div>`}</div>`;
-  return `<span class="eyebrow">Sisyphus</span><h1>Briefs</h1>
+  return `${embed ? '' : '<span class="eyebrow">Sisyphus</span><h1>Briefs</h1>'}
    <p class="sub">The daily morning brief and the Sunday primer, synthesised across the desk.</p>
    ${list('Morning briefs', morning, 'No brief yet. Run the morning-brief skill, then jobs/sync-agent-outputs.mjs.')}
    ${list('Sunday primers', primers, 'No primer yet. The primer answers "what do we care about this week and why?"')}
@@ -4904,7 +4907,7 @@ const GAIL_VERDICT = {
 };
 const GAIL_AGENTS = [['annie', 'Annie'], ['adam', 'Adam'], ['sven', 'Sven'], ['kate', 'Kate'], ['stan', 'Stan']];
 
-function gail() {
+function gailJournal() {
   // Submitted entries only. A draft is a thought that has not been filed, and the catalogue is
   // for what was decided. Nothing in this build writes a draft, but the filter is the guarantee.
   const entries = (D.journal || []).filter(e => e.submitted_at).slice().sort((a, b) =>
@@ -4914,8 +4917,7 @@ function gail() {
   const nameOf = id => bareName((models.find(m => m.id === id) || {}).name || '—');
 
   if (!entries.length) {
-    return `<span class="eyebrow">The Librarian</span><h1>Gail</h1>
-      <p class="sub">The trade journal, catalogued. Every decision written in the Sandbox is filed here with what the agents made of it.</p>
+    return `<p class="sub">Every decision written in the Sandbox is filed here with what the agents made of it.</p>
       <div class="card"><div class="empty">No journal entries yet. Write one in the Sandbox and it is filed here.</div></div>`;
   }
 
@@ -4964,11 +4966,59 @@ function gail() {
   };
 
   const pending = verdicts.filter(v => !v.verdict).length;
-  return `<span class="eyebrow">The Librarian</span><h1>Gail</h1>
-  <p class="sub">The trade journal, catalogued. Every decision written in the Sandbox is filed here with what the agents made of it.</p>
+  return `<p class="sub">Every decision written in the Sandbox is filed here with what the agents made of it.</p>
   ${pending ? `<div class="card" style="margin-bottom:12px;border-left:3px solid var(--warn)"><p style="margin:0;font-size:13px"><b>${pending} analysis request${pending === 1 ? '' : 's'} outstanding.</b> The agents run outside this page, so a verdict appears once they have read the entry. Pending is pending — it is not a quiet No.</p></div>` : ''}
   ${entries.map(card).join('')}
   <p class="note"><b>${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}.</b> A journal entry is a decision record and nothing more: it reaches no broker and moves no allocation. The tax figure beside one is the estimate made at the time it was written, priced off the open lots then — it is not re-costed as prices move, because what matters later is what the desk believed when it decided.</p>`;
+}
+
+// ---------- Gail: The Library ----------
+//
+// Gail is the desk's librarian and historian, so her page is a library rather than a dashboard:
+// one reading room with shelves off it. Three to begin with -- the trade journal catalogued, the
+// inbox of what was clipped and where it went, and the briefs -- and the shelf bar is built from
+// a list, so a fourth is one entry rather than a redesign.
+//
+// Briefs and Inbox were tabs in the header. They are sections here now, rendered from the SAME
+// functions rather than copied, so the Library version cannot drift from what the standalone page
+// said. Both old hashes still resolve.
+//
+// The look is the Thomas Jefferson Building: parchment, reading-room green, oxidised brass, and
+// the arch. It is scoped to this page exactly as the Tron treatment is scoped to the Sandbox, and
+// it follows the same two rules -- figures keep the desk's own semantic colours, because a reader
+// must never translate a colour through a theme to know whether money was made, and no decoration
+// is laid over a number, because an ornamented digit is a misread digit.
+const LIBRARY_SHELVES = [
+  ['journal', 'Trade Journal History', 'Decisions as they were written, with what each agent made of them.'],
+  ['inbox',   'Inbox',                 'What arrived, where it was routed, and what was held back.'],
+  ['briefs',  'Briefs',                'The morning brief and the Sunday primer, as filed.'],
+];
+
+function gail(shelf) {
+  const active = LIBRARY_SHELVES.some(x => x[0] === shelf) ? shelf : 'journal';
+  const meta = LIBRARY_SHELVES.find(x => x[0] === active);
+  const body = active === 'inbox' ? inbox(true) : active === 'briefs' ? briefs(true) : gailJournal();
+  const counts = {
+    journal: (D.journal || []).filter(e => e.submitted_at).length,
+    inbox: (D.routingLog || []).length,
+    briefs: outputsFor('sisyphus', ['morning_brief', 'sunday_primer']).length,
+  };
+  return `<div class="loc">
+    <div class="locplate">
+      <span class="eyebrow">Gail · The Librarian</span>
+      <h1>The Library</h1>
+      <p class="sub">The desk's record of itself — what was decided, what came in, and what was written about it. Nothing here is computed; everything here was filed.</p>
+    </div>
+    <nav class="shelf" aria-label="Library sections">
+      ${LIBRARY_SHELVES.map(([k, label]) => `<button class="shelftab${k === active ? ' on' : ''}" data-shelf="${k}"${k === active ? ' aria-current="page"' : ''}>
+        <span class="shelflabel">${esc(label)}</span>
+        <span class="shelfcount">${counts[k]}</span></button>`).join('')}
+    </nav>
+    <div class="locroom">
+      <div class="lochead"><h2>${esc(meta[1])}</h2><p>${esc(meta[2])}</p></div>
+      ${body}
+    </div>
+  </div>`;
 }
 
 // ---------- Admin: status, sources, views and agents under one roof ----------
@@ -5067,7 +5117,7 @@ function agents(embed) {
   <div class="agents">${A.map(([k, n, r, isolated]) => { const o = D.outputs.find(x => x.agent === k);
    return `<div class="card"><span class="eyebrow">${r}</span><h2 style="font-size:18px">${n} ${isolated ? '<span class="chip">isolated</span>' : ''}</h2>${o ? `<div><b>${esc(o.title)}</b> <span class="chip">${esc(o.as_of)}</span></div><p style="white-space:pre-wrap;color:var(--muted)">${esc(o.body_md.slice(0, 900))}${o.body_md.length > 900 ? '…' : ''}</p>` : '<div class="empty">No output yet.</div>'}</div>`; }).join('')}</div>`;
 }
-function inbox() {
+function inbox(embed) {
   const log = D.routingLog || [];
   const statusChip = s => { const cls = s === 'routed' ? 'long' : s === 'held' ? 'held' : 'flat'; return `<span class="chip ${cls}">${esc((s || '').replace(/_/g, ' '))}</span>`; };
   // Weights are the framework's, shown on the chip so it's obvious why the lens matters: a
@@ -5081,7 +5131,7 @@ function inbox() {
   const held = log.filter(r => r.status === 'held').length;
   const byAgent = {};
   for (const r of log) if (r.routed_to) byAgent[r.routed_to] = (byAgent[r.routed_to] || 0) + 1;
-  return `<span class="eyebrow">Allocation model</span><h1>Inbox</h1><p class="sub">Clipped and dropped items, where they were routed, and why.</p>
+  return `${embed ? '' : '<span class="eyebrow">Allocation model</span><h1>Inbox</h1>'}<p class="sub">Clipped and dropped items, where they were routed, and why.</p>
   <div class="kpis">
    <div class="card kpi"><span class="eyebrow">Items</span><b>${log.length}</b><small>processed</small></div>
    <div class="card kpi"><span class="eyebrow">Routed to</span><b style="font-size:16px">${Object.entries(byAgent).map(([a, n]) => `${esc(a)} ${n}`).join(' · ') || '—'}</b><small></small></div>
@@ -5206,6 +5256,13 @@ document.addEventListener('click', e => {
   if (!t) return;
   newsWindow = +t.dataset.newswin;
   $('#app').innerHTML = sven();
+});
+// The Library's shelves. The hash carries the shelf, so a section is a real link and the back
+// button walks between them rather than leaving the page.
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-shelf]');
+  if (!t) return;
+  location.hash = '#gail/' + t.dataset.shelf;
 });
 // The window selector on the Markets performance chart. One listener per control, because the
 // harness matches a selector string exactly and a grouped selector would ship untested.

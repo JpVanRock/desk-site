@@ -232,7 +232,7 @@ const series = await pick('current_macro_readings', 'series_id,fred_code');
 // 1. Every route renders something that is not an error or a loading state.
 // ---------------------------------------------------------------------------
 const routes = argRoute ? [argRoute] : [
-  '#markets', '#sisyphus', '#stan', '#annie', '#adam', '#sven', '#kate', '#gail', '#sandbox', '#signals', '#briefs', '#inbox', '#admin',
+  '#markets', '#sisyphus', '#stan', '#annie', '#adam', '#sven', '#kate', '#gail', '#gail/inbox', '#gail/briefs', '#sandbox', '#signals', '#admin',
   strat ? `#sisyphus/${strat.id}` : null,
   strat ? `#stan/${strat.id}` : null,
   sec ? `#markets/${sec.id}` : null,
@@ -268,7 +268,7 @@ if (!argRoute) {
   //    sitting in a bookmark, and without the redirect every stale link looks like a deleted page.
   // -------------------------------------------------------------------------
   currentRoute = 'legacy-hashes';
-  for (const [from, to, h1] of [['#overview', '#sisyphus', 'Sisyphus'], ['#decisions', '#annie', 'Decision Coach'], ['#playground', '#admin', 'Admin'], ['#views', '#admin', 'Admin'], ['#sources', '#admin', 'Admin'], ['#agents', '#admin', 'Admin'], ['#status', '#admin', 'Admin']]) {
+  for (const [from, to, h1] of [['#overview', '#sisyphus', 'Sisyphus'], ['#decisions', '#annie', 'Decision Coach'], ['#playground', '#admin', 'Admin'], ['#views', '#admin', 'Admin'], ['#sources', '#admin', 'Admin'], ['#agents', '#admin', 'Admin'], ['#status', '#admin', 'Admin'], ['#briefs', '#gail/briefs', 'The Library'], ['#inbox', '#gail/inbox', 'The Library']]) {
     await go(from);
     const ok = location.hash === to && new RegExp(`<h1>${h1}</h1>`).test(app());
     say(` ok  ${from} -> ${location.hash}${ok ? '' : '  DID NOT REDIRECT'}`);
@@ -883,6 +883,36 @@ if (!argRoute) {
     const gailFiled = !/No journal entries yet/.test(g0);
     if (gailFiled) for (const a of LENSES) need(new RegExp(`\\b${a}\\b`).test(g0), `[gail] the catalogue has no column for ${a}`);
     say(` ok  sandbox lenses         -> ${LENSES.join(', ')}; construction is Stan's${gailFiled ? '; Gail shows all five' : '; Gail is empty so its columns were not checked'}`);
+
+    // The Library: one reading room with three shelves, each rendered from the SAME function the
+    // standalone page used rather than a copy of it, so the two cannot drift.
+    await go('#gail');
+    const lib0 = app();
+    need(/<h1>The Library<\/h1>/.test(lib0), '[library] the page is not headed The Library');
+    need(/class="loc"/.test(lib0), '[library] the reading-room treatment is not applied');
+    for (const want of ['Trade Journal History', 'Inbox', 'Briefs'])
+      need(lib0.includes(want), `[library] the ${want} shelf is missing from the bar`);
+    need((lib0.match(/<h1>/g) || []).length === 1, '[library] a shelf kept its own page heading');
+    // Each shelf has to actually change what is in the room, and carry its own hash.
+    const seen = {};
+    for (const [k, heading, probe] of [['journal', 'Trade Journal History', null],
+                                       ['inbox', 'Inbox', 'Clipped and dropped'],
+                                       ['briefs', 'Briefs', 'Sunday primer']]) {
+      await go('#gail/' + k);
+      const v = app();
+      need(new RegExp(`<h2>${heading}</h2>`).test(v), `[library] #gail/${k} does not open the ${heading} shelf`);
+      need(/aria-current="page"/.test(v), `[library] no shelf is marked current on #gail/${k}`);
+      if (probe) need(v.includes(probe), `[library] the ${heading} shelf rendered without its content`);
+      seen[k] = v.length;
+    }
+    need(new Set(Object.values(seen)).size === 3, '[library] two shelves rendered identical content, so the selector is not switching');
+    // An unknown shelf must land in the reading room rather than on an empty page.
+    await go('#gail/nonsense');
+    need(/<h2>Trade Journal History<\/h2>/.test(app()), '[library] an unknown shelf does not fall back to the journal');
+    // And the header must no longer carry the two that moved.
+    const nav2 = [...readFileSync(join(SITE, 'index.html'), 'utf8').matchAll(/<nav id="nav">([\s\S]*?)<\/nav>/g)].flatMap(m => [...m[1].matchAll(/href="#([a-z-]+)"/g)].map(x => x[1]));
+    need(!nav2.includes('briefs') && !nav2.includes('inbox'), '[library] Briefs or Inbox is still a header tab');
+    say(` ok  library                -> three shelves, each on its own hash; Briefs and Inbox left the header`);
     await go('#sandbox');
 
     // A real sell: the tax table must name the models that hold the ticker and cost it from lots.
@@ -966,7 +996,7 @@ if (!argRoute) {
   {
     const nav = readFileSync(join(SITE, 'index.html'), 'utf8');
     const order = [...nav.matchAll(/<a href="#([a-z]+)">/g)].map(m => m[1]);
-    const want = ['markets', 'sisyphus', 'stan', 'annie', 'adam', 'sven', 'kate', 'gail', 'sandbox', 'signals', 'briefs', 'inbox', 'admin'];
+    const want = ['markets', 'sisyphus', 'stan', 'annie', 'adam', 'sven', 'kate', 'gail', 'sandbox', 'signals', 'admin'];
     say(` ok  nav order              -> ${order.join(' · ')}`);
     need(want.length === order.length && want.every((w, i) => order[i] === w), `[nav] expected ${want.join(' · ')}, found ${order.join(' · ')}`);
   }
