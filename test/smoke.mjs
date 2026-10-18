@@ -244,10 +244,16 @@ const routes = argRoute ? [argRoute] : [
 
 for (const r of routes) {
   await go(r);
+  // A page that fetches on render is mid-flight for a moment, which is what a browser shows too.
+  // The sweep waits for it the way a reader would rather than failing the first frame -- the
+  // Markets wall fetches six price series and went from passing to failing the instant a seventh
+  // was added, which was a race in the test and not a fault on the page. What is still a fault
+  // is a loading state that never resolves, and that is what the bound catches.
+  for (let i = 0; i < 24 && /Loading chart…|Loading…|Loading price history…|Loading intraday bars…/.test(both()); i++) await sleep(250);
   const body = both();
   const problems = [];
   if (!body.trim()) problems.push('rendered nothing');
-  if (/Loading chart…|Loading…/.test(body)) problems.push('still showing a loading state');
+  if (/Loading chart…|Loading…|Loading price history…|Loading intraday bars…/.test(body)) problems.push('still showing a loading state');
   if (/Could not load/.test(body)) problems.push('shows a load error: ' + (/Could not load[^<]*/.exec(body) || [''])[0]);
   const svgs = (body.match(/<svg/g) || []).length, empties = (body.match(/class="empty"/g) || []).length;
   say(`${problems.length ? 'FAIL' : ' ok '} ${r.padEnd(44)} ${String(body.length).padStart(7)}b  svg:${svgs} empty:${empties}${problems.length ? '  << ' + problems.join('; ') : ''}`);
@@ -1212,15 +1218,26 @@ if (!argRoute) {
     need(/murmuration|flock/i.test(k), '[kate] the flock is not described on the page');
     // Readability: thirty-two labelled birds with thirty-two trails was a tangle. Ten are drawn
     // in full; the rest stay as faint dots so the centre of mass is still the whole flock's.
-    const svg = (k.match(/<svg[^>]*aria-label="The ten most[\s\S]*?<\/svg>/) || [''])[0];
+    const svg = (k.match(/<svg[^>]*aria-label="The flock as a rotation[\s\S]*?<\/svg>/) || [''])[0];
     need(svg, '[kate] the murmuration did not render');
-    const labelled = [...svg.matchAll(/<text x="[\d.]+" y="[\d.]+" font-size="11" fill="var\(--text\)">/g)].length;
-    need(labelled > 0 && labelled <= 10, `[kate] the flock labels ${labelled} narratives; at most ten should be drawn in full`);
-    const trails = [...svg.matchAll(/<path d="M[\d.]+ [\d.]+L[^"]*" fill="none" stroke="var\(--[a-z]+\)" stroke-width="1.5"/g)].length;
-    need(trails <= 10, `[kate] ${trails} trails are drawn; only the leading ten should have one`);
+    const labelled = [...svg.matchAll(/font-size="11.5" font-weight="600" text-anchor="[a-z]+" fill="var\(--text\)"/g)].length;
+    need(labelled > 0 && labelled <= 8, `[kate] the flock labels ${labelled} narratives; at most eight should be drawn in full`);
+    const trails = [...svg.matchAll(/stroke-width="1.4" opacity="0.32"/g)].length;
+    need(trails <= 8, `[kate] ${trails} trails are drawn; only the leading eight should have one`);
+    // Every phase of the cycle has to be named, or the rim is decoration rather than a legend.
+    for (const phase of ['Loudest', 'Gathering', 'Running', 'Unwatched', 'Ignored', 'Dispersing', 'Fading', 'Crowding'])
+      need(svg.includes(`>${phase}<`), `[kate] the ${phase} phase is missing from the rotation`);
+    // No bird may be drawn outside the rim: a point beyond it would mean the radius scaling has
+    // stopped being a scaling, and the reader would have no way to know what the circle means.
+    const far = [...svg.matchAll(/<circle cx="([\d.]+)" cy="([\d.]+)" r="4"/g)]
+      .map(m => Math.hypot(+m[1] - 450, +m[2] - 316)).filter(d => d > 226);
+    need(!far.length, `[kate] ${far.length} narratives are plotted outside the rim`);
     // The faint rest must still be present, or the centre of mass is being computed from a
     // different flock than the one shown.
-    need(/opacity="0.2"/.test(svg), '[kate] the narratives outside the top ten were dropped from the picture entirely');
+    // Count the marks instead of matching one opacity literal: what matters is that every
+    // narrative is still on the chart, because the flock's centre is computed from all of them.
+    const marks = [...svg.matchAll(/<(?:circle cx|rect x|path d="M)[^>]*(?:fill="var\(--[a-z]+\)")/g)].length;
+    need(marks >= nar.length, `[kate] only ${marks} marks for ${nar.length} narratives; the ones outside the leading eight were dropped, which moves the flock's centre away from what is drawn`);
     say(` ok  kate murmuration       -> ${labelled} labelled, ${trails} trails, remainder kept as context`);
     need(/Wikipedia/.test(k) && /StockTwits/.test(k), '[kate] the page does not say which public sources the attention came from');
     // The per-security crowding still runs: it is what the desk's OWN holdings are read against,
