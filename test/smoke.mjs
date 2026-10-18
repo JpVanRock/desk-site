@@ -1012,6 +1012,61 @@ if (!argRoute) {
   }
 
   // -------------------------------------------------------------------------
+  // 9c. News failure: events, the strength scale, and the flow breakdown.
+  //     A failure is one headline release the price traded the wrong way, so one event is enough
+  //     to reach the table. The guard that matters is that the surface figures and the list they
+  //     open into come from the same place.
+  // -------------------------------------------------------------------------
+  currentRoute = 'news-failure';
+  await go('#sven');
+  {
+    const sv = app();
+    for (const want of ['Signal strength', 'Total news flow', 'Impacted Holdings'])
+      need(sv.includes(want), `[news] the ${want} column is missing`);
+    need(!/<th class="num">Breadth<\/th>/.test(sv), '[news] the Breadth column survived the rework');
+    const rows = await rest('latest_news_failure_readings', 'ticker,window_days,verdict,signal_strength,n_events,n_positive,n_negative,releases,events');
+    need(rows.length > 0, '[news] no readings at all');
+    const wins = [...new Set(rows.map(r => r.window_days))].sort((a, b) => a - b);
+    need(wins.join(',') === '7,30,90', `[news] the time frames changed: ${wins.join(',')}`);
+    let bad = [];
+    for (const r of rows) {
+      const want = r.n_events <= 0 ? null : r.n_events === 1 ? 'initiate' : r.n_events === 2 ? 'confirmed' : 'strong';
+      if (r.signal_strength !== want) bad.push(`${r.ticker} ${r.window_days}d has ${r.n_events} events labelled ${r.signal_strength}`);
+      if (/failure$/.test(r.verdict) && !(r.n_events > 0)) bad.push(`${r.ticker} ${r.window_days}d calls ${r.verdict} with no event`);
+      // The percentage and the list it opens must be the same arithmetic.
+      const rel = Array.isArray(r.releases) ? r.releases : [];
+      if (rel.filter(x => x.good).length !== r.n_positive || rel.filter(x => !x.good).length !== r.n_negative) {
+        bad.push(`${r.ticker} ${r.window_days}d shows ${r.n_positive}+/${r.n_negative}- but opens into ${rel.filter(x => x.good).length}+/${rel.filter(x => !x.good).length}-`);
+      }
+      // Only headline releases may trigger an event.
+      for (const e of (Array.isArray(r.events) ? r.events : [])) {
+        if (e.failed && !rel.find(x => x.series === e.series && x.obs_date === e.obs_date && x.headline)) {
+          bad.push(`${r.ticker} ${r.window_days}d failed on ${e.series}, which is not a headline release`);
+        }
+      }
+    }
+    bad = [...new Set(bad)];
+    for (const b of bad) errors.push(`[news] ${b}`);
+    // The scale has to discriminate. If every row reads Strong it is not a scale -- which is
+    // exactly what a bare sign test produced before the materiality floor went in.
+    const withStrength = rows.filter(r => r.signal_strength);
+    const allStrong = withStrength.length > 4 && withStrength.every(r => r.signal_strength === 'strong');
+    need(!allStrong, '[news] every graded row reads Strong, so the scale is not discriminating');
+    const oneEvent = rows.filter(r => r.n_events === 1);
+    say(` ok  news failure           -> ${rows.length} readings, ${withStrength.length} graded (${oneEvent.length} on a single event), ${bad.length} problems`);
+    // The flow breakdown opens, and separates the two sides.
+    const withFlow = rows.find(r => r.window_days === 30 && (r.n_positive + r.n_negative) > 0);
+    if (withFlow) {
+      await go('#sven/flow-' + withFlow.ticker);
+      const dr = drawer();
+      need(/Positive for this asset/.test(dr) && /Negative for this asset/.test(dr), '[news] the flow breakdown does not separate positive from negative');
+      need(new RegExp(`${withFlow.ticker} news flow`).test(dr), '[news] the flow drawer is not headed with the asset');
+      need(/good and bad are properties of the pairing/i.test(dr), '[news] the drawer does not explain that good and bad depend on the asset');
+      say(` ok  news flow drawer       -> ${withFlow.ticker} opens ${withFlow.n_positive} positive and ${withFlow.n_negative} negative`);
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // 10a1. Markets: the desk wall. The panels must carry real quotes, the risk block must sit
   //       beside the VIX, and the performance chart must actually draw once its history lands --
   //       a synchronous render shows it mid-load, which is not proof that it works.
@@ -1400,7 +1455,10 @@ if (!argRoute) {
   // The verdict column reads by colour: confirming green, any failure red.
   {
     const seg = s0.split('News failure')[1] || '';
-    const verdicts = [...seg.matchAll(/<span style="color:(var\(--[a-z]+\));font-weight:[^"]*"[^>]*>([^<]+)<\/span>/g)].map(m => [m[2], m[1]]);
+    // Anchored on the verdict's own attribute rather than on the shape of its span: the signal
+    // strength cell renders an identically shaped span, and matching by shape silently folded
+    // "Initiate" into the list of verdicts and then reported the sort order as broken.
+    const verdicts = [...seg.matchAll(/<span data-verdict="[a-z_]+" style="color:(var\(--[a-z]+\));font-weight:[^"]*"[^>]*>([^<]+)<\/span>/g)].map(m => [m[2], m[1]]);
     const wrong = verdicts.filter(([label, col]) =>
       (/failure/i.test(label) && col !== 'var(--neg)') || (/^Confirming$/.test(label) && col !== 'var(--pos)'));
     say(` ok  sven verdict colours   -> ${verdicts.length} verdicts, ${wrong.length} mis-coloured`);

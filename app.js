@@ -152,7 +152,7 @@ async function load() {
     qSoft(sb.from('annie_assessments').select('as_of,kind,strategy_id,ticker,headline,body_md,score,score_scale,confidence,sources,author').order('as_of', { ascending: false }), 'Annie assessments'),
     qSoft(sb.from('latest_annie_trade_reviews').select('strategy_id,as_of,ticker,entry_date,exit_date,held_return,held_excess_bps,days_since_exit,after_return,after_bench,after_excess,held_instead_bps,better_ticker,better_return,better_gain_bps,n_alternatives,exit_verdict,entry_verdict,headline,lesson,unavailable_reason'), 'trade reviews'),
     qSoft(sb.from('latest_sven_rule_signals').select('as_of,ticker,rule_key,rule_no,rule_title,state,headline,detail,method,adapted').order('rule_no'), 'Raschke rules'),
-    qSoft(sb.from('latest_news_failure_readings').select('as_of,ticker,label,asset_class,window_days,n_releases,n_positive,n_negative,n_series,n_factors,agreement,price_change,made_new_high,made_new_low,verdict,headline,held_in,impacted'), 'news failure'),
+    qSoft(sb.from('latest_news_failure_readings').select('as_of,ticker,label,asset_class,window_days,n_releases,n_positive,n_negative,n_series,n_factors,agreement,price_change,made_new_high,made_new_low,verdict,headline,held_in,impacted,n_events,signal_strength,events,releases,pub_basis'), 'news failure'),
     qSoft(sb.from('macro_beauty_readings').select('as_of,score,stance,n_live,n_total,headline').order('as_of', { ascending: false }).limit(1), 'beauty reading'),
     qSoft(sb.from('latest_macro_beauty_components').select('as_of,component,label,score,status,headline,measure,value_text,source,how_to_supply,data_as_of'), 'beauty components'),
     qSoft(sb.from('latest_macro_regime_readings').select('as_of,regime,growth_z,inflation_z,conviction,n_growth,n_inflation,data_as_of,stale_days,liquidity_z,n_liquidity,rate_driver,term_premium_z,breakeven_z'), 'macro regime'),
@@ -327,7 +327,12 @@ function route() {
   if (page === 'annie' && arg && arg.startsWith('steel-')) {
     $('#drawer').innerHTML = steelManDrawer(arg.slice(6)); $('#drawer').hidden = false; $('#scrim').hidden = false;
   }
-  if (page === 'sven' && arg) { $('#drawer').innerHTML = svenDrawer(arg); $('#drawer').hidden = false; $('#scrim').hidden = false; }
+  if (page === 'sven' && arg) {
+    // Two drawers on one route. The flow breakdown is prefixed rather than given its own page,
+    // so it closes the same way every other drawer on this site closes.
+    $('#drawer').innerHTML = arg.startsWith('flow-') ? newsFlowDrawer(arg.slice(5)) : svenDrawer(arg);
+    $('#drawer').hidden = false; $('#scrim').hidden = false;
+  }
   if (page === 'markets' && arg) openChart(arg);
   if (page === 'sisyphus' && arg) openExposureChart(arg);
   if (page === 'admin' && arg) openMacroChart(arg);
@@ -1795,6 +1800,37 @@ function adam() {
    ${gauge}${legs}${quad}${prefTable}${histCard}`;
 }
 
+// The news-flow breakdown behind the percentage on Sven's table. Built from the releases array
+// stored with the reading, which is the same array the counts on the surface were taken from --
+// a figure that disagrees with what it opens into is the worst kind of wrong, so there is only
+// one source and the job self-checks that the two agree before writing.
+function newsFlowDrawer(ticker) {
+  const r = (D.newsFailure || []).find(x => x.ticker === ticker && x.window_days === newsWindow);
+  if (!r) return `<button class="close" data-go="#sven">Close</button><div class="empty">No reading for ${esc(ticker)}.</div>`;
+  const rel = Array.isArray(r.releases) ? r.releases : [];
+  const good = rel.filter(x => x.good), bad = rel.filter(x => !x.good);
+  const tot = rel.length;
+  const list = (rows, tone, title, empty) => `<div style="flex:1;min-width:260px">
+    <div class="eyebrow" style="color:${tone};margin-bottom:8px">${esc(title)} — ${rows.length}</div>
+    ${!rows.length ? `<div class="empty">${esc(empty)}</div>` : rows.map(x => `<div style="padding:8px 0;border-bottom:1px solid var(--line)">
+      <div style="font-size:13px">${esc(x.text)}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:3px">
+        published ${esc(x.published)}${x.basis === 'assumed' ? ' (assumed)' : ''} · covers ${esc(x.obs_date)} · ${esc(x.factor)}${x.headline ? ' · <b>headline release</b>' : ''}</div>
+    </div>`).join('')}</div>`;
+  const ev = (Array.isArray(r.events) ? r.events : []).filter(e => e.failed);
+  return `<button class="close" data-go="#sven">Close</button>
+    <span class="eyebrow">${esc(r.asset_class || '')}</span><h1>${esc(r.ticker)} news flow</h1>
+    <p class="sub">${esc(r.label)} · ${r.window_days} days · ${tot} release${tot === 1 ? '' : 's'} bearing on this asset</p>
+    ${!ev.length ? '' : `<div class="card" style="margin-bottom:14px;border-left:3px solid var(--warn)">
+      <div class="eyebrow" style="margin-bottom:8px">The failure${ev.length === 1 ? '' : 's'} behind this row</div>
+      ${ev.map(e => `<p class="note" style="margin:0 0 8px">${esc(e.text)}</p>`).join('')}</div>`}
+    <div class="card"><div style="display:flex;gap:26px;flex-wrap:wrap">
+      ${list(good, 'var(--pos)', 'Positive for this asset', 'Nothing in this window was good news for it.')}
+      ${list(bad, 'var(--neg)', 'Negative for this asset', 'Nothing in this window was bad news for it.')}
+    </div>
+    <p class="note" style="margin-top:14px"><b>Good and bad are properties of the pairing, not of the release.</b> A strong payroll print is good news for equities and bad news for bonds; each line above is scored by which way the release moved its factor multiplied by how ${esc((r.asset_class || 'this class').toLowerCase())} loads on that factor, both read from tables the desk already keeps. A <b>headline release</b> can trigger a failure event on its own; the rest count toward this flow but cannot. ${r.pub_basis === 'assumed' ? '<b>Publication dates here are assumed from frequency</b>, because these figures arrived in a backfill rather than being watched as they appeared.' : r.pub_basis === 'mixed' ? 'Dates marked <b>(assumed)</b> came from a backfill; the rest are the day this desk watched the figure appear.' : 'Publication dates are the day this desk watched each figure appear.'}</p></div>`;
+}
+
 // ---------- Kate: sentiment, reflexivity, and the popularity contest ----------
 //
 // Kate's question is never whether something is a good investment. It is what the crowd believes
@@ -2188,6 +2224,36 @@ function sven() {
       `<span style="color:var(--text)">${esc(x.ticker)}</span><span style="color:var(--muted)">${x.partial ? '*' : ''} $${(+x.usd / 1e6).toFixed(0)}M</span>`).join(', ')}
       <br><small style="color:var(--muted)">$${(total / 1e6).toFixed(0)}M ${fail ? 'exposed' : 'supported'}</small></span>`;
   };
+  // The strength scale. One failure event puts an asset on the board; repetition is what builds
+  // conviction, rather than what earns admission. The old read needed five agreeing releases
+  // before it would say anything, which silenced exactly the case worth seeing -- one important
+  // print the market refuses to trade on.
+  const STRENGTH = {
+    initiate:  ['Initiate',  'var(--flat)', 'One failure event. On the board, not yet a case.'],
+    confirmed: ['Confirmed', 'var(--warn)', 'Two failure events the same way. It has happened twice.'],
+    strong:    ['Strong',    'var(--neg)',  'Three or more. A pattern rather than an incident.'],
+  };
+  const strengthCell = r => {
+    const k = r.signal_strength;
+    if (!k || !STRENGTH[k]) return '<span style="color:var(--muted)">–</span>';
+    const [label, tone, why] = STRENGTH[k];
+    const pips = k === 'initiate' ? 1 : k === 'confirmed' ? 2 : 3;
+    return `<span style="color:${tone};font-weight:700" title="${esc(why)}">${esc(label)}</span>
+      <br><span style="letter-spacing:2px;color:${tone};font-size:11px">${'●'.repeat(pips)}${'○'.repeat(Math.max(0, 3 - pips))}</span>
+      <br><small style="color:var(--muted)">${r.n_events} event${r.n_events === 1 ? '' : 's'}</small>`;
+  };
+  // Total news flow: everything that bore on this asset in the window, good against bad, with the
+  // share that pointed one way. The percentage opens the full list -- the count on the surface
+  // and the headlines behind it come from the same stored array, so they cannot disagree.
+  const flowCell = r => {
+    const tot = (r.n_positive || 0) + (r.n_negative || 0);
+    if (!tot) return '<span style="color:var(--muted)">–</span>';
+    const share = Math.max(r.n_positive, r.n_negative) / tot;
+    const leanGood = r.n_positive >= r.n_negative;
+    return `<span style="color:var(--pos)">${r.n_positive} good</span> / <span style="color:var(--neg)">${r.n_negative} bad</span>
+      <br><button class="flowpct" data-flow="${esc(r.ticker)}" title="Open every release behind this figure, good and bad, separated.">
+        ${(share * 100).toFixed(0)}% ${leanGood ? 'good' : 'bad'}</button>`;
+  };
   const wins = [...new Set(news.map(r => r.window_days))].sort((a, b) => a - b);
   const rowsN = news.filter(r => r.window_days === newsWindow)
     .sort((a, b) => {
@@ -2202,8 +2268,8 @@ function sven() {
     ${failures.length ? `<div style="margin-top:10px;padding:10px 12px;border-left:3px solid var(--warn);background:var(--panel2);border-radius:8px;font-size:13px">
       <b>${failures.length} asset${failures.length === 1 ? '' : 's'} not responding to ${failures.length === 1 ? 'its' : 'their'} own news</b> over ${newsWindow} days: ${failures.map(f => `${esc(f.ticker)} (${esc(FAILURE_STYLE[f.verdict][0].toLowerCase())})`).join(', ')}.</div>` : ''}
     <div style="overflow-x:auto;margin-top:12px"><table style="min-width:860px"><thead><tr>
-      <th>Asset</th><th>Class</th><th>Verdict</th><th class="num">News flow</th><th class="num">Breadth</th>
-      <th class="num">Price</th><th>Impacted Holdings</th></tr></thead><tbody>
+      <th>Asset</th><th>Class</th><th>Verdict</th><th class="num">Signal strength</th>
+      <th class="num">Total news flow</th><th class="num">Price</th><th>Impacted Holdings</th></tr></thead><tbody>
     ${rowsN.map(r => {
       const st = FAILURE_STYLE[r.verdict] || FAILURE_STYLE.none;
       const fail = /failure$/.test(r.verdict);
@@ -2211,10 +2277,10 @@ function sven() {
       return `<tr${fail ? ' style="background:var(--panel2)"' : ''}>
         <td><b>${esc(r.ticker)}</b><br><small style="color:var(--muted)">${esc(r.label)}</small></td>
         <td style="color:var(--muted)">${esc(r.asset_class || '—')}</td>
-        <td><span style="color:${st[1]};font-weight:${fail ? '700' : '400'}" title="${esc(st[2])}">${esc(st[0])}</span>
+        <td><span data-verdict="${esc(r.verdict)}" style="color:${st[1]};font-weight:${fail ? '700' : '400'}" title="${esc(st[2])}">${esc(st[0])}</span>
           <br><small style="color:var(--muted);max-width:360px;display:inline-block">${esc(r.headline)}</small></td>
-        <td class="num">${r.n_releases ? `${r.n_positive}+ / ${r.n_negative}−<br><small style="color:var(--muted)">${n(r.agreement) === null ? '' : (n(r.agreement) * 100).toFixed(0) + '% one way'}</small>` : '<span style="color:var(--muted)">–</span>'}</td>
-        <td class="num" title="Distinct series and distinct factors behind the flow. Agreement alone cannot tell one story told eight times from eight stories that agree.">${r.n_series ?? '–'} series<br><small style="color:var(--muted)">${r.n_factors ?? '–'} factor${r.n_factors === 1 ? '' : 's'}</small></td>
+        <td class="num">${strengthCell(r)}</td>
+        <td class="num">${flowCell(r)}</td>
         <td class="num">${ch === null ? '<span style="color:var(--muted)">–</span>' : `<span style="color:${ch >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(ch * 100).toFixed(1)}%</span>`}
           <br><small style="color:var(--muted)">${r.made_new_high ? 'new high' : r.made_new_low ? 'new low' : 'no new extreme'}</small></td>
         <td style="font-size:12px">${impactedCell(r, fail)}</td></tr>`;
@@ -2222,8 +2288,11 @@ function sven() {
     </tbody></table></div>
     <p class="note"><b>Impacted Holdings</b> names the firm's own positions in the asset class a reading describes, in firm dollars, largest first — not the models, which hold every class and so repeated the same eight names on every row. A confirming read supports those positions and a failure puts them at risk, so the column takes its sign from the verdict rather than storing one that could drift from it. A ticker marked <b>*</b> counts only its share of that class: QDSIX is classified 60% equity, 20% fixed income and 20% commodities, so a commodity reading reaches a fifth of its position and not all of it. Where a verdict concluded nothing the column reads <b>No Impact to Models</b> — a reading that called no direction reaches no holding. <b>Failures sort to the top of the table</b>, since they are the only rows that ask for a decision.
     <b>Good news is not a property of a release on its own</b> — a strong payroll print is good news for equities and bad news for bonds. Each release is scored by which way it moved its factor, multiplied by how that asset class loads on that factor, so both halves come from tables the desk already keeps rather than from a judgment made here.
-    A <b>positive news failure</b> is a stream of good news the asset did not rise on; a <b>negative news failure</b> is a stream of bad news it did not fall on. Neither is called on fewer than five releases, on a flow more split than 65/35, or on a single factor — one factor moving is one story told many times, and agreement cannot tell that from many stories agreeing, which is why breadth sits beside it.
-    Only weekly, monthly and quarterly series count: the daily ones here are market prices, not announcements. <b>Publication dates are assumed from frequency, not recorded</b> — a release covering August is treated as published a month later — because this desk stores the period an observation covers and not the day it came out.</p></div>`;
+    A <b>failure is now an event, not a window average</b>: one headline release — CPI, payrolls, PCE, GDP, retail sales, claims — whose price response over the following five sessions contradicted it. One event is enough to reach this table. The earlier read needed five agreeing releases across two factors before it would say anything, and that silenced the case most worth seeing: a single important print the market refuses to trade on, which is exactly what bonds did when a hot CPI landed and yields fell anyway.
+    <b>Signal strength</b> is how often it has happened, not how certain anything is. ${Object.entries(STRENGTH).map(([, v]) => `<b style="color:${v[1]}">${v[0]}</b> ${v[2].toLowerCase()}`).join(' ')} Repetition builds the case rather than buying admission to the table. The trade-off is deliberate and worth stating: one event is a noisier signal than five agreeing releases was, and the desk would rather see an Initiate it can dismiss than miss a Strong because the first print was lonely.
+    A release only counts as failed if the price moved against it by more than <b>half of that asset's own typical five-session move</b>. Without that floor the test is a bare sign test, and with roughly fifteen headline releases a month a bare sign test catches coin flips — the first version of this read returned Strong on nine of ten assets, which is the same as having no scale at all. A release the price barely reacted to is a quiet day, not a refusal.
+    <b>Total news flow</b> counts every release bearing on the asset, headline or not, because the derived indices are still news even though a failure is not called off them. Click the percentage for the full list, positive and negative separated.
+    Only weekly, monthly and quarterly series count: the daily ones here are market prices, not announcements. <b>Publication dates</b> are taken from the day this desk watched each figure appear where the loader was running continuously around it, and assumed from frequency where the figure arrived in a backfill — each row says which, and the two are different claims.</p></div>`;
 
   return `<span class="eyebrow">Market internals</span><h1>Sven</h1>
    <p class="sub">Raschke's twelve rules across the major indices, and whether assets are responding to their own news.</p>
@@ -5317,6 +5386,12 @@ document.addEventListener('click', e => {
   monthlyTab = t.dataset.monthtab;
   const arg = (location.hash.split('/')[1] || '');
   if (arg) openModel(arg);
+});
+// The news-flow percentage opens the releases behind it.
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-flow]');
+  if (!t) return;
+  location.hash = '#sven/flow-' + t.dataset.flow;
 });
 // News-failure window tabs on Sven's page.
 document.addEventListener('click', e => {
