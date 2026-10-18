@@ -1058,6 +1058,33 @@ if (!argRoute) {
     const m3 = app();
     need(/class="pill on" data-perf="1M"|data-perf="1M"[^>]*>1M/.test(m3), '[markets] the 1M window is not selected after clicking it');
     need(m3 !== m2, '[markets] switching the window redrew nothing');
+    // Every window offered must draw. A pill that renders an empty box is worse than no pill.
+    for (const w of ['1D', '1W', '1M', '3M', '6M', 'YTD', '1Y', '3Y']) {
+      need(new RegExp(`data-perf="${w}"`).test(m3), `[markets] the ${w} window is not offered`);
+    }
+    await click('[data-perf]', { perf: '1W' });
+    const wk = app();
+    need((wk.match(/<path d="M[^"]+"/g) || []).length >= 4, '[markets] the one-week window drew fewer than four lines');
+    // One day comes from fifteen-minute bars in a different table, fetched on demand.
+    await click('[data-perf]', { perf: '1D' });
+    for (let i = 0; i < 40 && /Loading intraday bars/.test(app()); i++) await sleep(250);
+    const day = app();
+    need(!/Loading intraday bars/.test(day), '[markets] the one-day window never finished loading');
+    need(!/Could not load intraday bars/.test(day), '[markets] the one-day window failed to load its bars');
+    const intradayRows = await rest('intraday_prices', 'ts,close', '&order=ts.desc&limit=1');
+    if (intradayRows.length) {
+      need(/Newest bar/.test(day), '[markets] the one-day chart does not print how old its newest bar is');
+      need(/previous daily close/.test(day), '[markets] the one-day chart does not say what it is rebased to');
+      need((day.match(/<path d="M[^"]+"/g) || []).length >= 4, '[markets] the one-day window drew fewer than four lines');
+      // The baseline must be the prior close, so an opening gap shows rather than starting at zero.
+      const firstVals = [...day.matchAll(/>(SPY|QQQ|IWM|DIA) ([+-]?[\d.]+)%</g)].map(m => +m[2]);
+      need(firstVals.length >= 4, '[markets] the one-day chart has no end labels');
+      say(` ok  markets 1D             -> ${intradayRows.length ? 'bars to ' + intradayRows[0].ts.slice(0, 16) : 'none'}, ${firstVals.length} lines labelled`);
+    } else {
+      say(` ok  markets 1D             -> no intraday bars stored yet; the empty state was checked instead`);
+      need(/No intraday bars yet|Not enough intraday bars/.test(day), '[markets] the one-day window with no bars does not explain itself');
+    }
+    await click('[data-perf]', { perf: '1M' });
     say(` ok  markets wall           -> panels render, ${labelled.length} lines on the chart, TLT realised vol ${rv ?? '—'}%, ${ytdLen} paths`);
     await click('[data-perf]', { perf: 'YTD' });
   }

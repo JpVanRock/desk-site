@@ -1019,9 +1019,15 @@ function stan() {
 // built from those indices, so dropping the securities would quietly degrade a different page.
 const PERF_TICKERS = ['SPY', 'QQQ', 'IWM', 'DIA', 'TLT', 'IEF'];
 const PERF_COLORS = { SPY: '#4ea1ff', QQQ: '#a78bfa', IWM: '#fbbf24', DIA: '#fb923c' };
-const PERF_WINDOWS = [['1M', 21], ['3M', 63], ['6M', 126], ['YTD', null], ['1Y', 252], ['3Y', 756]];
+// 1D is drawn from fifteen-minute bars and every other window from daily closes, so it is the one
+// entry whose second value is not a session count. 1W is five sessions -- a handful of points,
+// which is what a week of daily closes honestly is.
+const PERF_WINDOWS = [['1D', 'intraday'], ['1W', 5], ['1M', 21], ['3M', 63], ['6M', 126], ['YTD', null], ['1Y', 252], ['3Y', 756]];
 let perfPeriod = 'YTD';
 let perfSeries = null, perfLoading = false, perfError = null;
+// Intraday is fetched separately and only when the one-day window is asked for: it is a different
+// table, a different shape, and almost nobody opens this page to look at the last four hours.
+let perfIntraday = null, perfIntradayLoading = false, perfIntradayError = null;
 
 async function loadPerfSeries() {
   if (perfSeries || perfLoading) return;
@@ -1046,6 +1052,29 @@ async function loadPerfSeries() {
     perfSeries = out;
   } catch (ex) { perfError = ex.message; }
   perfLoading = false;
+  if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
+}
+
+// The one-day window: fifteen-minute bars for the index proxies, rebased to the previous daily
+// close. The previous close is the right baseline for a one-day chart -- the day's move is from
+// where it closed, not from where it happened to open -- and it comes from the daily series this
+// page already holds, so the two cannot disagree.
+async function loadPerfIntraday() {
+  if (perfIntraday || perfIntradayLoading) return;
+  perfIntradayLoading = true;
+  try {
+    const out = {};
+    for (const t of ['SPY', 'QQQ', 'IWM', 'DIA']) {
+      const row = D.markets.find(m => m.ticker === t);
+      if (!row) continue;
+      const bars = await q(sb.from('intraday_prices').select('ts,close')
+        .eq('security_id', row.id).order('ts', { ascending: false }).limit(400));
+      bars.reverse();
+      out[t] = bars.map(b => ({ ts: b.ts, px: +b.close })).filter(x => x.px > 0);
+    }
+    perfIntraday = out;
+  } catch (ex) { perfIntradayError = ex.message; }
+  perfIntradayLoading = false;
   if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
 }
 
@@ -1126,22 +1155,58 @@ function markets() {
   // ---- normalised performance ----
   const perfCard = (() => {
     const inner = (() => {
-      if (perfError) return `<div class="empty">Could not load price history: ${esc(perfError)}</div>`;
-      if (!perfSeries) return `<div class="empty">Loading price history…</div>`;
-      const want = PERF_WINDOWS.find(w => w[0] === perfPeriod) || PERF_WINDOWS[3];
+      const bar = `<div class="perfbar">${PERF_WINDOWS.map(([k]) => `<button class="pill${k === perfPeriod ? ' on' : ''}" data-perf="${k}">${k}</button>`).join('')}</div>`;
+      const intradayWanted = perfPeriod === '1D';
+      if (intradayWanted && !perfIntraday && !perfIntradayLoading && !perfIntradayError) setTimeout(loadPerfIntraday, 0);
+      if (perfError) return `${bar}<div class="empty">Could not load price history: ${esc(perfError)}</div>`;
+      if (!perfSeries) return `${bar}<div class="empty">Loading price history…</div>`;
+      if (intradayWanted && perfIntradayError) return `${bar}<div class="empty">Could not load intraday bars: ${esc(perfIntradayError)}</div>`;
+      if (intradayWanted && !perfIntraday) return `${bar}<div class="empty">Loading intraday bars…</div>`;
+      const want = PERF_WINDOWS.find(w => w[0] === perfPeriod) || PERF_WINDOWS.find(w => w[0] === 'YTD');
       const tickers = ['SPY', 'QQQ', 'IWM', 'DIA'].filter(t => (perfSeries[t] || []).length > 2);
-      if (!tickers.length) return '<div class="empty">No price history for the index proxies.</div>';
+      if (!tickers.length) return `${bar}<div class="empty">No price history for the index proxies.</div>`;
+
+      // The one-day window takes a different path: fifteen-minute bars, rebased to each proxy's
+      // PREVIOUS daily close. The day's move is measured from where it closed, not from where it
+      // opened, and the overnight gap is most of what a one-day chart is for.
+      let lines, footer;
+      if (intradayWanted) {
+        const session = (() => {
+          const all = Object.values(perfIntraday || {}).flatMap(a => a.map(x => x.ts));
+          if (!all.length) return null;
+          const newest = all.sort().at(-1);
+          return newest.slice(0, 10);
+        })();
+        if (!session) return `${bar}<div class="empty">No intraday bars yet. They are loaded every fifteen minutes while the US market is open.</div>`;
+        lines = tickers.map(t => {
+          const pts = (perfIntraday[t] || []).filter(x => x.ts.slice(0, 10) === session);
+          if (pts.length < 2) return null;
+          // The baseline is the last daily close BEFORE this session, taken from the daily series
+          // this page already holds, so the two can never disagree about what yesterday was.
+          const daily = perfSeries[t] || [];
+          const prior = [...daily].reverse().find(x => x.d < session);
+          const base = prior ? prior.px : pts[0].px;
+          return { t, basedOnPrevClose: !!prior, pts: pts.map(x => ({ d: x.ts, v: x.px / base - 1 })) };
+        }).filter(Boolean);
+        if (!lines.length) return `${bar}<div class="empty">Not enough intraday bars in the latest session to draw it.</div>`;
+        const newestTs = lines.flatMap(l => l.pts.map(p => p.d)).sort().at(-1);
+        const ageMin = Math.max(0, Math.round((Date.now() - Date.parse(newestTs)) / 60000));
+        const stale = ageMin > 40;
+        const clock = new Date(newestTs).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        footer = `<p class="note"><b>Newest bar ${esc(clock)}</b>${ageMin > 0 ? `, ${ageMin < 90 ? ageMin + ' minutes' : Math.round(ageMin / 60) + ' hours'} ago` : ''}${stale ? ' — <b style="color:var(--warn)">older than the fifteen-minute cadence</b>, so the market is closed or a scheduled load was late or skipped.' : '.'} Fifteen-minute bars from the IEX feed, rebased to each proxy's <b>previous daily close</b> — the day's move is from where it closed, not from where it opened, and the overnight gap is most of what a one-day chart is for. ${lines.some(l => !l.basedOnPrevClose) ? 'A line with no prior close is rebased to its own first bar and understates the move. ' : ''}These are IEX prints, not consolidated tape: the level is a close approximation rather than the official last sale.</p>`;
+      } else {
       const cal = perfSeries[tickers[0]].map(x => x.d);
       const startDate = want[1] === null
         ? `${cal.at(-1).slice(0, 4) - 1}-12-31`
         : cal[Math.max(0, cal.length - 1 - want[1])];
-      const lines = tickers.map(t => {
+      lines = tickers.map(t => {
         const pts = perfSeries[t].filter(x => x.d >= startDate);
         if (pts.length < 2) return null;
         const base = pts[0].px;
         return { t, pts: pts.map(x => ({ d: x.d, v: x.px / base - 1 })) };
       }).filter(Boolean);
-      if (!lines.length) return '<div class="empty">Not enough history for this window.</div>';
+      }
+      if (!lines.length) return `${bar}<div class="empty">Not enough history for this window.</div>`;
       const all = lines.flatMap(l => l.pts.map(p => p.v));
       const lo = Math.min(0, ...all), hi = Math.max(0, ...all), span = Math.max(0.02, hi - lo);
       const W = 820, Hh = 330, pad = { l: 10, r: 62, t: 14, b: 26 };
@@ -1149,16 +1214,19 @@ function markets() {
       const X = i => pad.l + (i / Math.max(1, nMax - 1)) * (W - pad.l - pad.r);
       const Y = v => pad.t + (1 - (v - lo) / span) * (Hh - pad.t - pad.b);
       const ticks = [lo, lo + span / 2, hi].map(v => `<line x1="${pad.l}" y1="${Y(v).toFixed(1)}" x2="${W - pad.r}" y2="${Y(v).toFixed(1)}" stroke="var(--line)"/><text x="${W - pad.r + 6}" y="${(Y(v) + 3.5).toFixed(1)}" font-size="10" fill="var(--muted)">${(v * 100).toFixed(1)}%</text>`).join('');
-      return `<div class="perfbar">${PERF_WINDOWS.map(([k]) => `<button class="pill${k === perfPeriod ? ' on' : ''}" data-perf="${k}">${k}</button>`).join('')}</div>
+      const axLabel = d => intradayWanted
+        ? new Date(d).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+        : d;
+      return `${bar}
         <svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto" role="img" aria-label="Index performance, normalised to the start of the window">
           ${ticks}
           <line x1="${pad.l}" y1="${Y(0).toFixed(1)}" x2="${W - pad.r}" y2="${Y(0).toFixed(1)}" stroke="var(--line)" stroke-dasharray="3 3"/>
           ${lines.map(l => `<path d="${l.pts.map((p, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(p.v).toFixed(1)}`).join('')}" fill="none" stroke="${PERF_COLORS[l.t]}" stroke-width="1.8"/>`).join('')}
           ${lines.map(l => { const last = l.pts.at(-1); return `<text x="${(X(l.pts.length - 1) + 5).toFixed(1)}" y="${(Y(last.v) + 3.5).toFixed(1)}" font-size="11" font-weight="600" fill="${PERF_COLORS[l.t]}">${esc(l.t)} ${(last.v * 100).toFixed(1)}%</text>`; }).join('')}
-          <text x="${pad.l}" y="${Hh - 6}" font-size="10" fill="var(--muted)">${esc(lines[0].pts[0].d)}</text>
-          <text x="${(W - pad.r).toFixed(1)}" y="${Hh - 6}" font-size="10" text-anchor="end" fill="var(--muted)">${esc(lines[0].pts.at(-1).d)}</text>
+          <text x="${pad.l}" y="${Hh - 6}" font-size="10" fill="var(--muted)">${esc(axLabel(lines[0].pts[0].d))}</text>
+          <text x="${(W - pad.r).toFixed(1)}" y="${Hh - 6}" font-size="10" text-anchor="end" fill="var(--muted)">${esc(axLabel(lines[0].pts.at(-1).d))}</text>
         </svg>
-        <p class="note">Total return from adjusted closes, rebased to zero at the first session of the window — dividends included, which is why these do not match an index level quoted on price alone. ${perfPeriod === 'YTD' ? 'Year to date runs from the last close of last year.' : ''}</p>`;
+        ${footer || `<p class="note">Total return from adjusted closes, rebased to zero at the first session of the window — dividends included, which is why these do not match an index level quoted on price alone. ${perfPeriod === 'YTD' ? 'Year to date runs from the last close of last year.' : ''}${perfPeriod === '1W' ? 'A week of daily closes is five points, which is what a week honestly is at this resolution.' : ''}</p>`}`;
     })();
     return `<div class="card panel"><div class="phead">Normalised performance</div>${inner}</div>`;
   })();
