@@ -321,6 +321,25 @@ select{font:inherit;font-size:12.5px;padding:5px 7px;border-radius:7px;border:1p
   --loc-green:#1f4035; --loc-green-deep:#152b24; --loc-brass:#a9873f; --loc-brass-lit:#d4ad5f;
   --loc-ox:#6d2f2a;
   position:relative; isolation:isolate; color:var(--loc-ink);
+
+  /* THE RULE THAT MAKES THIS SAFE. Everything on this site is built against a dark theme, and the
+     journal, inbox and brief markup carries inline colours -- style="color:var(--muted)" and the
+     like -- written for it. This treatment inverts the polarity to parchment, so adding rules
+     alone would leave every one of those inline colours resolving to a light grey on cream, which
+     is text that is technically present and practically invisible. The tokens are redefined here
+     instead, so an inline var(--muted) written months ago resolves to ink on this page and to
+     grey everywhere else, with nothing to remember and nothing to go back and change.
+
+     --pos and --neg are darkened rather than replaced: a gain is still green and a loss is still
+     red, because a reader must never translate a colour through a theme to know whether money was
+     made. The bright dark-theme green simply cannot be read on parchment, so it is the same hue
+     at a weight that can. */
+  --text:var(--loc-ink); --muted:var(--loc-ink-soft); --line:rgba(169,135,63,.34);
+  --panel:rgba(255,252,243,.82); --panel2:rgba(236,226,203,.7); --bg:var(--loc-parch);
+  --accent:var(--loc-ox); --bench:#8a7c62;
+  --pos:#156b45; --neg:#9d2f2b; --flat:#8a6a16; --warn:#8a6a16;
+  --winbg:rgba(21,107,69,.18); --losebg:rgba(157,47,43,.18);
+  --shadow:0 8px 24px rgba(42,35,24,.14);
 }
 /* The dome, implied rather than drawn: a warm light from above over stone, and the coffer grid
    of the ceiling fading as it falls. */

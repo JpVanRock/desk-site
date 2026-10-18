@@ -912,7 +912,17 @@ if (!argRoute) {
     // And the header must no longer carry the two that moved.
     const nav2 = [...readFileSync(join(SITE, 'index.html'), 'utf8').matchAll(/<nav id="nav">([\s\S]*?)<\/nav>/g)].flatMap(m => [...m[1].matchAll(/href="#([a-z-]+)"/g)].map(x => x[1]));
     need(!nav2.includes('briefs') && !nav2.includes('inbox'), '[library] Briefs or Inbox is still a header tab');
-    say(` ok  library                -> three shelves, each on its own hash; Briefs and Inbox left the header`);
+    // The reading room inverts the site's polarity from dark to parchment, and the markup it
+    // renders carries inline colours written for the dark theme. If the .loc block ever stops
+    // redefining the tokens, every one of those inline colours becomes light grey on cream --
+    // text that is present and unreadable, which no page test would catch because the text IS
+    // there. So the stylesheet itself is checked.
+    const css = readFileSync(join(SITE, 'style.css'), 'utf8');
+    const locBlock = (css.match(/\.loc\{[\s\S]*?\n\}/) || [''])[0];
+    for (const tok of ['--text:', '--muted:', '--line:', '--pos:', '--neg:'])
+      need(locBlock.includes(tok), `[library] the reading room does not redefine ${tok.slice(0, -1)}, so dark-theme inline colours will render on parchment`);
+    need(/--pos:#[0-9a-f]{6}/.test(locBlock) && /--neg:#[0-9a-f]{6}/.test(locBlock), '[library] gains and losses lost their own colours in the reading room');
+    say(` ok  library                -> three shelves, each on its own hash; Briefs and Inbox left the header; tokens re-based for parchment`);
     await go('#sandbox');
 
     // A real sell: the tax table must name the models that hold the ticker and cost it from lots.
