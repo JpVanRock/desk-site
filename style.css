@@ -306,150 +306,104 @@ select{font:inherit;font-size:12.5px;padding:5px 7px;border-radius:7px;border:1p
 @media (max-width:720px){ .mkgrid{grid-template-columns:minmax(0,1fr)} }
 
 /* ---- Gail: The Library ----
-   The Thomas Jefferson Building, and specifically the Main Reading Room: parchment and warm
-   stone, the deep reading-room green of the desk lamps, oxidised brass, and the arch that is the
-   building's whole grammar. Scoped to Gail's page exactly as the Tron treatment is scoped to the
-   Sandbox, so nothing here can leak into a page that reports money.
+   The layout stayed; the colour scheme did not. The first version was literal Library of
+   Congress -- parchment, warm stone, brass -- and it was a light island in a dark site, which
+   made moving to this tab feel like leaving the application. The reading room is still a reading
+   room, but built out of the desk's own palette: the site's panels, the site's lines, the site's
+   text, with brass kept only as an accent on rules and tab edges. Nothing here redefines a theme
+   token any more, so every figure renders exactly as it does on every other page.
 
-   It follows the same two rules as that one. Figures keep the desk's own semantic colours --
-   green is still a gain, red still a loss, because a reader must never translate a colour through
-   a theme to know whether money was made. And no ornament is laid over a number: the arches, the
-   rules and the rosette sit on plates and headers, never behind a digit, because a decorated
-   figure is a misread figure and this page carries tax estimates. */
+   What carries the idea now is form rather than colour -- the arch struck across the title plate,
+   the oculus, the double rule of a title page, and shelf tabs that stand like index-card
+   dividers in a drawer. */
 .loc{
-  --loc-parch:#f4ecd9; --loc-stone:#e6dcc3; --loc-ink:#2a2318; --loc-ink-soft:#6b5d44;
-  --loc-green:#1f4035; --loc-green-deep:#152b24; --loc-brass:#a9873f; --loc-brass-lit:#d4ad5f;
-  --loc-ox:#6d2f2a;
-  position:relative; isolation:isolate; color:var(--loc-ink);
-
-  /* THE RULE THAT MAKES THIS SAFE. Everything on this site is built against a dark theme, and the
-     journal, inbox and brief markup carries inline colours -- style="color:var(--muted)" and the
-     like -- written for it. This treatment inverts the polarity to parchment, so adding rules
-     alone would leave every one of those inline colours resolving to a light grey on cream, which
-     is text that is technically present and practically invisible. The tokens are redefined here
-     instead, so an inline var(--muted) written months ago resolves to ink on this page and to
-     grey everywhere else, with nothing to remember and nothing to go back and change.
-
-     --pos and --neg are darkened rather than replaced: a gain is still green and a loss is still
-     red, because a reader must never translate a colour through a theme to know whether money was
-     made. The bright dark-theme green simply cannot be read on parchment, so it is the same hue
-     at a weight that can. */
-  --text:var(--loc-ink); --muted:var(--loc-ink-soft); --line:rgba(169,135,63,.34);
-  --panel:rgba(255,252,243,.82); --panel2:rgba(236,226,203,.7); --bg:var(--loc-parch);
-  --accent:var(--loc-ox); --bench:#8a7c62;
-  --pos:#156b45; --neg:#9d2f2b; --flat:#8a6a16; --warn:#8a6a16;
-  --winbg:rgba(21,107,69,.18); --losebg:rgba(157,47,43,.18);
-  --shadow:0 8px 24px rgba(42,35,24,.14);
+  --loc-brass:#b08d4a; --loc-brass-dim:rgba(176,141,74,.34); --loc-green:#6fb39a;
+  position:relative; isolation:isolate;
 }
-/* The dome, implied rather than drawn: a warm light from above over stone, and the coffer grid
-   of the ceiling fading as it falls. */
+/* The dome, implied rather than drawn: a warm light from above, and the coffer grid of the
+   ceiling fading as it falls. Held faint so it reads as depth, not as a texture. */
 .loc::before{
   content:""; position:absolute; inset:-24px -24px -24px; z-index:-1; pointer-events:none;
   border-radius:14px;
   background:
-    radial-gradient(90% 55% at 50% -6%, rgba(212,173,95,.20), transparent 62%),
-    repeating-linear-gradient(90deg, rgba(42,35,24,.045) 0 1px, transparent 1px 58px),
-    repeating-linear-gradient(0deg,  rgba(42,35,24,.035) 0 1px, transparent 1px 58px),
-    linear-gradient(180deg, var(--loc-parch), var(--loc-stone));
+    radial-gradient(90% 55% at 50% -6%, rgba(176,141,74,.11), transparent 62%),
+    repeating-linear-gradient(90deg, rgba(176,141,74,.035) 0 1px, transparent 1px 58px),
+    repeating-linear-gradient(0deg,  rgba(176,141,74,.025) 0 1px, transparent 1px 58px);
 }
 /* The title plate: a card-catalogue drawer front, with the double rule of a title page. */
 .loc .locplate{
-  background:linear-gradient(180deg, rgba(255,251,240,.92), rgba(240,231,210,.92));
-  border:1px solid rgba(169,135,63,.45);
+  background:linear-gradient(180deg, var(--panel2), var(--panel));
+  border:1px solid var(--loc-brass-dim);
   border-radius:12px 12px 4px 4px; padding:22px 26px 18px; margin:0 0 16px;
-  box-shadow:0 1px 0 rgba(255,255,255,.7) inset, 0 10px 28px rgba(42,35,24,.14);
+  box-shadow:var(--shadow);
   position:relative; overflow:hidden; text-align:center;
 }
 /* The arch, which is the building's grammar -- a semicircle struck across the top of the plate. */
 .loc .locplate::before{
   content:""; position:absolute; top:-78px; left:50%; transform:translateX(-50%);
-  width:260px; height:160px; border:2px solid rgba(169,135,63,.4);
+  width:260px; height:160px; border:2px solid var(--loc-brass-dim);
   border-radius:130px 130px 0 0; pointer-events:none;
 }
 /* The oculus. */
 .loc .locplate::after{
   content:""; position:absolute; top:12px; left:50%; transform:translateX(-50%);
   width:9px; height:9px; border-radius:50%; background:var(--loc-brass);
-  box-shadow:0 0 0 4px rgba(169,135,63,.18), 0 0 0 9px rgba(169,135,63,.09);
+  box-shadow:0 0 0 4px rgba(176,141,74,.16), 0 0 0 9px rgba(176,141,74,.08);
 }
 .loc .locplate h1{
   font-family:Georgia,'Iowan Old Style','Times New Roman',serif;
-  color:var(--loc-green); letter-spacing:.14em; text-transform:uppercase;
+  color:var(--text); letter-spacing:.14em; text-transform:uppercase;
   font-size:clamp(26px,4.4vw,40px); margin:10px 0 6px; font-weight:600;
-  border-bottom:3px double rgba(169,135,63,.55); display:inline-block; padding-bottom:8px;
+  border-bottom:3px double var(--loc-brass-dim); display:inline-block; padding-bottom:8px;
 }
 .loc .locplate .eyebrow{ color:var(--loc-brass); letter-spacing:.22em }
-.loc .locplate .sub{ color:var(--loc-ink-soft); max-width:60ch; margin:8px auto 0 }
+.loc .locplate .sub{ max-width:60ch; margin:8px auto 0 }
 
 /* The shelf bar: index-card dividers standing in a drawer, the open one brought forward. */
 .loc .shelf{ display:flex; gap:6px; flex-wrap:wrap; margin:0 0 -1px; padding:0 6px; align-items:flex-end }
 .loc .shelftab{
   font:inherit; font-size:12.5px; cursor:pointer; display:flex; align-items:center; gap:8px;
-  padding:9px 16px 10px; border:1px solid rgba(169,135,63,.45); border-bottom:0;
-  border-radius:9px 9px 0 0; color:var(--loc-ink-soft);
-  background:linear-gradient(180deg, rgba(236,226,203,.85), rgba(222,210,182,.85));
+  padding:9px 16px 10px; border:1px solid var(--line); border-bottom:0;
+  border-radius:9px 9px 0 0; color:var(--muted); background:var(--panel2);
   font-family:Georgia,'Iowan Old Style','Times New Roman',serif; letter-spacing:.05em;
 }
-.loc .shelftab:hover{ color:var(--loc-ink); background:linear-gradient(180deg,#f3ebd8,#e3d9bd) }
+.loc .shelftab:hover{ color:var(--text); border-color:var(--loc-brass-dim) }
 .loc .shelftab.on{
-  color:var(--loc-green); font-weight:700; padding-bottom:13px; margin-bottom:-3px;
-  background:linear-gradient(180deg, #fffaef, #f4ecd9);
+  color:var(--text); font-weight:700; padding-bottom:13px; margin-bottom:-3px;
+  background:var(--panel); border-color:var(--loc-brass-dim);
   box-shadow:0 -2px 0 var(--loc-brass) inset;
 }
 .loc .shelfcount{
-  font:11px/1 ui-monospace,Menlo,monospace; letter-spacing:0; color:var(--loc-ink-soft);
-  background:rgba(169,135,63,.16); border:1px solid rgba(169,135,63,.3);
+  font:11px/1 ui-monospace,Menlo,monospace; letter-spacing:0; color:var(--muted);
+  background:rgba(176,141,74,.12); border:1px solid var(--loc-brass-dim);
   border-radius:99px; padding:2px 7px;
 }
-.loc .shelftab.on .shelfcount{ color:var(--loc-green); border-color:rgba(31,64,53,.35) }
+.loc .shelftab.on .shelfcount{ color:var(--loc-brass) }
 
 /* The reading room itself. */
 .loc .locroom{
-  background:linear-gradient(180deg, rgba(255,251,240,.9), rgba(246,239,222,.9));
-  border:1px solid rgba(169,135,63,.45); border-radius:4px 12px 12px 12px;
-  padding:20px 22px 22px; box-shadow:0 10px 30px rgba(42,35,24,.12);
+  background:var(--panel); border:1px solid var(--loc-brass-dim);
+  border-radius:4px 12px 12px 12px; padding:20px 22px 22px; box-shadow:var(--shadow);
 }
-.loc .lochead{ border-bottom:3px double rgba(169,135,63,.5); margin:0 0 16px; padding-bottom:10px }
+.loc .lochead{ border-bottom:3px double var(--loc-brass-dim); margin:0 0 16px; padding-bottom:10px }
 .loc .lochead h2{
-  font-family:Georgia,'Iowan Old Style','Times New Roman',serif; color:var(--loc-green);
+  font-family:Georgia,'Iowan Old Style','Times New Roman',serif; color:var(--text);
   letter-spacing:.1em; text-transform:uppercase; font-size:17px; margin:0;
 }
-.loc .lochead p{ margin:4px 0 0; color:var(--loc-ink-soft); font-size:13px }
+.loc .lochead p{ margin:4px 0 0; color:var(--muted); font-size:13px }
 
-/* Cards inside the room read as filed sheets, not as panels on a dark dashboard. */
-.loc .card{
-  background:rgba(255,252,243,.82); border:1px solid rgba(169,135,63,.34);
-  border-radius:6px; box-shadow:0 1px 0 rgba(255,255,255,.7) inset, 0 4px 14px rgba(42,35,24,.07);
-}
-.loc h2, .loc h3{ font-family:Georgia,'Iowan Old Style','Times New Roman',serif; color:var(--loc-green) }
-.loc .sub, .loc .note{ color:var(--loc-ink-soft) }
+/* Cards inside the room sit ON the room, so they take the page's second surface rather than the
+   same one -- otherwise a card on a panel of its own colour has no edge. */
+.loc .locroom .card{ background:var(--panel2); border-color:var(--line) }
+.loc h2, .loc h3{ font-family:Georgia,'Iowan Old Style','Times New Roman',serif }
 .loc .eyebrow{ color:var(--loc-brass) }
 .loc table th{
-  color:var(--loc-green); border-bottom-color:rgba(169,135,63,.45);
-  letter-spacing:.09em; font-family:Georgia,'Iowan Old Style','Times New Roman',serif;
+  border-bottom-color:var(--loc-brass-dim); letter-spacing:.09em;
+  font-family:Georgia,'Iowan Old Style','Times New Roman',serif;
 }
-.loc table td{ border-bottom-color:rgba(169,135,63,.2) }
-.loc tr.click:hover{ background:rgba(169,135,63,.1) }
-.loc .empty{ color:var(--loc-ink-soft); border-color:rgba(169,135,63,.35) }
-.loc .chip{
-  background:rgba(169,135,63,.14); border:1px solid rgba(169,135,63,.34); color:var(--loc-ink-soft);
-}
-.loc details summary{ color:var(--loc-ink) }
-.loc a{ color:var(--loc-ox) }
-/* The one thing the ornament must not touch. A gain stays green and a loss stays red, read off
-   the desk's own variables, whatever the parchment around them is doing. */
-.loc [style*="var(--pos)"], .loc [style*="var(--neg)"]{ filter:none }
 @media (max-width:640px){
   .loc .locplate{ padding:18px 16px 14px }
   .loc .locplate::before{ width:180px; top:-62px }
   .loc .locroom{ padding:16px 14px 18px; border-radius:4px 10px 10px 10px }
   .loc .shelftab{ padding:8px 11px 9px; font-size:11.5px }
 }
-
-/* The news-flow percentage on Sven's table: a button that reads as a figure, because it IS the
-   figure -- styling it as a link would suggest it navigates away rather than opening what it is
-   made of. */
-.flowpct{font:inherit;font-size:12px;font-variant-numeric:tabular-nums;cursor:pointer;
-  background:transparent;border:1px solid var(--line);border-radius:6px;padding:2px 7px;
-  color:var(--muted);margin-top:3px}
-.flowpct:hover{color:var(--text);border-color:var(--accent)}
