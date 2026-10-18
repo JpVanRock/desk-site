@@ -1865,53 +1865,84 @@ const KIND_LOOK = { asset_class: 'Asset class', sector: 'Sector', theme: 'Theme'
 // THAT date rather than against today's -- a trail drawn with hindsight's baseline would move for
 // reasons the flock never saw. The heavy marker is the flock's centre of mass.
 function murmuration(rows, labelOf, kindOf) {
-  const pts = rows.filter(r => r.attention_pctile !== null && r.price_1m !== null);
-  if (pts.length < 4) return '<div class="empty">Not enough measured narratives to draw the flock.</div>';
-  const W = 860, Hh = 430, pad = { l: 52, r: 16, t: 18, b: 44 };
-  const rets = pts.flatMap(r => [+r.price_1m, ...(Array.isArray(r.trail) ? r.trail.map(t => t.price_1m).filter(v => v !== null && v !== undefined).map(Number) : [])]);
-  const lim = Math.max(0.05, Math.max(...rets.map(Math.abs)) * 1.1);
+  const all = rows.filter(r => r.attention_pctile !== null && r.price_1m !== null);
+  if (all.length < 4) return '<div class="empty">Not enough measured narratives to draw the flock.</div>';
+  // THIRTY-TWO BIRDS WITH THIRTY-TWO TRAILS IS A TANGLE, NOT A FLOCK. The first version drew
+  // every narrative at equal weight and the picture was unreadable: the shape the metaphor is
+  // supposed to show was buried under its own detail. Only the ten most talked-about are drawn
+  // in full, with labels and paths. The rest stay on as faint dots, because the flock's shape
+  // comes from all of it and dropping them would move the centre of mass -- but they are context,
+  // not content, and nothing asks the eye to read them.
+  const TOP = 10;
+  const ranked = all.slice().sort((a, b) => (a.attention_rank ?? 9e9) - (b.attention_rank ?? 9e9));
+  const lead = ranked.slice(0, TOP), rest = ranked.slice(TOP);
+  const W = 880, Hh = 460, pad = { l: 58, r: 150, t: 20, b: 46 };
+  const rets = all.flatMap(r => [+r.price_1m, ...(Array.isArray(r.trail) ? r.trail.map(t => t.price_1m).filter(v => v !== null && v !== undefined).map(Number) : [])]);
+  const lim = Math.max(0.05, Math.max(...rets.map(Math.abs)) * 1.08);
   const X = v => pad.l + v * (W - pad.l - pad.r);
   const Y = v => pad.t + (1 - (v + lim) / (2 * lim)) * (Hh - pad.t - pad.b);
-  const marker = (kind, x, y, tone, op) => kind === 'sector'
-    ? `<rect x="${(x - 3.2).toFixed(1)}" y="${(y - 3.2).toFixed(1)}" width="6.4" height="6.4" fill="${tone}" opacity="${op}"/>`
+  const marker = (kind, x, y, tone, op, scale = 1) => kind === 'sector'
+    ? `<rect x="${(x - 3.6 * scale).toFixed(1)}" y="${(y - 3.6 * scale).toFixed(1)}" width="${(7.2 * scale).toFixed(1)}" height="${(7.2 * scale).toFixed(1)}" fill="${tone}" opacity="${op}"/>`
     : kind === 'theme'
-      ? `<path d="M${x.toFixed(1)} ${(y - 4).toFixed(1)}L${(x + 3.8).toFixed(1)} ${(y + 3).toFixed(1)}L${(x - 3.8).toFixed(1)} ${(y + 3).toFixed(1)}Z" fill="${tone}" opacity="${op}"/>`
-      : `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.6" fill="${tone}" opacity="${op}"/>`;
-  // Only the busiest handful are labelled. Thirty-two labels on one chart is not a flock, it is a
-  // list with a background.
-  const named = pts.slice().sort((a, b) => (a.attention_rank ?? 99) - (b.attention_rank ?? 99)).slice(0, 6).map(r => r.narrative);
+      ? `<path d="M${x.toFixed(1)} ${(y - 4.4 * scale).toFixed(1)}L${(x + 4.2 * scale).toFixed(1)} ${(y + 3.3 * scale).toFixed(1)}L${(x - 4.2 * scale).toFixed(1)} ${(y + 3.3 * scale).toFixed(1)}Z" fill="${tone}" opacity="${op}"/>`
+      : `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(4 * scale).toFixed(1)}" fill="${tone}" opacity="${op}"/>`;
   const com = w => {
-    const v = pts.map(r => w === 0 ? { a: +r.attention_pctile, p: +r.price_1m }
+    const v = all.map(r => w === 0 ? { a: +r.attention_pctile, p: +r.price_1m }
       : (() => { const t = (r.trail || []).find(x => x.weeks_ago === w); return t && t.attention_pctile !== null && t.price_1m !== null ? { a: +t.attention_pctile, p: +t.price_1m } : null; })()).filter(Boolean);
     return v.length ? { a: v.reduce((s, x) => s + x.a, 0) / v.length, p: v.reduce((s, x) => s + x.p, 0) / v.length, n: v.length } : null;
   };
   const coms = [12, 8, 4, 0].map(w => ({ w, c: com(w) })).filter(x => x.c);
-  return `<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto" role="img" aria-label="Narrative attention against proxy return, with each narrative's path over the last twelve weeks">
-    <rect x="${X(0.5)}" y="${pad.t}" width="${W - pad.r - X(0.5)}" height="${(Hh - pad.t - pad.b) / 2}" fill="var(--pos)" opacity="0.035"/>
-    <rect x="${X(0.5)}" y="${pad.t + (Hh - pad.t - pad.b) / 2}" width="${W - pad.r - X(0.5)}" height="${(Hh - pad.t - pad.b) / 2}" fill="var(--neg)" opacity="0.045"/>
-    <line x1="${pad.l}" y1="${Y(0)}" x2="${W - pad.r}" y2="${Y(0)}" stroke="var(--line)"/>
+
+  // Labels are placed by walking down the right-hand gutter in order of where each bird sits, so
+  // two narratives at the same height do not print on top of each other. A leader line joins the
+  // label to its bird, which is what makes the gutter readable rather than a detached list.
+  const placed = [];
+  const LINE = 15;
+  for (const r of lead.slice().sort((a, b) => Y(+a.price_1m) - Y(+b.price_1m))) {
+    let y = Y(+r.price_1m);
+    if (placed.length && y - placed[placed.length - 1].y < LINE) y = placed[placed.length - 1].y + LINE;
+    placed.push({ r, y: Math.min(y, Hh - pad.b - 2) });
+  }
+
+  return `<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto" role="img" aria-label="The ten most talked-about narratives, placed by attention against their proxy's monthly return, each with its path over the last twelve weeks">
+    <rect x="${X(0.5)}" y="${pad.t}" width="${(W - pad.r - X(0.5)).toFixed(1)}" height="${((Hh - pad.t - pad.b) / 2).toFixed(1)}" fill="var(--pos)" opacity="0.04"/>
+    <rect x="${X(0.5)}" y="${(pad.t + (Hh - pad.t - pad.b) / 2).toFixed(1)}" width="${(W - pad.r - X(0.5)).toFixed(1)}" height="${((Hh - pad.t - pad.b) / 2).toFixed(1)}" fill="var(--neg)" opacity="0.05"/>
+    <line x1="${pad.l}" y1="${Y(0)}" x2="${(W - pad.r).toFixed(1)}" y2="${Y(0)}" stroke="var(--line)"/>
     <line x1="${X(0.5)}" y1="${pad.t}" x2="${X(0.5)}" y2="${Hh - pad.b}" stroke="var(--line)" stroke-dasharray="3 3"/>
-    ${[-lim, -lim / 2, 0, lim / 2, lim].map(v => `<text x="${pad.l - 7}" y="${(Y(v) + 3.5).toFixed(1)}" font-size="10" text-anchor="end" fill="var(--muted)">${(v * 100).toFixed(0)}%</text>`).join('')}
-    ${[0, 0.25, 0.5, 0.75, 1].map(v => `<text x="${X(v).toFixed(1)}" y="${Hh - pad.b + 14}" font-size="10" text-anchor="middle" fill="var(--muted)">${(v * 100).toFixed(0)}%</text>`).join('')}
-    <text x="${X(0.5).toFixed(1)}" y="${Hh - 6}" font-size="10" text-anchor="middle" fill="var(--muted)">attention, as a percentile of each narrative's own year →</text>
+    ${[-lim, -lim / 2, 0, lim / 2, lim].map(v => `<text x="${pad.l - 8}" y="${(Y(v) + 3.5).toFixed(1)}" font-size="10" text-anchor="end" fill="var(--muted)">${(v * 100).toFixed(0)}%</text>`).join('')}
+    ${[0, 0.5, 1].map(v => `<text x="${X(v).toFixed(1)}" y="${Hh - pad.b + 15}" font-size="10" text-anchor="middle" fill="var(--muted)">${v === 0 ? 'quiet' : v === 1 ? 'loudest' : 'its own normal'}</text>`).join('')}
+    <text x="${X(0.5).toFixed(1)}" y="${Hh - 8}" font-size="10" text-anchor="middle" fill="var(--muted)">attention, against each narrative's own year →</text>
     <text x="14" y="${(pad.t + 10).toFixed(1)}" font-size="10" fill="var(--muted)">proxy, 1 month</text>
-    <text x="${(W - pad.r - 6).toFixed(1)}" y="${(pad.t + 12).toFixed(1)}" font-size="10" text-anchor="end" fill="var(--pos)">gathering</text>
-    <text x="${(W - pad.r - 6).toFixed(1)}" y="${(Hh - pad.b - 6).toFixed(1)}" font-size="10" text-anchor="end" fill="var(--neg)">crowding</text>
-    <text x="${(pad.l + 6).toFixed(1)}" y="${(pad.t + 12).toFixed(1)}" font-size="10" fill="var(--flat)">unwatched</text>
-    <text x="${(pad.l + 6).toFixed(1)}" y="${(Hh - pad.b - 6).toFixed(1)}" font-size="10" fill="var(--muted)">dispersing</text>
-    ${pts.map(r => {
+    <text x="${(W - pad.r - 8).toFixed(1)}" y="${(pad.t + 13).toFixed(1)}" font-size="10" text-anchor="end" fill="var(--pos)">gathering ↗</text>
+    <text x="${(W - pad.r - 8).toFixed(1)}" y="${(Hh - pad.b - 7).toFixed(1)}" font-size="10" text-anchor="end" fill="var(--neg)">crowding ↘</text>
+    <text x="${(pad.l + 6).toFixed(1)}" y="${(pad.t + 13).toFixed(1)}" font-size="10" fill="var(--flat)">unwatched</text>
+    <text x="${(pad.l + 6).toFixed(1)}" y="${(Hh - pad.b - 7).toFixed(1)}" font-size="10" fill="var(--muted)">dispersing</text>
+
+    ${rest.map(r => marker(kindOf(r.narrative), X(+r.attention_pctile), Y(+r.price_1m), 'var(--muted)', 0.2, 0.62)).join('')}
+
+    ${lead.map(r => {
       const tone = (FLOCK_LOOK[r.state] || { tone: 'var(--muted)' }).tone;
       const tr = (Array.isArray(r.trail) ? r.trail : []).filter(t => t.attention_pctile !== null && t.price_1m !== null)
         .slice().sort((a, b) => b.weeks_ago - a.weeks_ago);
-      const path = tr.length < 2 ? '' : `<path d="${tr.map((t, i) => `${i ? 'L' : 'M'}${X(+t.attention_pctile).toFixed(1)} ${Y(+t.price_1m).toFixed(1)}`).join('')}" fill="none" stroke="${tone}" stroke-width="1.2" opacity="0.38"/>`;
-      const ghosts = tr.slice(0, -1).map(t => marker(kindOf(r.narrative), X(+t.attention_pctile), Y(+t.price_1m), tone, 0.22)).join('');
-      const x = X(+r.attention_pctile), y = Y(+r.price_1m);
-      const lbl = named.includes(r.narrative)
-        ? `<text x="${(x + 7).toFixed(1)}" y="${(y + 3.5).toFixed(1)}" font-size="10" fill="var(--text)">${esc(labelOf(r.narrative))}</text>` : '';
-      return `${path}${ghosts}<g><title>${esc(labelOf(r.narrative))} — ${esc(r.state_note || '')}</title>${marker(kindOf(r.narrative), x, y, tone, 0.95)}</g>${lbl}`;
+      const path = tr.length < 2 ? '' : `<path d="${tr.map((t, i) => `${i ? 'L' : 'M'}${X(+t.attention_pctile).toFixed(1)} ${Y(+t.price_1m).toFixed(1)}`).join('')}" fill="none" stroke="${tone}" stroke-width="1.5" opacity="0.4" stroke-linecap="round"/>`;
+      // Only the oldest point of the trail is marked, so the eye reads a direction of travel
+      // rather than a string of beads.
+      const tail = tr.length > 1 ? marker(kindOf(r.narrative), X(+tr[0].attention_pctile), Y(+tr[0].price_1m), tone, 0.3, 0.5) : '';
+      return `${path}${tail}<g><title>${esc(labelOf(r.narrative))} — ${esc(r.state_note || '')}</title>${marker(kindOf(r.narrative), X(+r.attention_pctile), Y(+r.price_1m), tone, 0.95)}</g>`;
     }).join('')}
-    ${coms.length < 2 ? '' : `<path d="${coms.map((c, i) => `${i ? 'L' : 'M'}${X(c.c.a).toFixed(1)} ${Y(c.c.p).toFixed(1)}`).join('')}" fill="none" stroke="var(--accent)" stroke-width="2.4" opacity="0.75" stroke-dasharray="5 3"/>`}
-    ${coms.map((c, i) => `<circle cx="${X(c.c.a).toFixed(1)}" cy="${Y(c.c.p).toFixed(1)}" r="${i === coms.length - 1 ? 6.5 : 3.5}" fill="none" stroke="var(--accent)" stroke-width="${i === coms.length - 1 ? 2.4 : 1.4}" opacity="${i === coms.length - 1 ? 1 : 0.5}"><title>Flock centre, ${c.w === 0 ? 'today' : c.w + ' weeks ago'}</title></circle>`).join('')}
+
+    ${coms.length < 2 ? '' : `<path d="${coms.map((c, i) => `${i ? 'L' : 'M'}${X(c.c.a).toFixed(1)} ${Y(c.c.p).toFixed(1)}`).join('')}" fill="none" stroke="var(--accent)" stroke-width="2.2" opacity="0.7" stroke-dasharray="5 3"/>`}
+    ${coms.map((c, i) => `<circle cx="${X(c.c.a).toFixed(1)}" cy="${Y(c.c.p).toFixed(1)}" r="${i === coms.length - 1 ? 6.5 : 3}" fill="none" stroke="var(--accent)" stroke-width="${i === coms.length - 1 ? 2.4 : 1.3}" opacity="${i === coms.length - 1 ? 1 : 0.45}"><title>The flock's centre, ${c.w === 0 ? 'today' : c.w + ' weeks ago'}</title></circle>`).join('')}
+    ${coms.length ? `<text x="${(X(coms.at(-1).c.a) + 10).toFixed(1)}" y="${(Y(coms.at(-1).c.p) - 9).toFixed(1)}" font-size="10" font-weight="600" fill="var(--accent)">the flock</text>` : ''}
+
+    ${placed.map(({ r, y }) => {
+      const tone = (FLOCK_LOOK[r.state] || { tone: 'var(--muted)' }).tone;
+      const x = X(+r.attention_pctile), by = Y(+r.price_1m);
+      const lx = W - pad.r + 10;
+      return `<path d="M${(x + 6).toFixed(1)} ${by.toFixed(1)}L${(lx - 5).toFixed(1)} ${y.toFixed(1)}" stroke="${tone}" stroke-width="1" opacity="0.3" fill="none"/>
+        <text x="${lx}" y="${(y + 3.5).toFixed(1)}" font-size="11" fill="var(--text)">${esc(labelOf(r.narrative).slice(0, 22))}</text>
+        <text x="${lx}" y="${(y + 13.5).toFixed(1)}" font-size="9" fill="${tone}">${esc((FLOCK_LOOK[r.state] || {}).label || '')}</text>`;
+    }).join('')}
   </svg>`;
 }
 const STANCE_CROWD = {
@@ -1983,7 +2014,8 @@ function kate() {
     <p class="note">${nReading ? esc(nReading.headline) + ' ' : ''}<b>High is not a sell.</b> A talked-about narrative can stay talked-about for a long time, which is why the state of each one matters more than the level of the gauge.</p>
     <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
       <div class="eyebrow" style="margin-bottom:4px">The murmuration</div>
-      <p class="note" style="margin:0 0 10px">A flock of starlings has no leader and no plan. Each bird watches the six or seven nearest it, and the whole thing turns as one — the turn visible in the <b>shape</b> long before it is visible in any single bird. Sentiment moves the same way, so this is the flock rather than a snapshot: each narrative sits where its attention and its proxy put it, with the faint path behind it showing where it was four, eight and twelve weeks ago. The dashed line is the flock's centre of mass on the same journey. Circles are asset classes, squares sectors, triangles themes.</p>
+      <p class="note" style="margin:0 0 10px">A flock of starlings has no leader and no plan. Each bird watches the six or seven nearest it, and the whole thing turns as one — the turn visible in the <b>shape</b> long before it is visible in any single bird. Sentiment moves the same way, so this is the flock rather than a snapshot. Across is how unusual a narrative's attention is for itself; up is what its tradeable proxy did over the month. The trail behind each bird is where it sat four, eight and twelve weeks ago, so the direction of travel is the point rather than the position.</p>
+      <p class="note" style="margin:0 0 10px"><b>Only the ten most talked-about are drawn in full.</b> All ${flock.length} are still in the picture as faint dots, because the flock's shape — and the centre of mass on the dashed line — comes from every one of them, and leaving any out would move it. But thirty-two labelled birds with thirty-two trails is a tangle rather than a flock, and the ten that carry the attention are the ten worth reading. Circles are asset classes, squares sectors, triangles themes.</p>
       ${murmuration(flock, labelOf, kindOf)}
       <p class="note">Each trail point's percentile is computed against the year that preceded <b>that date</b>, not against today's — a trail drawn with hindsight's baseline would move for reasons the flock never saw. Hover a bird for what it is doing and why.</p>
     </div>

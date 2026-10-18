@@ -1210,6 +1210,18 @@ if (!argRoute) {
     const labelBySlug = Object.fromEntries(taxonomy.map(t => [t.slug, t.label]));
     for (const r of nar.slice(0, 5)) need(k.includes(labelBySlug[r.narrative]), `[kate] ${labelBySlug[r.narrative]} is in the top five by attention but is not on the page`);
     need(/murmuration|flock/i.test(k), '[kate] the flock is not described on the page');
+    // Readability: thirty-two labelled birds with thirty-two trails was a tangle. Ten are drawn
+    // in full; the rest stay as faint dots so the centre of mass is still the whole flock's.
+    const svg = (k.match(/<svg[^>]*aria-label="The ten most[\s\S]*?<\/svg>/) || [''])[0];
+    need(svg, '[kate] the murmuration did not render');
+    const labelled = [...svg.matchAll(/<text x="[\d.]+" y="[\d.]+" font-size="11" fill="var\(--text\)">/g)].length;
+    need(labelled > 0 && labelled <= 10, `[kate] the flock labels ${labelled} narratives; at most ten should be drawn in full`);
+    const trails = [...svg.matchAll(/<path d="M[\d.]+ [\d.]+L[^"]*" fill="none" stroke="var\(--[a-z]+\)" stroke-width="1.5"/g)].length;
+    need(trails <= 10, `[kate] ${trails} trails are drawn; only the leading ten should have one`);
+    // The faint rest must still be present, or the centre of mass is being computed from a
+    // different flock than the one shown.
+    need(/opacity="0.2"/.test(svg), '[kate] the narratives outside the top ten were dropped from the picture entirely');
+    say(` ok  kate murmuration       -> ${labelled} labelled, ${trails} trails, remainder kept as context`);
     need(/Wikipedia/.test(k) && /StockTwits/.test(k), '[kate] the page does not say which public sources the attention came from');
     // The per-security crowding still runs: it is what the desk's OWN holdings are read against,
     // one section down, and its ranking has to be a ranking.
