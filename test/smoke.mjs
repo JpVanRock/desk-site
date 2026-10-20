@@ -1033,7 +1033,7 @@ if (!argRoute) {
     const a = app();
     for (const want of ['Decision quality', 'Calibration', 'Fielding', 'Kill criteria held', 'Dissent'])
       need(a.includes(want), `[dq] the ${want} block is missing from Annie's tab`);
-    const dq = await rest('latest_annie_decision_quality', 'scope,strategy_id,n_scored,brier,n_fielded,win_skill_share,loss_skill_share,fielding_gap,n_breached,n_honoured');
+    const dq = await rest('latest_annie_decision_quality', 'scope,strategy_id,n_scored,brier,n_fielded,win_skill_share,loss_skill_share,fielding_gap,n_breached,n_honoured,cum_selection,helped_share');
     need(dq.length > 0, '[dq] no decision-quality readings at all');
     const firm = dq.find(x => x.scope === 'firm');
     need(firm, '[dq] there is no firm-wide reading');
@@ -1057,6 +1057,15 @@ if (!argRoute) {
     // An unstarted measure must explain itself rather than render blank.
     if (firm && !firm.n_scored) need(/cannot be backfilled/.test(a), '[dq] calibration has not started and the page does not say why it is empty');
     need(/computed, not asked/.test(a), '[dq] the page does not say the fielding is computed rather than surveyed');
+    // Firm-wide must count decisions, not rows. One fund exited on one date appears once per
+    // model that held it, so counting rows weights a decision by how many models owned it.
+    const revRows = await rest('latest_annie_trade_reviews', 'ticker,exit_date,fielded');
+    const distinct = new Set(revRows.filter(x => x.fielded).map(x => `${x.ticker}|${x.exit_date}`)).size;
+    need(+firm.n_fielded === distinct, `[dq] firm-wide fielded ${firm.n_fielded} but there are ${distinct} distinct decisions`);
+    // The gap says how results were attributed; these say whether the choosing paid.
+    need(firm.cum_selection !== null && firm.helped_share !== null, '[dq] the edge measures are missing');
+    need(+firm.helped_share >= 0 && +firm.helped_share <= 1, `[dq] helped_share ${firm.helped_share} is not a share`);
+    need(/whether the choosing paid/.test(a), '[dq] the page does not distinguish attribution from edge');
     say(` ok  decision quality       -> ${dq.length} readings, ${firm.n_fielded} trades fielded, gap ${firm.fielding_gap === null ? '—' : (+firm.fielding_gap * 100).toFixed(0) + 'pt'}, ${bad.length} problems`);
 
     // The journal entry form must collect the three things that can never be backfilled.
