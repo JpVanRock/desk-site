@@ -984,7 +984,11 @@ if (!argRoute) {
       '[sandbox] the fingerprint is above the Regimes pie rather than below both pies');
     say(` ok  sandbox fingerprint    -> radar and sector table render on arrival, no Test needed`);
     await click('[data-satest]', { satest: '1' });
-    await sleep(2500);                                  // the price fetch is a real round trip
+    // Waits for the figure rather than for a fixed interval. A flat 2500ms was enough until the
+    // suite grew another price fetch to contend with, and then this failed intermittently --
+    // which is the worst kind of test, because the failure says the feature is broken when the
+    // only thing that was broken is the clock.
+    for (let i = 0; i < 48 && !/YTD return<\/span><br><b/.test(app()); i++) await sleep(250);
     const tested = app();
     const ytd = (tested.match(/YTD return<\/span><br><b[^>]*>([+-][\d.]+)%/) || [])[1];
     const vol = (tested.match(/Volatility<\/span><br><b[^>]*>([\d.]+)%/) || [])[1];
@@ -1199,6 +1203,21 @@ if (!argRoute) {
       need(/No intraday bars yet|Not enough intraday bars/.test(day), '[markets] the one-day window with no bars does not explain itself');
     }
     await click('[data-perf]', { perf: '1M' });
+    // The volatility panel sits under the performance chart and follows its window.
+    await click('[data-perf]', { perf: 'YTD' });
+    for (let i = 0; i < 40 && /Loading volatility history/.test(app()); i++) await sleep(250);
+    const vol = app();
+    need(/<div class="phead">Volatility<\/div>/.test(vol), '[markets] the volatility panel is missing');
+    need(!/Loading volatility history/.test(vol), '[markets] the volatility panel never finished loading');
+    const volLines = ['VIX', 'OVX · oil', 'GVZ · gold', 'VXN · Nasdaq'].filter(l => vol.includes(l));
+    need(volLines.length === 4, `[markets] only ${volLines.length} of 4 volatility indices are drawn`);
+    need(/TLT realised/.test(vol), '[markets] the realised Treasury line is missing from the volatility panel');
+    need(/MOVE is not here/.test(vol), '[markets] the volatility panel does not say why MOVE is absent');
+    // Levels, not rebased: a line labelled VIX must carry a plausible index level.
+    const vixEnd = (vol.match(/>VIX ([\d.]+)</) || [])[1];
+    need(vixEnd !== undefined, '[markets] the VIX line has no end label');
+    if (vixEnd !== undefined) need(+vixEnd > 5 && +vixEnd < 90, `[markets] a VIX of ${vixEnd} is not an index level`);
+    say(` ok  markets volatility     -> ${volLines.length} indices plus realised TLT, VIX ends at ${vixEnd ?? '—'}`);
     say(` ok  markets wall           -> panels render, ${labelled.length} lines on the chart, TLT realised vol ${rv ?? '—'}%, ${ytdLen} paths`);
     await click('[data-perf]', { perf: 'YTD' });
   }

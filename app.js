@@ -1085,6 +1085,49 @@ async function loadPerfIntraday() {
   if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
 }
 
+// The volatility panel under the performance chart. These are FRED index LEVELS, not tradeable
+// securities, so they come from macro_observations rather than market_data and are plotted as
+// levels rather than rebased to zero -- a VIX of 16 means something on its own, where SPY at 763
+// does not, and normalising them would throw away the only thing they say.
+//
+// MOVE IS NOT HERE, and it is the one the owner asked for first. It is ICE BofA's index, no
+// connected source publishes it, and there is no honest way to draw a line labelled MOVE. What
+// stands in its place is realised Treasury volatility computed from the desk's own TLT closes --
+// labelled realised, dashed rather than solid, so it never reads as another implied index.
+const VOL_SERIES = [
+  ['VIXCLS', 'VIX', '#4ea1ff'],
+  ['OVXCLS', 'OVX · oil', '#fb923c'],
+  ['GVZCLS', 'GVZ · gold', '#fbbf24'],
+  ['VXNCLS', 'VXN · Nasdaq', '#a78bfa'],
+];
+let volSeries = null, volLoading = false, volError = null;
+
+async function loadVolSeries() {
+  if (volSeries || volLoading) return;
+  volLoading = true;
+  try {
+    const codes = VOL_SERIES.map(v => v[0]);
+    const meta = await q(sb.from('macro_series').select('id,series_id').in('series_id', codes));
+    const out = {};
+    for (const m of meta) {
+      const obs = [];
+      for (let from = 0; from < 1800; from += 900) {
+        const page = await q(sb.from('macro_observations').select('obs_date,value,vintage_date')
+          .eq('series_id', m.id).order('obs_date', { ascending: false }).range(from, from + 899));
+        for (const o of page) obs.push(o);
+        if (page.length < 900) break;
+      }
+      // One value per date: the newest vintage wins, which is the figure that stood last.
+      const byDate = new Map();
+      for (const o of obs) { if (o.value === null) continue; if (!byDate.has(o.obs_date)) byDate.set(o.obs_date, +o.value); }
+      out[m.series_id] = [...byDate.entries()].map(([d, v]) => ({ d, v })).sort((a, b) => a.d.localeCompare(b.d));
+    }
+    volSeries = out;
+  } catch (ex) { volError = ex.message; }
+  volLoading = false;
+  if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
+}
+
 // Annualised volatility of the last n daily returns. Used for the bond-volatility line that
 // stands in for MOVE, and said out loud to be realised rather than implied.
 function realisedVol(series, n = 30) {
@@ -1238,6 +1281,65 @@ function markets() {
     return `<div class="card panel"><div class="phead">Normalised performance</div>${inner}</div>`;
   })();
 
+  // ---- volatility, on the same window as the chart above it ----
+  const volCard = (() => {
+    if (!volSeries && !volLoading && !volError) setTimeout(loadVolSeries, 0);
+    const inner = (() => {
+      if (volError) return `<div class="empty">Could not load volatility history: ${esc(volError)}</div>`;
+      if (!volSeries) return `<div class="empty">Loading volatility history…</div>`;
+      // The window follows the performance chart, so the two read as one story. One day is not
+      // offered: these are daily FRED series and a single session is one point per line.
+      const want = PERF_WINDOWS.find(w => w[0] === perfPeriod) || PERF_WINDOWS.find(w => w[0] === 'YTD');
+      const base = volSeries.VIXCLS || [];
+      if (!base.length) return '<div class="empty">No volatility history loaded.</div>';
+      const endD = base.at(-1).d;
+      const startD = perfPeriod === '1D' ? base[Math.max(0, base.length - 11)].d
+        : want[1] === null ? `${+endD.slice(0, 4) - 1}-12-31`
+        : base[Math.max(0, base.length - 1 - want[1])].d;
+      const lines = VOL_SERIES.map(([code, label, tone]) => {
+        const pts = (volSeries[code] || []).filter(x => x.d >= startD);
+        return pts.length > 1 ? { code, label, tone, pts } : null;
+      }).filter(Boolean);
+      // Realised Treasury volatility, as a percentage, on the same axis -- it is a volatility in
+      // the same units as an implied index once annualised, which is the only reason the two can
+      // share a panel. Dashed, so it never reads as another implied index.
+      const tlt = perfSeries && perfSeries.TLT ? perfSeries.TLT.filter(x => x.d >= startD) : [];
+      const realised = [];
+      if (tlt.length > 32) {
+        for (let i = 30; i < tlt.length; i++) {
+          const v = realisedVol(tlt.slice(0, i + 1), 30);
+          if (v !== null) realised.push({ d: tlt[i].d, v: v * 100 });
+        }
+      }
+      if (!lines.length) return '<div class="empty">Not enough volatility history for this window.</div>';
+      const all = [...lines.flatMap(l => l.pts.map(p => p.v)), ...realised.map(p => p.v)];
+      const lo = 0, hi = Math.max(...all) * 1.08;
+      const W = 820, Hh = 300, pad = { l: 10, r: 112, t: 16, b: 28 };
+      const dates = lines[0].pts.map(p => p.d);
+      const X = d => { const i = dates.indexOf(d); const j = i >= 0 ? i : Math.round((Date.parse(d) - Date.parse(dates[0])) / Math.max(1, Date.parse(dates.at(-1)) - Date.parse(dates[0])) * (dates.length - 1)); return pad.l + (j / Math.max(1, dates.length - 1)) * (W - pad.l - pad.r); };
+      const Y = v => pad.t + (1 - (v - lo) / Math.max(1e-6, hi - lo)) * (Hh - pad.t - pad.b);
+      const path = pts => pts.map((p, i) => `${i ? 'L' : 'M'}${X(p.d).toFixed(1)} ${Y(p.v).toFixed(1)}`).join('');
+      const ticks = [0, hi / 2, hi].map(v => `<line x1="${pad.l}" y1="${Y(v).toFixed(1)}" x2="${W - pad.r}" y2="${Y(v).toFixed(1)}" stroke="var(--line)"/><text x="${W - pad.r + 6}" y="${(Y(v) + 3.5).toFixed(1)}" font-size="10" fill="var(--muted)">${v.toFixed(0)}</text>`).join('');
+      // End labels, walked apart so two lines at the same level do not print on top of each other.
+      const ends = [...lines.map(l => ({ label: l.label, tone: l.tone, v: l.pts.at(-1).v, dash: false })),
+        ...(realised.length ? [{ label: 'TLT realised', tone: 'var(--muted)', v: realised.at(-1).v, dash: true }] : [])]
+        .sort((a, b) => Y(a.v) - Y(b.v));
+      let lastY = -99;
+      for (const e of ends) { let y = Y(e.v); if (y - lastY < 13) y = lastY + 13; e.y = y; lastY = y; }
+      return `<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto" role="img" aria-label="Implied volatility indices over the same window as the performance chart">
+          ${ticks}
+          ${lines.map(l => `<path d="${path(l.pts)}" fill="none" stroke="${l.tone}" stroke-width="1.7"/>`).join('')}
+          ${realised.length ? `<path d="${path(realised)}" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.9"/>` : ''}
+          ${ends.map(e => `<text x="${(W - pad.r + 30).toFixed(1)}" y="${(e.y + 3.5).toFixed(1)}" font-size="10.5" font-weight="600" fill="${e.tone}">${esc(e.label)} ${e.v.toFixed(1)}</text>`).join('')}
+          <text x="${pad.l}" y="${Hh - 6}" font-size="10" fill="var(--muted)">${esc(dates[0])}</text>
+          <text x="${(W - pad.r).toFixed(1)}" y="${Hh - 6}" font-size="10" text-anchor="end" fill="var(--muted)">${esc(dates.at(-1))}</text>
+        </svg>
+        <p class="note"><b>Levels, not rebased.</b> A VIX of 16 means something on its own where an index level does not, so these are drawn as they are — normalising them would throw away the only thing they say. The window follows the chart above${perfPeriod === '1D' ? ', except for one day: these are daily series and a single session is one point per line, so the last two weeks are shown instead' : ''}.
+        <b>MOVE is not here.</b> It is ICE BofA's index and no connected source publishes it, so rather than draw a line under its name the dashed grey is <b>realised</b> volatility of TLT over 30 sessions, annualised — a different quantity from an implied index, which is why it is dashed and why it is labelled realised.</p>`;
+    })();
+    return `<div class="card panel"><div class="phead">Volatility</div>${inner}</div>`;
+  })();
+
   // ---- the curve ----
   const yrow = (label, code) => { const m = mac(code); return `<td class="num">${m && m.value !== null ? (+m.value).toFixed(2) + '%' : '<span style="color:var(--muted)">–</span>'}</td>`; };
   const intl = [['Germany', 'IRLTLT01DEM156N'], ['United Kingdom', 'IRLTLT01GBM156N'], ['Japan', 'IRLTLT01JPM156N'], ['Italy', 'IRLTLT01ITM156N']];
@@ -1321,6 +1423,7 @@ function markets() {
     </div>
     <div class="mkcol">
       ${perfCard}
+      ${volCard}
       ${grp('US equity factors', [['MTUM', 'Momentum'], ['VLUE', 'Value'], ['QUAL', 'Quality'], ['USMV', 'Low volatility'], ['SIZE', 'Size'], ['SPY', 'Market']])}
       ${yieldsPanel}
     </div>
