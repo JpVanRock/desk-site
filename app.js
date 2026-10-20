@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -185,6 +185,7 @@ async function load() {
     qSoft(sb.from('latest_narrative_sentiment_components').select('as_of,component,label,score,status,measure,value_text,headline,how_to_supply,n'), 'narrative components'),
     qAllSoft(() => sb.from('latest_narrative_attention').select('narrative,wiki_ratio,wiki_pctile,hn_ratio,chatter_per_day,chatter_bull,chatter_tagged,attention_ratio,attention_pctile,attention_share,attention_rank,price_1m,price_3m,state,state_note,trail,n_sources,as_of'), 'narrative attention'),
     qAllSoft(() => sb.from('narratives').select('slug,label,kind,proxy_ticker,wiki_articles,hn_query,sort_order'), 'narratives'),
+    qAllSoft(() => sb.from('latest_annie_decision_quality').select('as_of,strategy_id,scope,n_scored,brier,calibration_bins,n_thresholds,n_breached,n_honoured,n_unanimous,n_contested,unanimous_worked,contested_worked,n_fielded,win_skill_share,loss_skill_share,fielding_gap,headline'), 'decision quality'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -274,7 +275,8 @@ async function load() {
     sandboxTargets: sandboxTargets || [], secDuration: secDuration || [], secFingerprint: secFingerprint || [],
     secStyle: (secStyle || []).filter(r => r.lens === 'sector'),
     crowding: crowding || [], narReading: narReading || [], narComponents: narComponents || [],
-    narAttention: narAttention || [], narratives: narratives || [] };
+    narAttention: narAttention || [], narratives: narratives || [],
+    decisionQuality: decisionQuality || [] };
 }
 
 // ---------- Views ----------
@@ -2235,6 +2237,100 @@ function kate() {
    ${gauge}${contestCard}${contrarian}${bookCard}${legend}`;
 }
 
+// ---------- Annie: decision quality, from Thinking in Bets ----------
+//
+// Four measures the dashboard had no answer for, added 2026-10-20. Three of them depend on inputs
+// the journal only began collecting that day, so they read empty until entries exist and say so
+// in those words -- "not yet started" and "broken" must never render the same way.
+//
+// The fourth, fielding, runs on 318 closed trades the desk already had, and it is COMPUTED rather
+// than asked. Duke's warning is that we field our wins into skill and our losses into luck; a
+// field asking the desk to do that sorting would measure the bias with an instrument made of the
+// bias. The trade review already holds each position's return and its excess over the benchmark,
+// which splits the result into what the asset class delivered and what came from choosing the
+// name. That split is arithmetic, and the bias shows up as a gap between winners and losers.
+function decisionQualityCard(strategyId) {
+  const rows = D.decisionQuality || [];
+  const r = strategyId ? rows.find(x => x.strategy_id === strategyId) : rows.find(x => x.scope === 'firm');
+  if (!r) return '';
+  const pc = v => v === null || v === undefined ? '—' : `${(+v * 100).toFixed(0)}%`;
+  const n = v => v === null || v === undefined ? null : +v;
+
+  // ---- calibration ----
+  const bins = Array.isArray(r.calibration_bins) ? r.calibration_bins.filter(b => b.n > 0) : [];
+  const calBlock = !bins.length ? `<div class="empty" style="margin:0">No entry has been scored yet. Calibration starts from the first journal entry that carries a confidence and a horizon and has since resolved — it <b>cannot be backfilled</b>, because a confidence recalled after the outcome is a memory of the outcome.</div>`
+    : (() => {
+      const W = 420, Hh = 220, pad = { l: 42, r: 14, t: 12, b: 34 };
+      const X = v => pad.l + (v / 100) * (W - pad.l - pad.r);
+      const Y = v => pad.t + (1 - v / 100) * (Hh - pad.t - pad.b);
+      return `<div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">
+        <svg viewBox="0 0 ${W} ${Hh}" style="width:100%;max-width:420px;height:auto" role="img" aria-label="Stated confidence against how often those calls came true">
+          <line x1="${X(0)}" y1="${Y(0)}" x2="${X(100)}" y2="${Y(100)}" stroke="var(--muted)" stroke-dasharray="4 3" opacity="0.6"/>
+          <text x="${X(72)}" y="${Y(84)}" font-size="9.5" fill="var(--muted)">perfect calibration</text>
+          ${[0, 50, 100].map(v => `<text x="${pad.l - 6}" y="${(Y(v) + 3.5).toFixed(1)}" font-size="10" text-anchor="end" fill="var(--muted)">${v}%</text>
+            <text x="${X(v).toFixed(1)}" y="${Hh - pad.b + 15}" font-size="10" text-anchor="middle" fill="var(--muted)">${v}%</text>`).join('')}
+          <text x="${X(50).toFixed(1)}" y="${Hh - 4}" font-size="10" text-anchor="middle" fill="var(--muted)">said this likely →</text>
+          ${bins.map(b => `<circle cx="${X(+b.stated).toFixed(1)}" cy="${Y(+b.realised).toFixed(1)}" r="${(3 + Math.min(7, b.n)).toFixed(1)}" fill="var(--accent)" opacity="0.75"><title>${b.n} entries around ${b.stated}% — ${b.realised}% came true</title></circle>`).join('')}
+        </svg>
+        <div style="flex:1;min-width:220px">
+          <div style="font-size:30px;font-weight:700;line-height:1">${r.brier === null ? '—' : (+r.brier).toFixed(3)}</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Brier score over ${r.n_scored} scored ${r.n_scored === 1 ? 'entry' : 'entries'}</div>
+          <p class="note" style="margin:0">Mean squared error between what was said and what happened. <b>0 is perfect; 0.25 is what you get by saying 50% to everything</b>, so anything above that is worse than a shrug. ${r.brier === null ? 'Withheld until ten entries have resolved — a Brier over a handful of calls is four coin flips wearing a decimal.' : ''}</p>
+        </div></div>`;
+    })();
+
+  // ---- fielding ----
+  const gap = n(r.fielding_gap);
+  const fieldBlock = !r.n_fielded ? `<div class="empty" style="margin:0">No closed trades to attribute yet.</div>`
+    : `<div style="display:flex;gap:26px;flex-wrap:wrap;align-items:center">
+        <div style="flex:1;min-width:260px">
+          ${[['Winners', n(r.win_skill_share), 'var(--pos)'], ['Losers', n(r.loss_skill_share), 'var(--neg)']].map(([lab, v, tone]) => `
+            <div style="margin-bottom:10px">
+              <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span>${lab}</span><b style="color:${tone}">${pc(v)} selection</b></div>
+              <div style="height:9px;border-radius:99px;background:var(--panel2);overflow:hidden">
+                <div style="width:${Math.max(1, Math.min(100, (v ?? 0) * 100)).toFixed(1)}%;height:100%;background:${tone};opacity:.8"></div></div></div>`).join('')}
+        </div>
+        <div style="min-width:170px">
+          <div style="font-size:30px;font-weight:700;line-height:1;color:${gap === null ? 'var(--muted)' : Math.abs(gap) < 0.05 ? 'var(--pos)' : 'var(--warn)'}">${gap === null ? '—' : (gap >= 0 ? '+' : '−') + Math.abs(gap * 100).toFixed(0) + 'pt'}</div>
+          <div style="font-size:12px;color:var(--muted)">fielding gap · ${r.n_fielded} trades</div></div>
+      </div>
+      <p class="note">Each closed trade is split into what its <b>asset class</b> delivered and what came from <b>choosing that name</b> over its peers — the return, and the part of it that beat the benchmark. The share is then compared between winners and losers, and it should not differ: how a result is attributed must not depend on whether it made money. ${gap === null ? '' : Math.abs(gap) < 0.05 ? 'These are the same within noise, which is what an unbiased record looks like.' : gap > 0 ? `Winners are credited to selection <b>${(gap * 100).toFixed(0)} points more</b> than losers are. That is self-serving bias with a number on it — the desk taking credit for what the tide did.` : `Losers are attributed to selection <b>${(Math.abs(gap) * 100).toFixed(0)} points more</b> than winners are. That is the <b>opposite</b> of self-serving bias, and it is worth sitting with: on this record the desk's gains came mostly from being in the right asset class, while its losses came disproportionately from the names it picked within one.`} This is computed, not asked — an opinion about luck is the first thing self-serving bias distorts.</p>`;
+
+  // ---- Ulysses contracts and dissent, side by side ----
+  const ulyBlock = !r.n_thresholds ? `<div class="empty" style="margin:0">No entry carries a loss threshold yet.</div>`
+    : `<div style="font-size:30px;font-weight:700;line-height:1">${r.n_honoured}<span style="font-size:18px;color:var(--muted)"> of ${r.n_breached}</span></div>
+      <div style="font-size:12px;color:var(--muted)">breached thresholds that were honoured, from ${r.n_thresholds} set</div>`;
+  const disBlock = !(r.n_unanimous + r.n_contested) ? `<div class="empty" style="margin:0">No entry has been read by two or more agents yet.</div>`
+    : `<div style="font-size:30px;font-weight:700;line-height:1">${r.n_contested}<span style="font-size:18px;color:var(--muted)"> of ${r.n_unanimous + r.n_contested}</span></div>
+      <div style="font-size:12px;color:var(--muted)">entries went ahead over an objection${r.n_contested ? ` — ${r.contested_worked} worked, against ${r.unanimous_worked} of ${r.n_unanimous} unanimous` : ''}</div>`;
+
+  return `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Decision quality</h2>
+      <span style="font-size:12px;color:var(--muted)">as of ${esc(r.as_of)}</span></div>
+    <p class="note" style="margin:6px 0 0">${esc(r.headline || '')}</p>
+
+    <h3 style="margin:18px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Calibration — were we as right as we said we were</h3>
+    ${calBlock}
+
+    <h3 style="margin:20px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Fielding — the tide, or the name we picked</h3>
+    ${fieldBlock}
+
+    <div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:20px">
+      <div style="flex:1;min-width:260px">
+        <h3 style="margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Kill criteria held</h3>
+        ${ulyBlock}
+        <p class="note" style="margin:8px 0 0">A loss threshold is a precommitment past-us makes to bind present-us. Its value is not the line itself but the <b>stop-and-think</b> it forces at the moment someone wants to cut the binding — so the number worth watching is never how often a threshold was hit, it is how often it was hit and respected.</p>
+      </div>
+      <div style="flex:1;min-width:260px">
+        <h3 style="margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Dissent</h3>
+        ${disBlock}
+        <p class="note" style="margin:8px 0 0">Five agents read each entry. A group is only worth having if its disagreement changes anything, so this compares how contested entries fared against unanimous ones. It is the only way to find out whether the fifth opinion is worth what it costs.</p>
+      </div>
+    </div>
+  </div>`;
+}
+
 // ---------- Sven: market internals ----------
 //
 // Two dashboards. The rule matrix is Linda Raschke's twelve technical rules evaluated nightly on
@@ -3115,7 +3211,7 @@ function annie() {
     const kpi = (lab, val, sub, title) => `<div class="card kpi" title="${esc(title)}">
       <span class="eyebrow">${esc(lab)}</span><b style="font-size:24px">${val}</b><small>${esc(sub)}</small></div>`;
 
-    return `<div class="card" style="margin-bottom:14px">
+    return `${decisionQualityCard(isOverall ? null : annieModel)}<div class="card" style="margin-bottom:14px">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
         <h2 style="margin:0">Trade review — the compliance audit</h2>
         <span style="font-size:12px;color:var(--muted)">${all.length} closed trades graded${isOverall ? ' across every model' : ''}</span></div>
@@ -4667,6 +4763,12 @@ let sbAction = 'buy';
 let sbTicker = '';
 let sbClass = null;
 let sbRationale = '';
+// Thinking in Bets, added 2026-10-20. Confidence is a NUMBER rather than a conviction, because a
+// number can be scored and a conviction cannot -- and because "58% to 46%" is a recalibration
+// where "right to wrong" is an identity threat a person fights off instead of updating.
+let sbConfidence = 60, sbHorizonDays = 90, sbPremortem = '';
+// The branches, written down before the advancing present cuts them off. Kept whole afterwards.
+let sbScenarios = [{ label: '', probability: 60 }, { label: '', probability: 40 }];
 let sbSetup = '';
 let sbSizing = null;
 let sbCustomPct = '';
@@ -4770,11 +4872,19 @@ function sandbox() {
       <p class="note" style="margin:8px 0 0">Averaging <b>−${(totalTax / 100).toFixed(2)}%</b> of model value across ${rows.length} model${rows.length === 1 ? '' : 's'}. Priced off the open FIFO lots, so the oldest slice goes first and its own age sets its rate — one sale can be part short and part long term. Losses net against gains of the same character before tax is applied. ${rows.some(x => x.t.anyOpening) ? 'Lots marked <b>*</b> were already held when the records begin, so their basis and age are the first snapshot\'s rather than the true purchase, and the gain on them is understated. ' : ''}${rows.some(x => x.t.anyEstimated) ? 'Lots marked <b>†</b> had no price on the day they were acquired, so the earliest price the security has is used as the basis — the holding period is real, the gain is indicative. ' : ''}${rows.some(x => x.t.shortOfRequest) ? 'Where the position is smaller than the size chosen, only what is held is sold. ' : ''}Estimate only, federal rates, no state tax or wash-sale adjustment.</p></div>`;
   })();
 
-  const canSubmit = sbAction && sbClass && sbRationale.trim().length > 0 && sbSetup && sbSizing && sizePct !== null && sbHorizon && sbModels.size > 0 && (sbAction === 'rebalance' || sbTicker.trim());
+  const scenTotal = sbScenarios.reduce((a, x) => a + (+x.probability || 0), 0);
+  // Scenarios are required to be complete -- labelled and summing to 100 -- because a half-filled
+  // branch list is worse than none: it looks like a record of what was considered and is not.
+  const scenOk = sbScenarios.every(x => x.label.trim()) && Math.abs(scenTotal - 100) < 0.5;
+  const canSubmit = sbAction && sbClass && sbRationale.trim().length > 0 && sbSetup && sbSizing && sizePct !== null && sbHorizon && sbModels.size > 0 && (sbAction === 'rebalance' || sbTicker.trim()) && scenOk && sbPremortem.trim().length > 0 && sbHorizonDays > 0;
   const missing = [
     sbTicker.trim() || sbAction === 'rebalance' ? '' : 'ticker',
     sbClass ? '' : 'asset class', sbRationale.trim() ? '' : 'rationale', sbSetup ? '' : 'set-up',
     sizePct === null ? 'sizing' : '', sbHorizon ? '' : 'time horizon', sbModels.size ? '' : 'at least one model',
+    sbScenarios.every(x => x.label.trim()) ? '' : 'a label on every scenario',
+    Math.abs(scenTotal - 100) < 0.5 ? '' : 'scenarios summing to 100%',
+    sbPremortem.trim() ? '' : 'premortem',
+    sbHorizonDays > 0 ? '' : 'a horizon in days',
   ].filter(Boolean);
 
   // The Grid. Scoped to this wrapper so the look cannot reach another tab, and the semantic
@@ -4820,7 +4930,30 @@ function sandbox() {
       ${radio('sbhorizon', 'strategic', sbHorizon, 'Strategic Position', 'data-sbhorizon')}
       ${radio('sbhorizon', 'trading', sbHorizon, 'Trading Position', 'data-sbhorizon')}</div>
 
-    <div style="margin-bottom:14px"><div class="eyebrow" style="margin-bottom:6px">Loss threshold <span style="color:var(--muted);text-transform:none">— Stan alerts when it is breached</span></div>
+    <div style="margin-bottom:14px"><div class="eyebrow" style="margin-bottom:6px">Confidence <span style="color:var(--muted);text-transform:none">— how likely is this to work, and by when</span></div>
+      <div style="display:flex;align-items:center;gap:12px;max-width:520px;flex-wrap:wrap">
+        <input data-sbconf type="range" min="1" max="99" step="1" value="${sbConfidence}" style="flex:1;min-width:200px;accent-color:var(--accent)">
+        <b id="sbConfOut" style="color:var(--accent);font-variant-numeric:tabular-nums;min-width:44px">${sbConfidence}%</b>
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)">over
+          <input data-sbhorizondays type="number" min="1" max="3650" value="${sbHorizonDays}" style="width:74px;padding:5px 7px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:13px"> days</label></div>
+      <p class="note" style="margin:6px 0 0">The scale stops at 1 and 99 deliberately. Nearly nothing is 0% or 100%, and offering those ends invites the all-or-nothing thinking this field exists to replace. <b>This cannot be filled in later</b> — a confidence recalled after the outcome is known is a memory of the outcome, so calibration only ever measures forward from the day it starts.</p></div>
+
+    <div style="margin-bottom:14px"><div class="eyebrow" style="margin-bottom:6px">Scenarios <span style="color:var(--muted);text-transform:none">— the futures you think are possible, before one of them happens</span></div>
+      ${sbScenarios.map((sc, i) => `<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;max-width:620px">
+        <input data-sbscenlabel="${i}" value="${esc(sc.label)}" placeholder="${i === 0 ? 'What you expect' : i === 1 ? 'What else could happen' : 'The one nobody wants'}" style="flex:1;padding:7px 9px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:13px">
+        <input data-sbscenprob="${i}" type="number" min="0" max="100" value="${sc.probability}" style="width:70px;padding:7px 9px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:13px;text-align:right">
+        <span style="color:var(--muted);font-size:13px">%</span>
+        ${sbScenarios.length > 2 ? `<button class="btn" data-sbscendel="${i}" style="padding:4px 9px;font-size:12px;background:var(--panel2);color:var(--muted)">×</button>` : ''}</div>`).join('')}
+      <div style="display:flex;gap:10px;align-items:center;margin-top:4px">
+        ${sbScenarios.length < 4 ? `<button class="btn" data-sbscenadd="1" style="padding:5px 11px;font-size:12px;background:var(--panel2);color:var(--text)">Add a branch</button>` : ''}
+        <span style="font-size:12px;color:${Math.abs(scenTotal - 100) < 0.5 ? 'var(--muted)' : 'var(--warn)'}">sums to ${scenTotal}%${Math.abs(scenTotal - 100) < 0.5 ? '' : ' — must be 100'}</span></div>
+      <p class="note" style="margin:6px 0 0">Time is a tree: one trunk of past, many branches of possible future. The advancing present acts like a chainsaw — once a branch happens, every other one is cut off and the 20% outcome looks like it was always certain. <b>These are kept whole after the fact</b>, including the ones that did not happen, because that record is the only thing hindsight has to argue with.</p></div>
+
+    <div style="margin-bottom:14px"><div class="eyebrow" style="margin-bottom:6px">Premortem <span style="color:var(--muted);text-transform:none">— it is a year from now and this failed. Why?</span></div>
+      <textarea data-sbpremortem rows="2" placeholder="Write from the failure looking back, not from today looking forward." style="width:100%;padding:8px 10px;border-radius:7px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:13px;font-family:inherit;resize:vertical">${esc(sbPremortem)}</textarea>
+      <p class="note" style="margin:6px 0 0">Imagining obstacles makes success <b>more</b> likely, not less — Oettingen's mental contrasting finds the opposite of what positive visualisation promises. Backcasting is the cheerleader; this is the heckler, and without it the space where things go right gets drawn far too large.</p></div>
+
+    <div style="margin-bottom:14px"><div class="eyebrow" style="margin-bottom:6px">Loss threshold <span style="color:var(--muted);text-transform:none">— a precommitment: Stan alerts when it is breached</span></div>
       <div style="display:flex;align-items:center;gap:12px;max-width:420px">
         <input data-sbloss type="range" min="-30" max="-1" step="1" value="${(sbLoss * 100).toFixed(0)}" style="flex:1;accent-color:var(--neg)">
         <b id="sbLossOut" style="color:var(--neg);font-variant-numeric:tabular-nums;min-width:48px">${(sbLoss * 100).toFixed(0)}%</b></div></div>
@@ -5640,6 +5773,46 @@ document.addEventListener('input', e => {
   const out = document.getElementById('sbLossOut');              // updated in place, not redrawn
   if (out) out.textContent = `${(+l.value).toFixed(0)}%`;
 });
+// Confidence updates its readout in place rather than redrawing -- a slider that rebuilt the form
+// on every pixel would lose focus mid-drag. One listener per control, because the smoke harness
+// matches a selector string exactly and a grouped selector would ship untested.
+document.addEventListener('input', e => {
+  const c = e.target.closest('[data-sbconf]'); if (!c) return;
+  sbConfidence = +c.value;
+  const out = document.getElementById('sbConfOut');
+  if (out) out.textContent = `${sbConfidence}%`;
+});
+document.addEventListener('input', e => {
+  const h = e.target.closest('[data-sbhorizondays]'); if (!h) return;
+  sbHorizonDays = Math.max(0, Math.min(3650, +h.value || 0));
+});
+document.addEventListener('input', e => {
+  const t = e.target.closest('[data-sbpremortem]'); if (!t) return;
+  sbPremortem = t.value;
+});
+document.addEventListener('input', e => {
+  const l = e.target.closest('[data-sbscenlabel]'); if (!l) return;
+  const i = +l.dataset.sbscenlabel;
+  if (sbScenarios[i]) sbScenarios[i].label = l.value;
+});
+// The probability total and the submit gate both depend on this, so it redraws on change rather
+// than on every keystroke -- the running total should settle, not flicker.
+document.addEventListener('change', e => {
+  const p = e.target.closest('[data-sbscenprob]'); if (!p) return;
+  const i = +p.dataset.sbscenprob;
+  if (sbScenarios[i]) sbScenarios[i].probability = Math.max(0, Math.min(100, +p.value || 0));
+  sbRedraw();
+});
+document.addEventListener('click', e => {
+  const a = e.target.closest('[data-sbscenadd]'); if (!a) return;
+  sbScenarios.push({ label: '', probability: 0 });
+  sbRedraw();
+});
+document.addEventListener('click', e => {
+  const d = e.target.closest('[data-sbscendel]'); if (!d) return;
+  sbScenarios.splice(+d.dataset.sbscendel, 1);
+  sbRedraw();
+});
 // The ticker and the size decide the tax estimate, so those two redraw once the field is left.
 document.addEventListener('change', e => {
   const t = e.target.closest('[data-sbsetup]'); if (!t) return;
@@ -5670,6 +5843,12 @@ function sbEntry() {
     asset_class: sbClass, rationale: sbRationale.trim(), setup: sbSetup,
     sizing: sbSizing, sizing_pct: sizePct, horizon: sbHorizon,
     loss_threshold: +sbLoss.toFixed(4), strategy_ids: ids,
+    // Written once, at the moment of deciding, and never revisited. These three are the whole
+    // reason the calibration record can exist at all -- each is unrecoverable after the fact.
+    confidence: sbConfidence, horizon_days: sbHorizonDays,
+    premortem: sbPremortem.trim() || null,
+    scenarios: sbScenarios.filter(x => x.label.trim()).map(x => ({ label: x.label.trim(), probability: +x.probability || 0 })),
+    outcome: 'open',
     // The estimate as it stood when the decision was written. Deliberately frozen: what matters
     // later is what the desk believed when it decided, not what the price did afterwards.
     tax_estimate: perModel && perModel.length ? { rates: { lt: 0.15, st: 0.24 }, per_model: perModel } : null,

@@ -1018,6 +1018,59 @@ if (!argRoute) {
   }
 
   // -------------------------------------------------------------------------
+  // 9b2. Annie's decision quality: calibration, fielding, kill criteria, dissent.
+  //      Three of the four depend on journal inputs that began on 2026-10-20, so the guard is
+  //      that an empty measure SAYS it has not started rather than rendering a blank box --
+  //      "not yet begun" and "broken" must never look the same to a reader.
+  // -------------------------------------------------------------------------
+  currentRoute = 'decision-quality';
+  await go('#annie');
+  {
+    const a = app();
+    for (const want of ['Decision quality', 'Calibration', 'Fielding', 'Kill criteria held', 'Dissent'])
+      need(a.includes(want), `[dq] the ${want} block is missing from Annie's tab`);
+    const dq = await rest('latest_annie_decision_quality', 'scope,strategy_id,n_scored,brier,n_fielded,win_skill_share,loss_skill_share,fielding_gap,n_breached,n_honoured');
+    need(dq.length > 0, '[dq] no decision-quality readings at all');
+    const firm = dq.find(x => x.scope === 'firm');
+    need(firm, '[dq] there is no firm-wide reading');
+    let bad = [];
+    for (const r of dq) {
+      // A Brier score over a handful of calls is four coin flips wearing a decimal.
+      if (r.brier !== null && r.n_scored < 10) bad.push(`${r.scope} published a Brier over ${r.n_scored} entries`);
+      if (r.brier !== null && (+r.brier < 0 || +r.brier > 1)) bad.push(`${r.scope} Brier ${r.brier} is outside 0-1`);
+      if (+r.n_honoured > +r.n_breached) bad.push(`${r.scope} honoured more thresholds than were breached`);
+      // The three numbers on the page must add up for a reader who subtracts them.
+      if (r.win_skill_share !== null && r.loss_skill_share !== null) {
+        const g = +(+r.win_skill_share - +r.loss_skill_share).toFixed(4);
+        if (Math.abs(g - +r.fielding_gap) > 1e-9) bad.push(`${r.scope} gap ${r.fielding_gap} is not ${r.win_skill_share} minus ${r.loss_skill_share}`);
+      }
+      for (const k of ['win_skill_share', 'loss_skill_share']) {
+        if (r[k] !== null && (+r[k] < 0 || +r[k] > 1)) bad.push(`${r.scope} ${k} is ${r[k]}, which is not a share`);
+      }
+    }
+    bad = [...new Set(bad)];
+    for (const b of bad) errors.push(`[dq] ${b}`);
+    // An unstarted measure must explain itself rather than render blank.
+    if (firm && !firm.n_scored) need(/cannot be backfilled/.test(a), '[dq] calibration has not started and the page does not say why it is empty');
+    need(/computed, not asked/.test(a), '[dq] the page does not say the fielding is computed rather than surveyed');
+    say(` ok  decision quality       -> ${dq.length} readings, ${firm.n_fielded} trades fielded, gap ${firm.fielding_gap === null ? '—' : (+firm.fielding_gap * 100).toFixed(0) + 'pt'}, ${bad.length} problems`);
+
+    // The journal entry form must collect the three things that can never be backfilled.
+    await go('#sandbox');
+    const sb0 = app();
+    for (const [sel, what] of [['data-sbconf', 'confidence'], ['data-sbhorizondays', 'a horizon in days'],
+                               ['data-sbscenlabel', 'scenario labels'], ['data-sbscenprob', 'scenario probabilities'],
+                               ['data-sbpremortem', 'a premortem']])
+      need(sb0.includes(sel), `[dq] the journal entry form does not collect ${what}`);
+    // Submit must be blocked while the branches do not add up -- a half-filled scenario list is
+    // worse than none, because it looks like a record of what was considered and is not.
+    need(/data-sbsubmit="1" disabled/.test(sb0), '[dq] Submit is enabled on an entry with no scenarios filled in');
+    need(/scenarios summing to 100%|a label on every scenario/.test(sb0), '[dq] the form does not say the scenarios are incomplete');
+    need(/cannot be filled in later/.test(sb0), '[dq] the confidence field does not warn that it cannot be backfilled');
+    say(` ok  journal inputs         -> confidence, horizon, scenarios and premortem all required`);
+  }
+
+  // -------------------------------------------------------------------------
   // 9c. News failure: events, the strength scale, and the flow breakdown.
   //     A failure is one headline release the price traded the wrong way, so one event is enough
   //     to reach the table. The guard that matters is that the surface figures and the list they
