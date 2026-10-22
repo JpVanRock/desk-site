@@ -1223,7 +1223,7 @@ if (!argRoute) {
   {
     const nl = app();
     need(/<h1>Hunger Games Demo<\/h1>/.test(nl), '[neil] the page is not titled Hunger Games Demo');
-    for (const want of ['The saeculum', 'Who is where', 'The arithmetic', 'Macro Hunger Games'])
+    for (const want of ['The saeculum', 'Who is where', 'The arithmetic', 'The Hunger Games'])
       need(nl.includes(want), `[neil] the ${want} section is missing`);
     need(/their dating, not a measurement/i.test(nl), '[neil] the page does not say the turnings are a framework rather than a measurement');
 
@@ -1263,9 +1263,27 @@ if (!argRoute) {
       need(/crossover has happened/i.test(nl) === crossed, '[neil] the page and the data disagree about whether the old-young crossover has happened');
       say(` ok  neil arithmetic        -> 65+ ${(+o65.value).toFixed(1)}% against under-15 ${(+u15.value).toFixed(1)}%${crossed ? ', crossed' : ''}`);
     }
-    // The Dredge section must stay empty until the concept is verified.
-    need(/Nothing is written here because nothing has been verified/i.test(nl),
-      '[neil] the Macro Hunger Games section has been filled in without the source being verified');
+    // The Hunger Games section is sourced now -- from Dredge's own written updates and a recorded
+    // meeting -- so the guard flips from "must stay empty" to "must stay honest about what is
+    // his, what is the desk's, and what was never verified at all".
+    need(/competition among sovereigns/i.test(nl), '[neil] the Hunger Games section does not state what the competition is');
+    need(/fewer taxpayers and savers/i.test(nl), '[neil] the demographic half of the thesis is missing');
+    need(/not his numbers|he is not the source/i.test(nl), '[neil] the page does not separate the desk\'s fiscal series from his argument');
+    need(/not desk guidance|not this desk's/i.test(nl), '[neil] his illustrative portfolios are not marked as his rather than the desk\'s');
+    // The figures he gave that the notes themselves flagged as unverified must never appear.
+    need(!/\$12\s*(tn|trillion)/i.test(nl) && !/\$20\s*(tn|trillion)/i.test(nl),
+      '[neil] a repo figure the meeting notes recorded as unverified has reached the page');
+    // The headline number must be the two measured halves, not a figure typed in.
+    const fiscal = await rest('current_macro_readings', 'fred_code,value,obs_date', '&fred_code=in.(GFDEBTN,GFDEGDQ188S,LFWA64TTUSM647S)');
+    need(fiscal.length === 3, `[neil] only ${fiscal.length} of 3 Hunger Games series are loaded`);
+    const debt = fiscal.find(f => f.fred_code === 'GFDEBTN'), wa = fiscal.find(f => f.fred_code === 'LFWA64TTUSM647S');
+    if (debt && wa) {
+      const per = Math.round((+debt.value * 1e6) / +wa.value);
+      need(nl.includes(per.toLocaleString()), `[neil] the debt-per-working-age figure on the page is not ${per.toLocaleString()} computed from the two series`);
+      say(` ok  neil hunger games      -> $${per.toLocaleString()} of federal debt per working-age person`);
+    }
+    const dpct = fiscal.find(f => f.fred_code === 'GFDEGDQ188S');
+    if (dpct) need(nl.includes((+dpct.value).toFixed(1) + '%'), '[neil] the debt-to-GDP figure does not match the series');
   }
 
   // -------------------------------------------------------------------------

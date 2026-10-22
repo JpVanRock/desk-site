@@ -5797,12 +5797,54 @@ function neil() {
     ${tfr !== null ? `<p class="note" style="margin-top:14px"><b>Fertility is ${tfr.toFixed(2)} against a replacement rate of ${REPLACEMENT}.</b> A country below replacement does not shrink immediately — momentum in the existing age structure carries it for decades, and migration can offset it entirely — but the shape of the pyramid is set long before the total turns. These are <b>annual series and they are revised</b>; the year beside each figure is the observation, not today.</p>` : ''}
   </div>`;
 
-  // ---- the Dredge piece, which the desk does not have ----
+  // ---- The Hunger Games ----
+  //
+  // Dredge's thesis, and the reason it sits on a demography page rather than a macro one: the
+  // scarce resource being competed for is SAVERS. A working-age population accumulates financial
+  // assets; a retired one spends them down. So a contest among sovereigns for "the dwindling
+  // marginal supply of liquidity" is, underneath, a contest for a pool demography is draining.
+  //
+  // The thesis states itself in one number -- government debt divided by the working-age people
+  // who have to absorb it -- and both halves were already on this desk.
+  //
+  // WHAT IS DELIBERATELY ABSENT. The meeting notes record repo leverage near $12tn and repo plus
+  // OCC-related exposures near $20tn, and say in the same breath that these were "presented as
+  // discussion points, not independently verified". They are not shown. His illustrative
+  // portfolios are his hypotheticals, named as his, and are not desk guidance.
+  const debtPct = v('GFDEGDQ188S'), debtAbs = v('GFDEBTN'), deficit = v('FYFSGDA188S');
+  const interestPct = v('FYOIGDA188S'), interestAbs = v('A091RC1Q027SBEA'), foreign = v('FDHBFIN');
+  const workAge = v('LFWA64TTUSM647S');
+  const perSaver = debtAbs !== null && workAge > 0 ? (debtAbs * 1e6) / workAge : null;
+  const dredgeStat = (label, val, sub, tone) => `<div style="flex:1;min-width:172px">
+    <div class="eyebrow" style="margin-bottom:3px">${esc(label)}</div>
+    <div style="font-size:26px;font-weight:700;line-height:1${tone ? `;color:${tone}` : ''}">${val}</div>
+    <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${sub}</div></div>`;
+
   const dredgeCard = `<div class="card" style="margin-bottom:14px">
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
-      <h2 style="margin:0">Macro Hunger Games</h2>
-      <span style="font-size:12px;color:var(--muted)">David Dredge · not yet captured</span></div>
-    <div class="empty" style="margin-top:10px">This section is empty on purpose. The concept comes from David Dredge of Convex Strategies on the Alpha Exchange podcast, and the episode is audio — the public page carries only a one-line blurb about his career in derivatives and convexity, and a search finds no written description of the framework anywhere. <b>Nothing is written here because nothing has been verified.</b> Two or three sentences from the owner on what Dredge means by it, or a transcript, and this becomes a real section; a paraphrase assembled from the title would be an invention wearing his name.</div>
+      <h2 style="margin:0">The Hunger Games</h2>
+      <span style="font-size:12px;color:var(--muted)">David Dredge, Convex Strategies</span></div>
+    <p class="note" style="margin:6px 0 14px">Dredge describes a <b>competition among sovereigns for the buyers of government debt</b> — in his written updates, a contest for “the dwindling marginal supply of liquidity in the system”, with the US Treasury, Europe and Japan all placing paper into one pool. <b>It belongs on a demography page because the scarce resource is savers.</b> In his words, developed economies face <b>fewer taxpayers and savers and more retirees and dissavers</b> while government debt runs above 100% of GDP. A working-age population accumulates financial assets; a retired one spends them down.</p>
+
+    ${perSaver === null ? '' : `<div style="padding:14px 16px;background:var(--panel2);border-radius:9px;border-left:3px solid var(--warn);margin-bottom:16px">
+      <div class="eyebrow" style="margin-bottom:4px">The thesis in one number</div>
+      <div style="font-size:40px;font-weight:800;line-height:1">$${Math.round(perSaver).toLocaleString()}</div>
+      <div style="font-size:13px;color:var(--muted);margin-top:4px">of federal debt for every person of working age</div>
+      <p class="note" style="margin:8px 0 0">$${(debtAbs / 1e6).toFixed(2)}tn of debt divided by ${(workAge / 1e6).toFixed(1)}m people aged 15 to 64. <b>Both halves move the wrong way at once:</b> the numerator grows with every deficit, and the denominator was set by births that already happened. That is the arena.</p></div>`}
+
+    <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:14px">
+      ${dredgeStat('Federal debt', debtPct === null ? '—' : debtPct.toFixed(1) + '%', `of GDP · ${asOf('GFDEGDQ188S')}`, debtPct !== null && debtPct > 100 ? 'var(--neg)' : null)}
+      ${dredgeStat('Deficit', deficit === null ? '—' : deficit.toFixed(1) + '%', `of GDP · ${asOf('FYFSGDA188S')}`, 'var(--neg)')}
+      ${dredgeStat('Interest outlays', interestPct === null ? '—' : interestPct.toFixed(2) + '%', `of GDP · ${asOf('FYOIGDA188S')}`)}
+      ${dredgeStat('Interest paid', interestAbs === null ? '—' : '$' + (interestAbs / 1000).toFixed(2) + 'tn', `annualised · ${asOf('A091RC1Q027SBEA')}`)}
+      ${dredgeStat('Held abroad', foreign === null ? '—' : '$' + (foreign / 1000).toFixed(2) + 'tn', `federal debt · ${asOf('FDHBFIN')}`)}
+    </div>
+
+    <h3 style="margin:18px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">What he says it does to a portfolio</h3>
+    <p class="note" style="margin:0 0 10px">His own words, attributed rather than adopted. <b>Risk is vulnerability to loss, not the probability of a forecast event.</b> Sequencing and compounding make time material — his illustration is that washing and ironing a pair of trousers have the same average but different outcomes depending on the order.</p>
+    <p class="note" style="margin:0 0 10px"><b>“Sharpe World”</b> is his name for the simplified model: Gaussian distributions, continuous markets, stable correlations, arithmetic averages and Sharpe-ratio optimisation — against a real world of gaps, fat tails, leverage, correlations that move, and <b>geometric</b> compounding. He argues the fixed-income leg of the 60/40 has lost the hedging property it was held for, and that <b>inflation is the principal risk for retail savers</b>, particularly those regulated into large bond allocations. His examples were five-times-levered gilts in liability-driven strategies, and Silicon Valley Bank reporting its risk metrics shortly before it failed.</p>
+    <p class="note" style="margin:0 0 10px">On construction he argues for <b>“good brakes” before pursuing growth</b>: negatively correlated, asymmetric protection alongside assets with natural volatility, so that more capital can be deployed safely rather than less. <b>The mixes he cited are his, not this desk's</b>, and are recorded as his argument rather than as any allocation — a 25% gold, 25% long-volatility, 50% Nasdaq example in conversation, and a levered “Barbell Racer” backtest in his written updates.</p>
+    <p class="note" style="margin:0"><b>Two things are deliberately not shown as figures.</b> The repo leverage numbers from that conversation were recorded as “presented as discussion points, not independently verified”, so they appear nowhere here. And the fiscal figures above are <b>this desk's own, from FRED, each with its observation date</b> — they corroborate the shape of his argument, but they are not his numbers and he is not the source for them.</p>
   </div>`;
 
   return `<span class="eyebrow">Demography</span><h1>Hunger Games Demo</h1>
