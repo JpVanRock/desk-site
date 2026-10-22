@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, humility] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -192,6 +192,7 @@ async function load() {
     qAllSoft(() => sb.from('current_macro_readings').select('series_id,fred_code,name,value,obs_date,unit'), 'macro now'),
     qAllSoft(() => sb.from('saeculum_turnings').select('seq,turning,name,mood,start_year,end_year,uncertain,description').order('seq', { ascending: true }), 'turnings'),
     qAllSoft(() => sb.from('generations').select('name,birth_from,birth_to,sample,sort_order').order('sort_order', { ascending: true }), 'generations'),
+    qAllSoft(() => sb.from('latest_risk_humility').select('as_of,scope,strategy_id,window_days,window_worst,history_days,history_worst,history_worst_date,coverage,calm_streak,calm_streak_pctile,vol_pctile,drawdown_now,near_high_share,avg_pair_corr,complacency,complacency_legs,sim_paths,sim_p05,sim_p50,sim_p95,sim_dd_median,sim_dd_p95,sim_worse_share,beta_up,beta_down,convexity_gap,hit_rate,avg_win,avg_loss,skew,n_live,n_departed,headline'), 'risk humility'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -284,7 +285,7 @@ async function load() {
     narAttention: narAttention || [], narratives: narratives || [],
     decisionQuality: decisionQuality || [], quadHistory: quadHistory || [],
     netLiq: netLiq || [], gli: gli || [], macroNow: macroNow || [],
-    turnings: turnings || [], generations: generations || [] };
+    turnings: turnings || [], generations: generations || [], humility: humility || [] };
 }
 
 // ---------- Views ----------
@@ -997,8 +998,90 @@ function stan() {
         <div style="padding-top:6px">${md(o.body_md)}</div></details>`).join('')}
    <p class="note">Written by the Stan agent from the desk workspace. Dated: check the as-of before relying on a number, since these refresh on their own schedule rather than with the nightly data.</p></div>`;
 
+  // ---- What the risk figures cannot say ----
+  //
+  // Everything above this card is an inference from a window in which a particular thing did not
+  // happen. The figures are right; what they cannot do is the thing a reader naturally does with
+  // them, which is treat them as a bound. Taleb's illustration is 16,000 observations of a man
+  // not dying, therefore immortal with high statistical significance. This card does not argue
+  // with a single number on the page -- it states their limits.
+  const hum = (D.humility || []).find(h => h.scope === 'firm') || null;
+  const humByModel = Object.fromEntries((D.humility || []).filter(h => h.strategy_id).map(h => [h.strategy_id, h]));
+  const hpc = v => v === null || v === undefined ? '—' : `${(+v * 100).toFixed(1)}%`;
+  const hnum = v => v === null || v === undefined ? null : +v;
+  const humilityCard = !hum ? '' : `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">What these figures cannot say</h2>
+      <span style="font-size:12px;color:var(--muted)">firm-wide · ${esc(hum.as_of)}</span></div>
+    <p class="note" style="margin:6px 0 14px">Every risk number on this page is an inference from a window in which a particular thing did not happen. <b>They are not wrong; they are narrow.</b> "No amount of observations of white swans can allow the inference that all swans are white, but the observation of a single black swan is sufficient to refute that conclusion."</p>
+
+    <h3 style="margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">1 · What the window did not contain</h3>
+    <div style="overflow-x:auto"><table style="min-width:640px"><thead><tr>
+      <th>Book</th><th class="num">Record</th><th class="num">Risk window</th><th class="num">Covers</th>
+      <th class="num">Worst in window</th><th class="num">Worst on record</th></tr></thead><tbody>
+      ${[{ id: null, name: 'Firm-wide', h: hum }, ...(D.models || []).map(m => ({ id: m.id, name: bareName(m.name), h: humByModel[m.id] }))]
+        .filter(x => x.h).map(x => { const h = x.h; const full = hnum(h.coverage) !== null && +h.coverage > 0.98;
+        return `<tr${x.id === null ? ' style="background:var(--panel2)"' : ''}>
+          <td><b>${esc(x.name)}</b></td>
+          <td class="num" style="color:var(--muted)">${h.history_days}d</td>
+          <td class="num" style="color:var(--muted)">${h.window_days}d</td>
+          <td class="num" style="color:${full ? 'var(--warn)' : 'var(--text)'}">${hnum(h.coverage) === null ? '—' : (+h.coverage * 100).toFixed(0) + '%'}</td>
+          <td class="num">${hpc(h.window_worst)}</td>
+          <td class="num" style="color:var(--neg)">${hpc(h.history_worst)}${h.history_worst_date ? `<br><small style="color:var(--muted)">${esc(h.history_worst_date)}</small>` : ''}</td></tr>`; }).join('')}
+    </tbody></table></div>
+    <p class="note"><b>A window covering 100% of the record is the reading to pause on</b>, not the reassuring one: it means the risk figure has seen everything that book has ever seen, and nothing more. These series are reconstructed from today's weights held constant, renormalised over whatever was priced on each day, so they answer "how does a book shaped like this behave" rather than "what did we earn".</p>
+
+    <h3 style="margin:20px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">2 · Complacency</h3>
+    <div style="display:flex;gap:26px;flex-wrap:wrap;align-items:center">
+      <div style="min-width:150px">
+        <div style="font-size:40px;font-weight:700;line-height:1;color:${hnum(hum.complacency) === null ? 'var(--muted)' : +hum.complacency >= 70 ? 'var(--warn)' : 'var(--text)'}">${hnum(hum.complacency) === null ? '—' : (+hum.complacency).toFixed(0)}</div>
+        <div style="font-size:12px;color:var(--muted)">of 100 · ${hum.calm_streak} sessions since a 2σ day</div></div>
+      <div style="flex:1;min-width:280px">
+        ${(Array.isArray(hum.complacency_legs) ? hum.complacency_legs : []).map(l => `
+          <div style="margin-bottom:7px">
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px">
+              <span>${esc(l.leg)}</span><span style="color:var(--muted)">${esc(l.note || '')}</span></div>
+            <div style="height:7px;border-radius:99px;background:var(--panel2);overflow:hidden">
+              <div style="width:${l.v === null || l.v === undefined ? 0 : Math.max(1, Math.min(100, +l.v * 100)).toFixed(0)}%;height:100%;background:var(--accent);opacity:.7"></div></div></div>`).join('')}
+      </div></div>
+    <p class="note"><b>Five legs, not one.</b> A three-sigma daily move is rare enough that "sessions since the last one" reads in years and says nothing in between, so the calm streak is measured at two sigma and scored against this book's own history of streaks. The others are compressed volatility, a shallow drawdown, time spent near the highs, and the average pairwise correlation that decides whether the diversification is real or nominal. <b>This is not a forecast.</b> It says the recent past has been unusually calm for this book, which is information about how a reader is likely to be feeling rather than about what is coming — "after a few dozen tries, one forgets about the existence of a bullet".</p>
+
+    <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:20px">
+      <div style="flex:1;min-width:270px">
+        <h3 style="margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">3 · The same book, relived</h3>
+        <table><tbody>
+          <tr><td style="font-size:12.5px">Worst 5% of paths</td><td class="num" style="color:var(--neg)">${hpc(hum.sim_p05)}</td></tr>
+          <tr><td style="font-size:12.5px">Median path</td><td class="num">${hpc(hum.sim_p50)}</td></tr>
+          <tr><td style="font-size:12.5px">Best 5% of paths</td><td class="num" style="color:var(--pos)">${hpc(hum.sim_p95)}</td></tr>
+          <tr><td style="font-size:12.5px">Median worst drawdown</td><td class="num">${hpc(hum.sim_dd_median)}</td></tr>
+          <tr><td style="font-size:12.5px">Drawdown, worst 5%</td><td class="num" style="color:var(--neg)">${hpc(hum.sim_dd_p95)}</td></tr>
+        </tbody></table>
+        <p class="note" style="margin-top:8px">${hum.sim_paths} paths by block bootstrap, in blocks of ten days so volatility clustering survives. <b>${hnum(hum.sim_worse_share) === null ? '' : `${(+hum.sim_worse_share * 100).toFixed(0)}% of them end worse than the year actually did.`}</b> A realised return is one draw from this; judging the book on it alone is the accounting error the whole argument is about.</p>
+      </div>
+      <div style="flex:1;min-width:270px">
+        <h3 style="margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">4 · Convexity, measured</h3>
+        <table><tbody>
+          <tr><td style="font-size:12.5px">Beta on up days</td><td class="num" style="color:var(--pos)">${hnum(hum.beta_up) === null ? '—' : (+hum.beta_up).toFixed(2)}</td></tr>
+          <tr><td style="font-size:12.5px">Beta on down days</td><td class="num" style="color:var(--neg)">${hnum(hum.beta_down) === null ? '—' : (+hum.beta_down).toFixed(2)}</td></tr>
+          <tr><td style="font-size:12.5px"><b>Gap</b></td><td class="num"><b style="color:${hnum(hum.convexity_gap) === null ? 'var(--muted)' : +hum.convexity_gap >= 0 ? 'var(--pos)' : 'var(--neg)'}">${hnum(hum.convexity_gap) === null ? '—' : (+hum.convexity_gap >= 0 ? '+' : '') + (+hum.convexity_gap).toFixed(2)}</b></td></tr>
+        </tbody></table>
+        <p class="note" style="margin-top:8px">Upside beta minus downside beta, against SPY, from the book's own daily returns. <b>Negative means it falls faster than it rises.</b> Measured rather than modelled, and never called antifragile on the strength of a positive number — that word needs a convexity you can point at.</p>
+        <h3 style="margin:18px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">5 · Frequency against magnitude</h3>
+        <table><tbody>
+          <tr><td style="font-size:12.5px">Up days</td><td class="num">${hnum(hum.hit_rate) === null ? '—' : (+hum.hit_rate * 100).toFixed(0) + '%'}</td></tr>
+          <tr><td style="font-size:12.5px">Average up / down day</td><td class="num">${hpc(hum.avg_win)} / ${hpc(hum.avg_loss)}</td></tr>
+          <tr><td style="font-size:12.5px">Skew</td><td class="num" style="color:${hnum(hum.skew) === null ? 'var(--muted)' : +hum.skew < -0.3 ? 'var(--neg)' : 'var(--text)'}">${hnum(hum.skew) === null ? '—' : (+hum.skew).toFixed(2)}</td></tr>
+        </tbody></table>
+        <p class="note" style="margin-top:8px">A high share of up days with <b>negative skew</b> is the signature of selling optionality without meaning to: steady income, with the loss arriving rarely and large. "He sells out-of-the-money options for a living; I buy them. He tries to make steady income, I prefer a lumpy and rare payoff."</p>
+      </div>
+    </div>
+
+    <h3 style="margin:20px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">6 · Silent evidence</h3>
+    <p class="note" style="margin:0"><b>${hum.n_departed} of ${hum.n_live} tracked securities have stopped printing</b>, and that number is a <b>floor on what is missing, not a count of it</b>. Every peer median, blend fit and classification on this site is computed across names that still exist; the universe was assembled from survivors, so the funds that closed before this desk ever looked cannot appear in any figure here and never will. "We see the wealth being generated, never the processor, and never the losers."</p>
+  </div>`;
+
   return `<span class="eyebrow">Risk</span><h1>Stan</h1>
-   <p class="sub">Where the risk sits across the eight models, what is flagged, and Stan's own read.</p>
+   <p class="sub">Where the risk sits across the eight models, what is flagged, and what the risk figures cannot say.</p>
    <div class="kpis" style="grid-template-columns:repeat(5,1fr)">
     <div class="card kpi click" data-go="#stan/speed-limit" style="cursor:pointer" title="Open the master Speed Limit and how each model sits against it">
       <span class="eyebrow">Speed Limit</span>
@@ -1013,7 +1096,7 @@ function stan() {
         <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
     }).join('')}
    </div>
-   ${riskTable}${flagsCard}${positionScatter()}${docsCard}`;
+   ${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
 }
 
 // ---------- Markets: a trading desk's wall, not a spreadsheet ----------

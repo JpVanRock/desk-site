@@ -1166,6 +1166,52 @@ if (!argRoute) {
   }
 
   // -------------------------------------------------------------------------
+  // 9d. Stan: what the risk figures cannot say.
+  //     The point of this card is to state the limits of every other number on the page, so the
+  //     guards are about honesty rather than arithmetic: a window must never be shown as worse
+  //     than the history containing it, complacency must not be framed as a forecast, and the
+  //     departed-securities count must be labelled a floor rather than a count.
+  // -------------------------------------------------------------------------
+  currentRoute = 'risk-humility';
+  await go('#stan');
+  {
+    const st = app();
+    need(/What these figures cannot say/.test(st), '[humility] the card is missing from Stan\'s page');
+    for (const want of ['What the window did not contain', 'Complacency', 'The same book, relived',
+                        'Convexity, measured', 'Frequency against magnitude', 'Silent evidence'])
+      need(st.includes(want), `[humility] the "${want}" section is missing`);
+    need(/not a forecast/i.test(st), '[humility] complacency is not marked as something other than a forecast');
+    need(/floor on what is missing, not a count/i.test(st), '[humility] the silent-evidence count is not labelled a floor');
+
+    const hr = await rest('latest_risk_humility', 'scope,strategy_id,window_days,window_worst,history_days,history_worst,coverage,complacency,complacency_legs,sim_p05,sim_p50,sim_p95,beta_up,beta_down,convexity_gap,hit_rate,skew,n_departed');
+    need(hr.length >= 2, `[humility] only ${hr.length} rows computed`);
+    const firm = hr.find(x => x.scope === 'firm');
+    need(firm, '[humility] no firm-wide row');
+    let hb = [];
+    for (const r of hr) {
+      // A window is inside its own history, so it cannot contain a worse day than the history.
+      if (r.window_worst !== null && r.history_worst !== null && +r.window_worst < +r.history_worst - 1e-9)
+        hb.push(`${r.scope} window worst ${r.window_worst} beats its own history ${r.history_worst}`);
+      if (r.coverage !== null && (+r.coverage < 0 || +r.coverage > 1.0001)) hb.push(`${r.scope} coverage ${r.coverage} is not a share`);
+      if (r.window_days > r.history_days) hb.push(`${r.scope} window is longer than the record it sits in`);
+      if (r.complacency !== null && (+r.complacency < 0 || +r.complacency > 100)) hb.push(`${r.scope} complacency ${r.complacency} outside 0-100`);
+      if (r.sim_p05 !== null && (+r.sim_p05 > +r.sim_p50 || +r.sim_p50 > +r.sim_p95)) hb.push(`${r.scope} simulated quantiles out of order`);
+      // The gap must equal the two betas it is drawn from, or three numbers on the page disagree.
+      if (r.beta_up !== null && r.beta_down !== null) {
+        const g = +(+r.beta_up - +r.beta_down).toFixed(6);
+        if (Math.abs(g - +r.convexity_gap) > 1e-5) hb.push(`${r.scope} convexity gap is not up minus down`);
+      }
+      const legs = Array.isArray(r.complacency_legs) ? r.complacency_legs : [];
+      if (r.complacency !== null && legs.length < 3) hb.push(`${r.scope} complacency is built on ${legs.length} legs`);
+    }
+    hb = [...new Set(hb)];
+    for (const b of hb) errors.push(`[humility] ${b}`);
+    // The measure only means something if at least one book's window is narrower than its record.
+    const narrow = hr.filter(r => r.coverage !== null && +r.coverage < 0.98).length;
+    say(` ok  risk humility          -> ${hr.length} books, ${narrow} with a window narrower than their record, complacency ${firm.complacency === null ? '—' : (+firm.complacency).toFixed(0)}, ${hb.length} problems`);
+  }
+
+  // -------------------------------------------------------------------------
   // 10b. Neil: the saeculum, the generational clock, and the age arithmetic.
   //      The rule this page lives under is that Strauss and Howe's turnings are a FRAMEWORK, not
   //      a measurement, and the page must keep the two visibly apart. A framework that explains
