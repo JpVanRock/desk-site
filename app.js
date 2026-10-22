@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -190,6 +190,8 @@ async function load() {
     qSoft(sb.from('global_liquidity_readings').select('as_of,net_liquidity,walcl,tga,rrp,chg_4w,chg_13w,chg_52w,pctile_3y,direction,headline').order('as_of', { ascending: false }).limit(1), 'net liquidity'),
     qAllSoft(() => sb.from('gli_readings').select('as_of,value,direction,change_note,drivers,headline,source_url,gli_full,gli_flash,smb,collateral_multiplier,basis,move_quoted').order('as_of', { ascending: true }), 'howell gli'),
     qAllSoft(() => sb.from('current_macro_readings').select('series_id,fred_code,name,value,obs_date,unit'), 'macro now'),
+    qAllSoft(() => sb.from('saeculum_turnings').select('seq,turning,name,mood,start_year,end_year,uncertain,description').order('seq', { ascending: true }), 'turnings'),
+    qAllSoft(() => sb.from('generations').select('name,birth_from,birth_to,sample,sort_order').order('sort_order', { ascending: true }), 'generations'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -281,7 +283,8 @@ async function load() {
     crowding: crowding || [], narReading: narReading || [], narComponents: narComponents || [],
     narAttention: narAttention || [], narratives: narratives || [],
     decisionQuality: decisionQuality || [], quadHistory: quadHistory || [],
-    netLiq: netLiq || [], gli: gli || [], macroNow: macroNow || [] };
+    netLiq: netLiq || [], gli: gli || [], macroNow: macroNow || [],
+    turnings: turnings || [], generations: generations || [] };
 }
 
 // ---------- Views ----------
@@ -321,7 +324,7 @@ function route() {
   closeDrawer();
   // Keyed lookup, so this order is cosmetic rather than load-bearing — but it is kept in step
   // with the nav in index.html so the two read the same way.
-  const pages = { markets, sisyphus, stan, annie, adam, sven, kate, gail, sandbox, signals, admin };
+  const pages = { markets, sisyphus, stan, annie, adam, neil, sven, kate, gail, sandbox, signals, admin };
   $('#app').innerHTML = page === 'gail' ? gail(arg) : (pages[page] || sisyphus)();
   if (page === 'stan' && arg) {
     // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
@@ -5582,6 +5585,146 @@ function gailJournal() {
   ${pending ? `<div class="card" style="margin-bottom:12px;border-left:3px solid var(--warn)"><p style="margin:0;font-size:13px"><b>${pending} analysis request${pending === 1 ? '' : 's'} outstanding.</b> The agents run outside this page, so a verdict appears once they have read the entry. Pending is pending — it is not a quiet No.</p></div>` : ''}
   ${entries.map(card).join('')}
   <p class="note"><b>${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}.</b> A journal entry is a decision record and nothing more: it reaches no broker and moves no allocation. The tax figure beside one is the estimate made at the time it was written, priced off the open lots then — it is not re-costed as prices move, because what matters later is what the desk believed when it decided.</p>`;
+}
+
+// ---------- Neil: Hunger Games Demo ----------
+//
+// Demography and the long cycle. Adam owns the quarters; this page owns the decades.
+//
+// THE ONE RULE THIS PAGE LIVES UNDER. Strauss and Howe's turnings are a FRAMEWORK the desk has
+// adopted, published in 1997, with their own question mark on the end of the Third Turning.
+// Nothing here computes a turning from data. The page therefore keeps two kinds of statement
+// visibly apart: what Strauss and Howe say, which is labelled as theirs, and what the series say,
+// which carries an observation date. A framework that explains every outcome afterwards explains
+// none of them in advance, and mixing the two would quietly convert a lens into a forecast.
+const TURNING_TONE = { 1: '#22c55e', 2: '#84cc16', 3: '#f59e0b', 4: '#ef4444' };
+// The phases of life the book uses. The whole mechanism is that a Great Event reaches each cohort
+// at a different one, and that twenty years later every cohort has moved up exactly one.
+const PHASES = [
+  ['Childhood', 0, 20], ['Young adulthood', 21, 41], ['Midlife', 42, 62], ['Elderhood', 63, 83],
+];
+
+function neil() {
+  const yr = new Date().getFullYear();
+  const turns = D.turnings || [];
+  const gens = D.generations || [];
+  const macro = D.macroNow || [];
+  const mac = code => macro.find(m => m.fred_code === code) || null;
+  const v = code => { const m = mac(code); return m && m.value !== null ? +m.value : null; };
+
+  if (!turns.length && !gens.length) {
+    return `<span class="eyebrow">Demography</span><h1>Hunger Games Demo</h1>
+     <p class="sub">The saeculum and the generational clock.</p>
+     <div class="card"><div class="empty">Nothing seeded yet. The turnings and generations live in the database so the page and the book cannot drift apart.</div></div>`;
+  }
+
+  const current = turns.find(t => t.end_year === null) || turns[turns.length - 1];
+  const yearsIn = current ? yr - current.start_year : null;
+
+  // ---- the saeculum clock ----
+  const span = turns.length ? turns[0].start_year : yr;
+  const total = yr - span;
+  const clock = `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">The saeculum</h2>
+      <span style="font-size:12px;color:var(--muted)">Strauss and Howe's dating, published 1997</span></div>
+    <div style="display:flex;align-items:center;gap:30px;flex-wrap:wrap;margin-top:14px">
+      <div style="min-width:240px">
+        <div style="font-size:46px;font-weight:800;line-height:1;color:${TURNING_TONE[current.turning]}">Turning ${current.turning}</div>
+        <div style="font-size:17px;font-weight:600;margin-top:5px">${esc(current.mood)}</div>
+        <div style="font-size:13px;color:var(--muted);margin-top:3px">${current.start_year}–${current.end_year || 'present'} · ${yearsIn} year${yearsIn === 1 ? '' : 's'} in</div>
+      </div>
+      <div style="flex:1;min-width:280px">
+        <div style="display:flex;height:34px;border-radius:7px;overflow:hidden;border:1px solid var(--line)">
+          ${turns.map(t => { const end = t.end_year || yr; const w = (end - t.start_year) / Math.max(1, total) * 100;
+            return `<div title="${esc(t.name)} · ${t.start_year}–${t.end_year || 'present'}" style="width:${w.toFixed(1)}%;background:${TURNING_TONE[t.turning]};opacity:${t.end_year === null ? 0.9 : 0.4};display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#0b0f14">${t.turning}</div>`; }).join('')}
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:5px">
+          <span>${turns.length ? turns[0].start_year : ''}</span><span>${yr}</span></div>
+        <p class="note" style="margin:8px 0 0">${esc(current.description)}</p>
+      </div>
+    </div>
+    <p class="note"><b>This is their dating, not a measurement.</b> Strauss and Howe wrote in 1997 and gave the Third Turning's end as 2005 <b>with a question mark</b>, so the Fourth Turning's start year inherits that uncertainty and its length is open. Nothing on this desk computes a turning from data, and this page will not pretend otherwise. The mechanism they propose is ordinary ageing: a Great Event lands on everyone at once but reaches each cohort at a different phase of life, and twenty years later every cohort has moved up one — which is why turnings recur on the length of a phase of life rather than on any economic cycle.</p>
+  </div>`;
+
+  // ---- the generational clock: computed, not asserted ----
+  const phaseOf = age => { const p = PHASES.find(([, lo, hi]) => age >= lo && age <= hi); return p ? p[0] : age > 83 ? 'Beyond elderhood' : null; };
+  const genRows = gens.map(g => {
+    const oldest = yr - g.birth_from, youngest = yr - g.birth_to;
+    return { ...g, oldest, youngest, spans: [...new Set([phaseOf(youngest), phaseOf(oldest)].filter(Boolean))] };
+  }).filter(g => g.youngest <= 100).reverse();
+
+  const genCard = `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Who is where</h2>
+      <span style="font-size:12px;color:var(--muted)">ages as of ${yr}</span></div>
+    <p class="note" style="margin:6px 0 12px">Each cohort's age and phase of life is computed from its birth years and today's date rather than asserted, so this moves on its own every January. Phases are the book's: childhood 0–20, young adulthood 21–41, midlife 42–62, elderhood 63–83.</p>
+    <div style="overflow-x:auto"><table style="min-width:560px"><thead><tr>
+      <th>Generation</th><th class="num">Born</th><th class="num">Age now</th><th>Phase of life</th><th>Sample member</th></tr></thead><tbody>
+      ${genRows.map(g => `<tr>
+        <td><b>${esc(g.name)}</b></td>
+        <td class="num" style="color:var(--muted)">${g.birth_from}–${g.birth_to}</td>
+        <td class="num">${g.youngest}–${g.oldest}</td>
+        <td>${g.spans.length ? g.spans.map(x => `<span class="chip">${esc(x)}</span>`).join(' ') : '<span style="color:var(--muted)">past the book’s span</span>'}</td>
+        <td style="color:var(--muted);font-size:12.5px">${esc(g.sample || '')}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="note"><b>Birth years are Strauss and Howe's</b>, including the question mark they put on the Millennial end year, because the book was written before that cohort had finished arriving. Later writers have moved these boundaries; the desk keeps theirs so that the generations and the turnings come from one source rather than two that disagree.</p>
+  </div>`;
+
+  // ---- the arithmetic, which is not a framework ----
+  const over65 = v('SPPOP65UPTOZSUSA'), under15 = v('SPPOP0014TOZSUSA');
+  const dep = v('SPPOPDPNDOLUSA'), tfr = v('SPDYNTFRTINUSA'), cbr = v('SPDYNCBRTINUSA');
+  const le = v('SPDYNLE00INUSA'), growth = v('SPPOPGROWUSA'), wap = v('LFWA64TTUSM647S');
+  const prime = v('LNU01300060'), pop = v('POPTHM');
+  const REPLACEMENT = 2.1;
+  const stat = (label, val, sub, tone) => `<div style="flex:1;min-width:165px">
+    <div class="eyebrow" style="margin-bottom:3px">${esc(label)}</div>
+    <div style="font-size:27px;font-weight:700;line-height:1${tone ? `;color:${tone}` : ''}">${val}</div>
+    <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${sub}</div></div>`;
+  const asOf = code => { const m = mac(code); return m ? esc(m.obs_date.slice(0, 4)) : '—'; };
+
+  const pyramidCard = `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">The arithmetic</h2>
+      <span style="font-size:12px;color:var(--muted)">measured, with observation years</span></div>
+    <p class="note" style="margin:6px 0 14px">Everything above this line is a framework. Everything below it is a series with a date on it, and it is the part that does the work in anything said about the next decade.</p>
+    <div style="display:flex;gap:22px;flex-wrap:wrap;margin-bottom:16px">
+      ${stat('65 and over', over65 === null ? '—' : over65.toFixed(1) + '%', `share of population · ${asOf('SPPOP65UPTOZSUSA')}`, 'var(--neg)')}
+      ${stat('Under 15', under15 === null ? '—' : under15.toFixed(1) + '%', `share of population · ${asOf('SPPOP0014TOZSUSA')}`, 'var(--accent)')}
+      ${stat('Old-age dependency', dep === null ? '—' : dep.toFixed(1), `per 100 of working age · ${asOf('SPPOPDPNDOLUSA')}`)}
+      ${stat('Fertility rate', tfr === null ? '—' : tfr.toFixed(2), `births per woman · ${asOf('SPDYNTFRTINUSA')}`, tfr !== null && tfr < REPLACEMENT ? 'var(--neg)' : 'var(--pos)')}
+    </div>
+    ${over65 !== null && under15 !== null ? `<div style="margin-bottom:14px">
+      <div style="display:flex;height:26px;border-radius:7px;overflow:hidden;border:1px solid var(--line)">
+        <div style="width:${under15.toFixed(1)}%;background:var(--accent);opacity:.75;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#0b0f14">under 15</div>
+        <div style="flex:1;background:var(--panel2);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted)">working age</div>
+        <div style="width:${over65.toFixed(1)}%;background:var(--neg);opacity:.75;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#0b0f14">65+</div>
+      </div>
+      <p class="note" style="margin:8px 0 0">${over65 > under15
+        ? `<b>The crossover has happened.</b> There are now more people over 65 than under 15 — ${over65.toFixed(1)}% against ${under15.toFixed(1)}% — which in this series had never been true before. Whatever else is argued about the long cycle, this is the fact underneath it, and it does not reverse on any horizon a portfolio is managed over.`
+        : `Under-15s still outnumber the over-65s, ${under15.toFixed(1)}% against ${over65.toFixed(1)}%.`}</p></div>` : ''}
+    <div style="display:flex;gap:22px;flex-wrap:wrap">
+      ${stat('Population', pop === null ? '—' : (pop / 1000).toFixed(1) + 'm', `total · ${asOf('POPTHM')}`)}
+      ${stat('Population growth', growth === null ? '—' : growth.toFixed(2) + '%', `a year · ${asOf('SPPOPGROWUSA')}`)}
+      ${stat('Working age 15–64', wap === null ? '—' : (wap / 1e6).toFixed(1) + 'm', `persons · ${asOf('LFWA64TTUSM647S')}`)}
+      ${stat('Prime-age participation', prime === null ? '—' : prime.toFixed(1) + '%', `25–54 · ${asOf('LNU01300060')}`)}
+      ${stat('Life expectancy', le === null ? '—' : le.toFixed(1), `years at birth · ${asOf('SPDYNLE00INUSA')}`)}
+      ${stat('Crude birth rate', cbr === null ? '—' : cbr.toFixed(1), `per 1,000 · ${asOf('SPDYNCBRTINUSA')}`)}
+    </div>
+    ${tfr !== null ? `<p class="note" style="margin-top:14px"><b>Fertility is ${tfr.toFixed(2)} against a replacement rate of ${REPLACEMENT}.</b> A country below replacement does not shrink immediately — momentum in the existing age structure carries it for decades, and migration can offset it entirely — but the shape of the pyramid is set long before the total turns. These are <b>annual series and they are revised</b>; the year beside each figure is the observation, not today.</p>` : ''}
+  </div>`;
+
+  // ---- the Dredge piece, which the desk does not have ----
+  const dredgeCard = `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Macro Hunger Games</h2>
+      <span style="font-size:12px;color:var(--muted)">David Dredge · not yet captured</span></div>
+    <div class="empty" style="margin-top:10px">This section is empty on purpose. The concept comes from David Dredge of Convex Strategies on the Alpha Exchange podcast, and the episode is audio — the public page carries only a one-line blurb about his career in derivatives and convexity, and a search finds no written description of the framework anywhere. <b>Nothing is written here because nothing has been verified.</b> Two or three sentences from the owner on what Dredge means by it, or a transcript, and this becomes a real section; a paraphrase assembled from the title would be an invention wearing his name.</div>
+  </div>`;
+
+  return `<span class="eyebrow">Demography</span><h1>Hunger Games Demo</h1>
+   <p class="sub">Where the United States sits in the saeculum, which generations occupy which phase of life, and the age arithmetic underneath both.</p>
+   ${clock}${genCard}${pyramidCard}${dredgeCard}`;
 }
 
 // ---------- Gail: The Library ----------

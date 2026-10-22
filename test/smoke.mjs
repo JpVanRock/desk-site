@@ -232,7 +232,7 @@ const series = await pick('current_macro_readings', 'series_id,fred_code');
 // 1. Every route renders something that is not an error or a loading state.
 // ---------------------------------------------------------------------------
 const routes = argRoute ? [argRoute] : [
-  '#markets', '#sisyphus', '#stan', '#annie', '#adam', '#sven', '#kate', '#gail', '#gail/inbox', '#gail/briefs', '#sandbox', '#signals', '#admin',
+  '#markets', '#sisyphus', '#stan', '#annie', '#adam', '#neil', '#sven', '#kate', '#gail', '#gail/inbox', '#gail/briefs', '#sandbox', '#signals', '#admin',
   strat ? `#sisyphus/${strat.id}` : null,
   strat ? `#stan/${strat.id}` : null,
   sec ? `#markets/${sec.id}` : null,
@@ -1043,7 +1043,7 @@ if (!argRoute) {
   {
     const nav = readFileSync(join(SITE, 'index.html'), 'utf8');
     const order = [...nav.matchAll(/<a href="#([a-z]+)">/g)].map(m => m[1]);
-    const want = ['markets', 'sisyphus', 'stan', 'annie', 'adam', 'sven', 'kate', 'gail', 'sandbox', 'signals', 'admin'];
+    const want = ['markets', 'sisyphus', 'stan', 'annie', 'adam', 'neil', 'sven', 'kate', 'gail', 'sandbox', 'signals', 'admin'];
     say(` ok  nav order              -> ${order.join(' · ')}`);
     need(want.length === order.length && want.every((w, i) => order[i] === w), `[nav] expected ${want.join(' · ')}, found ${order.join(' · ')}`);
   }
@@ -1163,6 +1163,63 @@ if (!argRoute) {
       need(/good and bad are properties of the pairing/i.test(dr), '[news] the drawer does not explain that good and bad depend on the asset');
       say(` ok  news flow drawer       -> ${withFlow.ticker} opens ${withFlow.n_positive} positive and ${withFlow.n_negative} negative`);
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // 10b. Neil: the saeculum, the generational clock, and the age arithmetic.
+  //      The rule this page lives under is that Strauss and Howe's turnings are a FRAMEWORK, not
+  //      a measurement, and the page must keep the two visibly apart. A framework that explains
+  //      every outcome afterwards explains none in advance, and presenting one as measured would
+  //      turn a lens into a forecast.
+  // -------------------------------------------------------------------------
+  currentRoute = 'neil';
+  await go('#neil');
+  {
+    const nl = app();
+    need(/<h1>Hunger Games Demo<\/h1>/.test(nl), '[neil] the page is not titled Hunger Games Demo');
+    for (const want of ['The saeculum', 'Who is where', 'The arithmetic', 'Macro Hunger Games'])
+      need(nl.includes(want), `[neil] the ${want} section is missing`);
+    need(/their dating, not a measurement/i.test(nl), '[neil] the page does not say the turnings are a framework rather than a measurement');
+
+    const turns = await rest('saeculum_turnings', 'seq,turning,name,start_year,end_year,uncertain');
+    const gens = await rest('generations', 'name,birth_from,birth_to');
+    need(turns.length === 4, `[neil] ${turns.length} turnings seeded, expected 4`);
+    need(gens.length >= 8, `[neil] only ${gens.length} generations seeded`);
+    let nBad = [];
+    // The turnings must be contiguous and in order, or the clock is drawn from a broken sequence.
+    const sorted = turns.slice().sort((a, b) => a.seq - b.seq);
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i - 1].end_year !== null && sorted[i].start_year !== sorted[i - 1].end_year)
+        nBad.push(`turning ${sorted[i].turning} starts ${sorted[i].start_year} but the one before ends ${sorted[i - 1].end_year}`);
+    }
+    need(sorted.filter(t => t.end_year === null).length === 1, '[neil] exactly one turning should be open-ended');
+    // Generations must not overlap, or a person would be in two at once.
+    const gs = gens.slice().sort((a, b) => a.birth_from - b.birth_from);
+    for (let i = 1; i < gs.length; i++) {
+      if (gs[i].birth_from <= gs[i - 1].birth_to) nBad.push(`${gs[i].name} overlaps ${gs[i - 1].name}`);
+    }
+    nBad = [...new Set(nBad)];
+    for (const b of nBad) errors.push(`[neil] ${b}`);
+    // Ages must be computed from today, not written into the page.
+    const yr = new Date().getFullYear();
+    const boom = gs.find(g => g.name === 'Boom');
+    if (boom) need(nl.includes(`${yr - boom.birth_to}\u2013${yr - boom.birth_from}`) || nl.includes(`${yr - boom.birth_to}–${yr - boom.birth_from}`),
+      `[neil] the Boom age span is not computed from the current year (${yr - boom.birth_to}-${yr - boom.birth_from})`);
+    say(` ok  neil saeculum          -> ${turns.length} turnings, ${gens.length} generations, ${nBad.length} problems`);
+
+    // The arithmetic must carry observation years, because these are annual revised series.
+    const demo = await rest('current_macro_readings', 'fred_code,value,obs_date', '&fred_code=in.(SPPOP65UPTOZSUSA,SPPOP0014TOZSUSA,SPPOPDPNDOLUSA,SPDYNTFRTINUSA)');
+    need(demo.length === 4, `[neil] only ${demo.length} of 4 headline demographic series are loaded`);
+    const o65 = demo.find(d => d.fred_code === 'SPPOP65UPTOZSUSA');
+    const u15 = demo.find(d => d.fred_code === 'SPPOP0014TOZSUSA');
+    if (o65 && u15) {
+      const crossed = +o65.value > +u15.value;
+      need(/crossover has happened/i.test(nl) === crossed, '[neil] the page and the data disagree about whether the old-young crossover has happened');
+      say(` ok  neil arithmetic        -> 65+ ${(+o65.value).toFixed(1)}% against under-15 ${(+u15.value).toFixed(1)}%${crossed ? ', crossed' : ''}`);
+    }
+    // The Dredge section must stay empty until the concept is verified.
+    need(/Nothing is written here because nothing has been verified/i.test(nl),
+      '[neil] the Macro Hunger Games section has been filled in without the source being verified');
   }
 
   // -------------------------------------------------------------------------
