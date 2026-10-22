@@ -701,34 +701,61 @@ if (!argRoute) {
   need(app() !== w0, '[annie] switching the decision-score window did not change the table');
 
   // -------------------------------------------------------------------------
-  // 10. Adam: the contest must agree with itself. A dimension marked as agreeing with the tape
-  //     while showing a negative spread would mean the verdict and the ranking were computed from
-  //     different numbers, which is the kind of thing that reads as a finding.
+  // 10. Adam: the four macro seasons, the path, liquidity and the consumer.
+  //     Rebuilt 2026-10-22; the Macro Beauty Contest is gone from this page entirely and lives
+  //     on Kate's tab. What is guarded here is that each quad label agrees with the signs it was
+  //     derived from, that a reading sitting on an axis is shown as contested rather than stated
+  //     flatly, and that the computed domestic measure is never labelled as Howell's index.
   // -------------------------------------------------------------------------
   currentRoute = 'adam';
   await go('#adam');
   const ad = app();
-  // The contest itself moved to Kate's tab, where sentiment and crowding are read. What Adam
-  // keeps is the regime and the risk-on gauge -- the framework the contest is run against.
-  for (const want of ['Macro Beauty Contest', 'The four legs', 'Macro regime', 'Preferences under'])
-    need(ad.includes(want), `[adam] missing section: ${want}`);
-  const rows = [...ad.matchAll(/<td>([^<]+)<\/td>\s*<td><b>([^<]+)<\/b>[\s\S]*?<td class="num">(?:<span style="color:var\(--(pos|neg)\)">(-?[\d.]+)%<\/span>|<span style="color:var\(--muted\)">–<\/span>)<\/td>\s*<td>(?:<span style="color:var\(--(?:pos|neg|muted)\)"[^>]*>)?(agrees|disagrees|unscored)/g)];
-  let bad = 0;
-  for (const m of rows) {
-    const spread = m[4] === undefined ? null : +m[4] * (m[3] === 'neg' ? 1 : 1);
-    const signed = m[3] === 'neg' ? -Math.abs(+m[4]) : +m[4];
-    if (m[5] === 'unscored') continue;
-    if ((m[5] === 'agrees') !== (signed > 0)) bad++;
-  }
-  say(` ok  adam preference table  -> ${rows.length} rows, ${bad} verdict/spread mismatches`);
-  need(bad === 0, `[adam] ${bad} rows say they agree with the tape while showing a spread that disagrees`);
-  const legs = (ad.match(/awaiting data|live<\/span>|stale<\/span>/g) || []).length;
-  say(` ok  adam legs              -> ${legs} with a status chip`);
-  need(legs >= 4, `[adam] expected 4 component legs, found ${legs}`);
-  // A leg with no data must never render a 0: on a 0-100 risk scale that reads as maximum risk-off.
-  need(!/>awaiting data<\/span>[\s\S]{0,160}?font-weight:700;color:var\(--\w+\)">0</.test(ad),
-    '[adam] a leg awaiting data rendered a 0 score; it must render a dash');
+  for (const want of ['The macro season', 'The path', 'Liquidity', 'The consumer'])
+    need(ad.includes(want), `[adam] the ${want} section is missing`);
+  need(!/Macro Beauty Contest|week's beauty contest/.test(ad), '[adam] the beauty contest is back on Adam\'s page');
+  need(/rates of change, not levels/i.test(ad), '[adam] the page does not say the axes are rates of change');
 
+  const quadRows = await rest('macro_quad_history', 'as_of,regime,quad,growth_z,inflation_z,conviction');
+  need(quadRows.length > 12, `[adam] only ${quadRows.length} months of quad history`);
+  const QMAP = { goldilocks: 1, reflation: 2, inflation: 3, deflation: 4 };
+  let adBad = [];
+  for (const r of quadRows) {
+    if (QMAP[r.regime] !== r.quad) adBad.push(`${r.as_of} is ${r.regime} but quad ${r.quad}`);
+    // The quadrant IS the pair of signs. A row whose numbers disagree with its own label would
+    // make the entire path meaningless, and it is the one thing worth checking on every row.
+    const want = +r.growth_z >= 0 ? (+r.inflation_z >= 0 ? 2 : 1) : (+r.inflation_z >= 0 ? 3 : 4);
+    if (want !== r.quad) adBad.push(`${r.as_of} g ${r.growth_z} i ${r.inflation_z} is quad ${want}, labelled ${r.quad}`);
+    if (Math.abs(Math.hypot(+r.growth_z, +r.inflation_z) - +r.conviction) > 0.01) adBad.push(`${r.as_of} conviction is not the distance from the origin`);
+  }
+  adBad = [...new Set(adBad)];
+  for (const b of adBad) errors.push(`[adam] ${b}`);
+  const newestQ = quadRows.slice().sort((a, b) => a.as_of.localeCompare(b.as_of)).pop();
+  say(` ok  adam quads             -> ${quadRows.length} months, now Quad ${newestQ.quad} (g ${(+newestQ.growth_z).toFixed(2)} i ${(+newestQ.inflation_z).toFixed(2)}), ${adBad.length} problems`);
+
+  // A reading on an axis must be shown as contested. Stating a coin toss flatly is the failure
+  // this guard exists for, and today's reading is exactly that case.
+  if (Math.abs(+newestQ.growth_z) < 0.15 || Math.abs(+newestQ.inflation_z) < 0.15)
+    need(/contested/i.test(ad), '[adam] the reading sits on an axis and the page states the quad flatly anyway');
+  need(/revised data/i.test(ad), '[adam] the path does not warn that it is drawn on revised data');
+
+  const liqRows = await rest('global_liquidity_readings', 'as_of,net_liquidity,walcl,tga,rrp,direction');
+  if (liqRows.length) {
+    const l = liqRows.slice().sort((a, b) => a.as_of.localeCompare(b.as_of)).pop();
+    need(+l.net_liquidity > 0, '[adam] net liquidity is not positive, so a unit or a sign is wrong');
+    need(+l.net_liquidity < +l.walcl, '[adam] net liquidity exceeds the balance sheet it is drawn from');
+    need(+l.tga < +l.walcl && +l.rrp < +l.walcl, '[adam] a drain is larger than the whole balance sheet, which is a units error');
+    say(` ok  adam liquidity         -> $${(+l.net_liquidity / 1e6).toFixed(2)}tn, ${l.direction}`);
+  }
+  need(/never a substitute/i.test(ad), '[adam] the page does not distinguish net liquidity from Howell\'s index');
+  need(/disagree/i.test(ad), '[adam] the page does not name the disagreement between the two liquidity frameworks');
+
+  // The consumer block must be loaded but kept out of the quad, or every reading stored before
+  // today becomes incomparable with the ones after it.
+  const consumerSeries = await rest('macro_series', 'series_id,in_regime', '&series_id=in.(PSAVERT,UMCSENT,JTSQUR,DRCCLACBS,PERMIT,MICH)');
+  need(consumerSeries.length === 6, `[adam] only ${consumerSeries.length} of 6 consumer series are loaded`);
+  need(consumerSeries.every(x => x.in_regime === false), '[adam] a consumer series is feeding the quad, which silently moves the regime');
+  need(/out of the quad/i.test(ad), '[adam] the page does not say the consumer series are excluded from the quad');
+  say(` ok  adam consumer          -> ${consumerSeries.length} series loaded, all excluded from the quad`);
   // -------------------------------------------------------------------------
   // 9a. Stan's YTD column must be the MEASURED return, not the target-weight hypothetical.
   // -------------------------------------------------------------------------
@@ -1364,9 +1391,12 @@ if (!argRoute) {
     await go('#adam');
     const a = app();
     need(!/This week's beauty contest|This week&#39;s beauty contest/.test(a), '[adam] the beauty contest is still on Adam\'s page as well as Kate\'s');
-    need(/Kate/.test(a), '[adam] the page does not point at Kate, so the contest just vanished');
-    need(/Macro Beauty Contest/.test(a), '[adam] the risk-on gauge went with it; only the contest was meant to move');
-    say(` ok  kate handover          -> the contest is on Kate's tab, the regime gauge stayed with Adam`);
+    // Adam's page was rebuilt around the quads on 2026-10-22 and the risk-on gauge went with the
+    // contest, so the old assertion that it stayed no longer describes the desk. What still
+    // matters is that the contest is on exactly one page: Kate's.
+    need(/The macro season/.test(a), '[adam] the rebuilt macro page is not rendering');
+    need(/beauty contest/i.test(k), '[kate] the contest is not on Kate\'s page either, so it is nowhere');
+    say(` ok  kate handover          -> the contest is on Kate's tab alone; Adam is the quads now`);
 
     // Admin: four tabs became four sections, in the order asked for, and each old hash still lands.
     await go('#admin');

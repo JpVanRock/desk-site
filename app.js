@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -186,6 +186,10 @@ async function load() {
     qAllSoft(() => sb.from('latest_narrative_attention').select('narrative,wiki_ratio,wiki_pctile,hn_ratio,chatter_per_day,chatter_bull,chatter_tagged,attention_ratio,attention_pctile,attention_share,attention_rank,price_1m,price_3m,state,state_note,trail,n_sources,as_of'), 'narrative attention'),
     qAllSoft(() => sb.from('narratives').select('slug,label,kind,proxy_ticker,wiki_articles,hn_query,sort_order'), 'narratives'),
     qAllSoft(() => sb.from('latest_annie_decision_quality').select('as_of,strategy_id,scope,n_scored,brier,calibration_bins,n_thresholds,n_breached,n_honoured,n_unanimous,n_contested,unanimous_worked,contested_worked,n_fielded,win_skill_share,loss_skill_share,fielding_gap,cum_selection,helped_share,headline'), 'decision quality'),
+    qAllSoft(() => sb.from('macro_quad_history').select('as_of,regime,quad,growth_z,inflation_z,conviction,n_growth,n_inflation,data_as_of').order('as_of', { ascending: true }), 'quad history'),
+    qSoft(sb.from('global_liquidity_readings').select('as_of,net_liquidity,walcl,tga,rrp,chg_4w,chg_13w,chg_52w,pctile_3y,direction,headline').order('as_of', { ascending: false }).limit(1), 'net liquidity'),
+    qSoft(sb.from('gli_readings').select('as_of,value,direction,change_note,drivers,headline,source_url').order('as_of', { ascending: false }).limit(1), 'howell gli'),
+    qAllSoft(() => sb.from('current_macro_readings').select('series_id,fred_code,name,value,obs_date,unit'), 'macro now'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -276,7 +280,8 @@ async function load() {
     secStyle: (secStyle || []).filter(r => r.lens === 'sector'),
     crowding: crowding || [], narReading: narReading || [], narComponents: narComponents || [],
     narAttention: narAttention || [], narratives: narratives || [],
-    decisionQuality: decisionQuality || [] };
+    decisionQuality: decisionQuality || [], quadHistory: quadHistory || [],
+    netLiq: netLiq || [], gli: gli || [], macroNow: macroNow || [] };
 }
 
 // ---------- Views ----------
@@ -1766,176 +1771,209 @@ function equitySvg(E) {
     ${hits}</svg>`;
 }
 
-// ---------- Adam: the Macro Beauty Contest ----------
+// ---------- Adam: the four macro seasons, and liquidity ----------
 //
-// Keynes's contest is about picking what others will pick, not what deserves to win. So the page
-// puts two things side by side: what the REGIME says should be favoured, from the owner's
-// forty-two factor chart, and what the MARKET is already paying for. Agreement is a candidate
-// others are already voting for. Disagreement is the row worth reading, and it is not hidden — a
-// contest that only ever confirms itself is a mirror.
-const REGIME_LOOK = {
-  goldilocks: { label: 'Goldilocks', tone: 'var(--pos)',  blurb: 'Growth rising, inflation falling. The risk-on quadrant with no price pressure.' },
-  reflation:  { label: 'Reflation',  tone: 'var(--flat)', blurb: 'Growth rising, inflation rising. Risk-on, but with price pressure building.' },
-  inflation:  { label: 'Inflation',  tone: 'var(--neg)',  blurb: 'Growth falling, inflation rising. The stagflationary quadrant.' },
-  deflation:  { label: 'Deflation',  tone: 'var(--neg)',  blurb: 'Growth falling, inflation falling. Defensive assets over risk.' },
+// Rebuilt 2026-10-22, replacing the Macro Beauty Contest page entirely. The contest moved to Kate
+// in October and what was left here was a risk-on gauge wrapped around a regime reading. Adam's
+// subject is the macroeconomy and liquidity, so the page is now the quadrant, the path through
+// it, the liquidity that sets the amplitude, and the consumer the cycle begins with.
+//
+// THE QUADS ARE NOT NEW MATHS. The desk has computed this quadrant since September under other
+// names, from exactly the measure the quad chart uses -- the rate of change of growth and of
+// inflation, each against its own history, never the level. Goldilocks is Quad 1, reflation 2,
+// inflation 3, deflation 4.
+//
+// TWO FRAMEWORKS THAT DISAGREE, AND THE PAGE SAYS SO. The owner follows Howell, for whom global
+// liquidity is the engine, and Zeberg, who says liquidity is not in the chain at all: it
+// amplifies the markets sitting on top of the economy and moves them first, which is exactly why
+// it gets mistaken for the cause. Blending them into one house view would destroy the most useful
+// thing here, which is that two sources the desk respects disagree about what drives what.
+const QUADS = {
+  1: { name: 'Quad 1', growth: 'accelerating', inflation: 'decelerating', stance: 'Pro-growth positioning',        tone: '#22c55e' },
+  2: { name: 'Quad 2', growth: 'accelerating', inflation: 'accelerating', stance: 'Pro-growth + inflation hedges', tone: '#84cc16' },
+  3: { name: 'Quad 3', growth: 'decelerating', inflation: 'accelerating', stance: 'Stagflation protection',        tone: '#f59e0b' },
+  4: { name: 'Quad 4', growth: 'decelerating', inflation: 'decelerating', stance: 'Defensive + volatility assets', tone: '#ef4444' },
 };
-const STANCE_LOOK = {
-  risk_on:  ['Risk On',  'var(--pos)'],
-  neutral:  ['Neutral',  'var(--flat)'],
-  risk_off: ['Risk Off', 'var(--neg)'],
-};
+const QUAD_OF = { goldilocks: 1, reflation: 2, inflation: 3, deflation: 4 };
+
+// The 2x2 with the path walked through it. The axes are rates of change, so the origin is
+// "neither accelerating", not "zero growth" -- an economy growing steadily at 2% sits at the
+// centre, which is the single most misread thing about this chart.
+function quadMap(history) {
+  const pts = (history || []).filter(h => h.growth_z !== null && h.inflation_z !== null);
+  if (pts.length < 2) return '<div class="empty">Not enough history to draw the path.</div>';
+  const W = 620, Hh = 560, pad = 54, cx = pad + (W - pad * 2) / 2, cy = pad + (Hh - pad * 2) / 2;
+  const lim = Math.max(0.45, ...pts.map(p => Math.max(Math.abs(+p.growth_z), Math.abs(+p.inflation_z)))) * 1.12;
+  const X = v => cx + (v / lim) * ((W - pad * 2) / 2);
+  const Y = v => cy - (v / lim) * ((Hh - pad * 2) / 2);
+  const trail = pts.slice(-24);
+  const now = pts[pts.length - 1];
+  const label = (q, x, y) => `<text x="${x}" y="${y}" font-size="19" font-weight="800" fill="${QUADS[q].tone}" text-anchor="middle" opacity="0.92">${QUADS[q].name}</text>
+    <text x="${x}" y="${y + 17}" font-size="10.5" fill="var(--muted)" text-anchor="middle">Growth ${QUADS[q].growth === 'accelerating' ? '↑' : '↓'}  Inflation ${QUADS[q].inflation === 'accelerating' ? '↑' : '↓'}</text>
+    <text x="${x}" y="${y + 32}" font-size="10.5" fill="${QUADS[q].tone}" text-anchor="middle" opacity="0.85">${esc(QUADS[q].stance)}</text>`;
+  return `<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto" role="img" aria-label="The four macro quadrants with the path the economy has taken through them">
+    <rect x="${pad}" y="${pad}" width="${(W - pad * 2) / 2}" height="${(Hh - pad * 2) / 2}" fill="${QUADS[1].tone}" opacity="0.045"/>
+    <rect x="${cx}" y="${pad}" width="${(W - pad * 2) / 2}" height="${(Hh - pad * 2) / 2}" fill="${QUADS[2].tone}" opacity="0.045"/>
+    <rect x="${pad}" y="${cy}" width="${(W - pad * 2) / 2}" height="${(Hh - pad * 2) / 2}" fill="${QUADS[4].tone}" opacity="0.045"/>
+    <rect x="${cx}" y="${cy}" width="${(W - pad * 2) / 2}" height="${(Hh - pad * 2) / 2}" fill="${QUADS[3].tone}" opacity="0.045"/>
+    <line x1="${pad}" y1="${cy}" x2="${W - pad}" y2="${cy}" stroke="var(--line)"/>
+    <line x1="${cx}" y1="${pad}" x2="${cx}" y2="${Hh - pad}" stroke="var(--line)"/>
+    ${label(1, pad + (W - pad * 2) / 4, pad + 34)}
+    ${label(2, cx + (W - pad * 2) / 4, pad + 34)}
+    ${label(4, pad + (W - pad * 2) / 4, cy + 34)}
+    ${label(3, cx + (W - pad * 2) / 4, cy + 34)}
+    <text x="${cx}" y="${Hh - 14}" font-size="11" fill="var(--muted)" text-anchor="middle">inflation, rate of change →</text>
+    <text x="16" y="${cy}" font-size="11" fill="var(--muted)" transform="rotate(-90 16 ${cy})" text-anchor="middle">growth, rate of change →</text>
+    <path d="${trail.map((p, i) => `${i ? 'L' : 'M'}${X(+p.inflation_z).toFixed(1)} ${Y(+p.growth_z).toFixed(1)}`).join('')}" fill="none" stroke="var(--accent)" stroke-width="1.6" opacity="0.4" stroke-linecap="round"/>
+    ${trail.slice(0, -1).map((p, i) => `<circle cx="${X(+p.inflation_z).toFixed(1)}" cy="${Y(+p.growth_z).toFixed(1)}" r="${(1.6 + i * 0.12).toFixed(1)}" fill="var(--accent)" opacity="${(0.16 + i * 0.026).toFixed(2)}"><title>${esc(p.as_of)} — Quad ${p.quad}</title></circle>`).join('')}
+    <circle cx="${X(+now.inflation_z).toFixed(1)}" cy="${Y(+now.growth_z).toFixed(1)}" r="7.5" fill="${QUADS[now.quad].tone}" stroke="var(--bg)" stroke-width="2"><title>${esc(now.as_of)} — Quad ${now.quad}</title></circle>
+    <text x="${(X(+now.inflation_z) + 12).toFixed(1)}" y="${(Y(+now.growth_z) + 4).toFixed(1)}" font-size="11.5" font-weight="700" fill="var(--text)">today</text>
+  </svg>`;
+}
 
 function adam() {
   const n = v => v === null || v === undefined ? null : +v;
-  const reading = (D.beautyReading || [])[0] || null;
-  const comps = D.beautyComponents || [];
-  const regime = (D.macroRegime || [])[0] || null;
-  const ranks = D.beautyRanks || [];
-  const hist = D.beautyHistory || [];
   const pc = v => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : ''}${(+v * 100).toFixed(1)}%`;
+  const hist = D.quadHistory || [];
+  const now = hist.length ? hist[hist.length - 1] : null;
+  const live = (D.macroRegime || [])[0] || null;
+  const liq = (D.netLiq || [])[0] || null;
+  const howell = (D.gli || [])[0] || null;
+  const macro = D.macroNow || [];
+  const mac = code => macro.find(m => m.fred_code === code) || null;
 
-  if (!reading && !regime && !ranks.length) {
+  if (!now && !live) {
     return `<span class="eyebrow">Macro</span><h1>Adam</h1>
-     <p class="sub">The Macro Beauty Contest.</p>
-     <div class="card"><div class="empty">Nothing computed yet. Run jobs/compute-macro-regime.mjs and jobs/compute-beauty-contest.mjs.</div></div>`;
+     <p class="sub">The four macro seasons.</p>
+     <div class="card"><div class="empty">Nothing computed yet. Run jobs/compute-macro-regime.mjs and jobs/compute-quad-history.mjs.</div></div>`;
   }
 
+  // The quadrants meet at a point, so a reading sitting on an axis is a coin toss wearing a
+  // season's name. Within this of zero the page says the call is contested rather than stating
+  // it flatly -- which is the case today.
+  const ON_AXIS = 0.15;
+  const g = now ? +now.growth_z : null, inf = now ? +now.inflation_z : null;
+  const quad = now ? now.quad : (live ? QUAD_OF[live.regime] : null);
+  const Q = quad ? QUADS[quad] : null;
+  const contested = g !== null && Q && (Math.abs(g) < ON_AXIS || Math.abs(inf) < ON_AXIS);
+  const altQuad = !contested ? null : (Math.abs(g) < ON_AXIS
+    ? Object.values(QUADS).find(x => x.inflation === Q.inflation && x.growth !== Q.growth)
+    : Object.values(QUADS).find(x => x.growth === Q.growth && x.inflation !== Q.inflation));
 
-  // ---- the headline reading ----
-  const score = reading ? n(reading.score) : null;
-  const [stLabel, stTone] = reading && reading.stance ? STANCE_LOOK[reading.stance] : ['Not yet reading', 'var(--muted)'];
-  const dialPos = score === null ? 50 : score;
-  const gauge = `<div class="card" style="margin-bottom:14px">
+  const headCard = !Q ? '' : `<div class="card" style="margin-bottom:14px">
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
-      <h2 style="margin:0">Macro Beauty Contest</h2>
-      <span style="font-size:12px;color:var(--muted)">${reading ? `${reading.n_live} of ${reading.n_total} legs live` : ''}${regime ? ' · as of ' + esc(regime.as_of) : ''}</span></div>
-    <div style="display:flex;align-items:center;gap:28px;flex-wrap:wrap;margin-top:14px">
-      <div style="min-width:150px">
-        <div style="font-size:52px;font-weight:700;line-height:1;color:${stTone}">${score === null ? '—' : score.toFixed(0)}</div>
-        <div style="font-size:17px;font-weight:600;color:${stTone};margin-top:4px">${esc(stLabel)}</div>
+      <h2 style="margin:0">The macro season</h2>
+      <span style="font-size:12px;color:var(--muted)">${now ? esc(now.as_of) : ''}${live && live.stale_days !== null ? ` · newest input ${live.stale_days} day${live.stale_days === 1 ? '' : 's'} old` : ''}</span></div>
+    <div style="display:flex;align-items:center;gap:30px;flex-wrap:wrap;margin-top:14px">
+      <div style="min-width:210px">
+        <div style="font-size:52px;font-weight:800;line-height:1;color:${Q.tone}">${esc(Q.name)}</div>
+        <div style="font-size:16px;font-weight:600;margin-top:6px">Growth ${Q.growth === 'accelerating' ? '↑' : '↓'} &nbsp; Inflation ${Q.inflation === 'accelerating' ? '↑' : '↓'}</div>
+        <div style="font-size:15px;color:${Q.tone};margin-top:4px">${esc(Q.stance)}</div></div>
+      <div style="flex:1;min-width:250px">
+        ${[['Growth', g], ['Inflation', inf]].map(([lab, v]) => `
+          <div style="margin-bottom:10px">
+            <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px">
+              <span>${lab}, rate of change</span><b style="color:${v === null ? 'var(--muted)' : v >= 0 ? 'var(--pos)' : 'var(--neg)'}">${v === null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(2)}σ</b></div>
+            <div style="height:8px;border-radius:99px;background:var(--panel2);position:relative">
+              <div style="position:absolute;left:50%;top:-2px;width:1px;height:12px;background:var(--line)"></div>
+              <div style="position:absolute;left:${v === null ? 50 : Math.max(2, Math.min(98, 50 + v * 55))}%;top:-3px;width:3px;height:14px;border-radius:2px;background:${v === null ? 'var(--muted)' : v >= 0 ? 'var(--pos)' : 'var(--neg)'}"></div></div></div>`).join('')}
+        <div style="font-size:12px;color:var(--muted)">conviction ${now ? (+now.conviction).toFixed(2) : '—'} · ${now ? now.n_growth : '—'} growth and ${now ? now.n_inflation : '—'} inflation series</div></div>
+    </div>
+    ${contested && altQuad ? `<div style="margin-top:14px;padding:11px 13px;border-left:3px solid var(--warn);background:var(--panel2);border-radius:8px;font-size:13px">
+      <b>This call is contested, and the page will not pretend otherwise.</b> ${Math.abs(g) < ON_AXIS ? 'Growth' : 'Inflation'} is at ${(Math.abs(g) < ON_AXIS ? g : inf).toFixed(2)}σ — on the axis rather than inside a quadrant. The quadrants meet at a point, so a reading this close to it is a coin toss between <b style="color:${Q.tone}">${esc(Q.name)}</b> and <b style="color:${altQuad.tone}">${esc(altQuad.name)}</b>. The desk's two ways of computing it currently land on different sides for exactly this reason, while agreeing on the numbers to within 0.06.</div>` : ''}
+    <p class="note"><b>These are rates of change, not levels.</b> The origin is "neither accelerating", not "zero growth" — an economy growing steadily at 2% with steady inflation sits at the centre, which is the most misread thing about this chart. Each series is measured against its own history of its own rate of change, then the growth legs and the inflation legs are averaged.</p>
+  </div>`;
+
+  const mapCard = `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">The path</h2>
+      <span style="font-size:12px;color:var(--muted)">${hist.length} month${hist.length === 1 ? '' : 's'}, last 24 drawn</span></div>
+    <p class="note" style="margin:6px 0 12px">A quadrant is a position; the useful thing is which way the economy is travelling through it. The marks grow toward today, so direction reads without an arrow.</p>
+    <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start">
+      <div style="flex:1;min-width:300px;max-width:640px">${quadMap(hist)}</div>
+      <div style="flex:1;min-width:230px">
+        <div class="eyebrow" style="margin-bottom:8px">Time spent in each season</div>
+        ${[1, 2, 3, 4].map(q => { const nq = hist.filter(h => h.quad === q).length;
+          return `<div style="margin-bottom:9px">
+            <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px">
+              <span style="color:${QUADS[q].tone};font-weight:600">${esc(QUADS[q].name)}</span><span style="color:var(--muted)">${nq} mo</span></div>
+            <div style="height:8px;border-radius:99px;background:var(--panel2);overflow:hidden">
+              <div style="width:${hist.length ? (nq / hist.length * 100).toFixed(1) : 0}%;height:100%;background:${QUADS[q].tone};opacity:.75"></div></div></div>`; }).join('')}
+        <p class="note" style="margin-top:12px"><b>Drawn on revised data.</b> Each point uses the figures as they read today, not as they read then, because this desk has no reliable vintage record going back. Payrolls and GDP are revised heavily, and usually in the direction that makes a turn look obvious afterwards. This is how the economy now <b>looks</b> to have travelled — not what was knowable at the time.</p>
+      </div></div>
+  </div>`;
+
+  const dirTone = d => d === 'expanding' ? 'var(--pos)' : d === 'contracting' ? 'var(--neg)' : 'var(--flat)';
+  const gliAge = howell ? Math.round((Date.now() - Date.parse(howell.as_of)) / 864e5) : null;
+  const liqCard = `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Liquidity</h2>
+      <span style="font-size:12px;color:var(--muted)">${liq ? esc(liq.as_of) : 'not computed'}</span></div>
+    <div style="display:flex;gap:26px;flex-wrap:wrap;margin-top:12px">
+      <div style="flex:1;min-width:280px">
+        <div class="eyebrow" style="margin-bottom:6px">US net liquidity · computed</div>
+        ${!liq ? '<div class="empty">Not computed yet.</div>' : `
+        <div style="font-size:34px;font-weight:700;line-height:1">$${(+liq.net_liquidity / 1e6).toFixed(2)}tn</div>
+        <div style="font-size:13px;font-weight:600;color:${dirTone(liq.direction)};margin-top:3px">${esc((liq.direction || '').replace(/^./, c => c.toUpperCase()))}</div>
+        <table style="margin-top:12px"><tbody>
+          ${[['4 weeks', liq.chg_4w], ['13 weeks', liq.chg_13w], ['52 weeks', liq.chg_52w]].map(([lab, v]) => `<tr><td style="font-size:12.5px">${lab}</td><td class="num" style="color:${n(v) === null ? 'var(--muted)' : +v >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(v)}</td></tr>`).join('')}
+          <tr><td style="font-size:12.5px">Level, own 3 years</td><td class="num">${liq.pctile_3y === null ? '—' : (+liq.pctile_3y * 100).toFixed(0) + 'th pctile'}</td></tr>
+        </tbody></table>
+        <p class="note" style="margin-top:10px">Fed balance sheet <b>$${(+liq.walcl / 1e6).toFixed(2)}tn</b> less the Treasury account <b>$${(+liq.tga / 1e6).toFixed(2)}tn</b> and reverse repo <b>$${(+liq.rrp / 1e6).toFixed(3)}tn</b>. <b>Direction over level:</b> a large balance sheet shrinking and a small one growing are opposite conditions, and the level alone says neither.</p>`}
       </div>
-      <div style="flex:1;min-width:260px">
-        <div class="dialtrack"><div class="dialmark" style="left:${dialPos}%;background:${score === null ? 'var(--line)' : stTone}"></div></div>
-        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:6px">
-          <span>Risk Off</span><span>Neutral</span><span>Risk On</span></div>
+      <div style="flex:1;min-width:280px;border-left:1px solid var(--line);padding-left:22px">
+        <div class="eyebrow" style="margin-bottom:6px">Howell · Global Liquidity Index</div>
+        ${!howell ? `<div class="empty">No reading entered. The GLI is proprietary and behind the Capital Wars paywall — the public endpoint returns a preview with no index level — so it is entered by hand with <code>node jobs/record-gli.mjs</code> rather than fetched.</div>` : `
+        <div style="font-size:34px;font-weight:700;line-height:1;color:${dirTone(howell.direction === 'rising' ? 'expanding' : howell.direction === 'falling' ? 'contracting' : 'flat')}">${esc((howell.direction || '').replace(/^./, c => c.toUpperCase()))}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:3px">${howell.value === null ? 'level behind the paywall' : `level ${howell.value}`} · as of ${esc(howell.as_of)}${gliAge !== null && gliAge > 14 ? ` · <b style="color:var(--warn)">${gliAge} days old</b>` : ''}</div>
+        ${howell.change_note ? `<p class="note" style="margin-top:10px;font-style:italic">“${esc(howell.change_note)}”</p>` : ''}
+        ${Array.isArray(howell.drivers) && howell.drivers.length ? `<div style="margin-top:8px">${howell.drivers.map(d => `<span class="chip">${esc(d)}</span>`).join(' ')}</div>` : ''}
+        <p class="note" style="margin-top:10px">Howell's own words, quoted rather than paraphrased — the desk does not restate someone else's analysis as its own. <b>Entered, not fetched</b>, so it is only as current as the last entry.</p>`}
       </div>
     </div>
-    <p class="note">${reading ? esc(reading.headline) : 'No reading computed yet.'}</p></div>`;
+    <p class="note" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)"><b>These two measure different things, and the frameworks behind them disagree.</b> Net liquidity is domestic and computed from three public series. Howell's index spans central banks, cross-border flows and the collateral multiplier, none of which this desk has a feed for, so one is never a substitute for the other. The disagreement runs deeper than coverage: for Howell liquidity is the engine, while Zeberg's framework puts it outside the chain entirely — amplifying the markets that sit on top of the economy and moving them first, which is precisely why it gets mistaken for the cause. The desk holds both rather than picking.</p>
+  </div>`;
 
-  // ---- the four legs ----
-  const legCard = c => {
-    const s = n(c.score);
-    const live = c.status === 'live', stale = c.status === 'stale';
-    const tone = s === null ? 'var(--muted)' : s >= 60 ? 'var(--pos)' : s <= 40 ? 'var(--neg)' : 'var(--flat)';
-    return `<div class="card">
-      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px">
-        <h2 style="margin:0;font-size:13px">${esc(c.label)}</h2>
-        <span class="chip" style="color:${live ? 'var(--pos)' : stale ? 'var(--warn)' : 'var(--muted)'}">${live ? 'live' : stale ? 'stale' : 'awaiting data'}</span></div>
-      <div style="font-size:34px;font-weight:700;color:${tone};margin:8px 0 2px">${s === null ? '—' : s.toFixed(0)}</div>
-      <div style="font-size:13px;margin-bottom:8px">${esc(c.headline)}</div>
-      ${c.value_text ? `<div style="font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums">${esc(c.value_text)}</div>` : ''}
-      ${c.measure ? `<p class="note" style="margin-top:8px">${esc(c.measure)}</p>` : ''}
-      ${c.how_to_supply ? `<p class="note" style="margin-top:6px;color:var(--warn)">${esc(c.how_to_supply)}</p>` : ''}
-      <div style="font-size:11px;color:var(--muted);margin-top:8px">Source: ${esc(c.source)}${c.data_as_of ? ` · data to ${esc(c.data_as_of)}` : ''}</div></div>`;
+  const cRow = (label, code, fmt, good) => {
+    const m = mac(code);
+    const v = m && m.value !== null ? +m.value : null;
+    return `<tr><td style="font-size:12.5px">${esc(label)}</td>
+      <td class="num"${good && v !== null ? ` style="color:${good(v)}"` : ''}>${v === null ? '<span style="color:var(--muted)">—</span>' : fmt(v)}</td>
+      <td style="font-size:11px;color:var(--muted)">${m ? esc(m.obs_date) : '—'}</td></tr>`;
   };
-  const order = ['global_liquidity', 'macro_regime', 'positioning', 'move_index'];
-  const legs = `<div class="card" style="margin-bottom:14px">
-    <h2>The four legs</h2>
-    <p class="note" style="margin:0 0 12px">Equally weighted; the headline is their mean. A leg with no data scores <b>null, never zero</b> — a zero on a 0-100 risk scale reads as maximum risk-off, which is the most misleading thing an empty leg could say.</p>
-    <div class="dashgrid" style="grid-template-columns:repeat(auto-fit,minmax(255px,1fr))">
-      ${order.map(k => comps.find(c => c.component === k)).filter(Boolean).map(legCard).join('')}</div></div>`;
+  const consumerCard = `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">The consumer</h2>
+      <span style="font-size:12px;color:var(--muted)">68–70% of GDP</span></div>
+    <p class="note" style="margin:6px 0 12px">Zeberg's sequence: the cost of money sets the household's monthly payment, demand responds, production responds to demand, inventories to production, employment to the mismatch, wages to employment, inflation to wages — and the policy rate that answers inflation sets the cost of money for the next turn. The cycle begins and ends here, which is why this sits beside the quad rather than under it.</p>
+    <div style="display:flex;gap:26px;flex-wrap:wrap">
+      <div style="flex:1;min-width:270px">
+        <div class="eyebrow" style="margin-bottom:6px">Cash flow and leverage</div>
+        <table><tbody>
+          ${cRow('Personal saving rate', 'PSAVERT', v => v.toFixed(1) + '%', v => v < 5 ? 'var(--neg)' : 'var(--text)')}
+          ${cRow('Real disposable income per capita', 'A229RX0', v => '$' + v.toLocaleString(undefined, { maximumFractionDigits: 0 }))}
+          ${cRow('Consumer credit outstanding', 'TOTALSL', v => '$' + (v / 1e6).toFixed(2) + 'tn')}
+          ${cRow('Credit card delinquency', 'DRCCLACBS', v => v.toFixed(2) + '%', v => v > 2.5 ? 'var(--neg)' : 'var(--text)')}
+          ${cRow('Mortgage delinquency', 'DRSFRMACBS', v => v.toFixed(2) + '%')}
+        </tbody></table>
+      </div>
+      <div style="flex:1;min-width:270px">
+        <div class="eyebrow" style="margin-bottom:6px">Labour security and psychology</div>
+        <table><tbody>
+          ${cRow('Quit rate', 'JTSQUR', v => v.toFixed(1) + '%', v => v < 2.2 ? 'var(--neg)' : 'var(--text)')}
+          ${cRow('Job openings', 'JTSJOL', v => (v / 1000).toFixed(2) + 'm')}
+          ${cRow('Consumer sentiment', 'UMCSENT', v => v.toFixed(1), v => v < 65 ? 'var(--neg)' : 'var(--text)')}
+          ${cRow('Inflation expected, 12 months', 'MICH', v => v.toFixed(1) + '%')}
+          ${cRow('Building permits', 'PERMIT', v => (v / 1000).toFixed(2) + 'm')}
+        </tbody></table>
+      </div>
+    </div>
+    <p class="note" style="margin-top:12px"><b>The quit rate is the honest confidence measure</b>, because being wrong about it costs something: a worker only quits when they believe another job is there. <b>Housing leads</b> — it is the largest monthly payment and the first thing to turn when that payment changes. <b>Inflation is the caboose</b>, still rising after the economy has turned, which is why a central bank steering by it is late by construction. These series are loaded but deliberately kept <b>out of the quad</b>: dropping thirteen new inputs into the growth leg would silently move the regime and make every reading stored before today incomparable with the ones after.</p>
+  </div>`;
 
-  // ---- the regime quadrant ----
-  const quad = !regime ? '' : (() => {
-    const g = +regime.growth_z, i = +regime.inflation_z;
-    const lq = regime.liquidity_z === null || regime.liquidity_z === undefined ? null : +regime.liquidity_z;
-    const DRIVER = {
-      term_premium: ['term premium', 'Long rates are rising because investors want more compensation to hold duration, not because they expect more inflation. An inflation-hedged book is least prepared for this one.'],
-      breakevens: ['breakevens', 'Long rates are rising on expected inflation rather than on the price of duration risk. Real assets and breakeven-linked holdings are the ones that answer it.'],
-      mixed: ['mixed', 'Term premium and breakevens are moving together, so the move in long rates does not separate into a real-rate story or an inflation story.'],
-    };
-    const drv = regime.rate_driver ? DRIVER[regime.rate_driver] : null;
-    const S = 300, cx = S / 2, cy = S / 2, k = 55;   // 55px per standard deviation
-    const x = Math.max(16, Math.min(S - 16, cx + Math.max(-2.4, Math.min(2.4, g)) * k));
-    const y = Math.max(16, Math.min(S - 16, cy - Math.max(-2.4, Math.min(2.4, i)) * k));
-    const lab = (tx, ty, t, on) => `<text x="${tx}" y="${ty}" font-size="11" text-anchor="middle" fill="${on ? REGIME_LOOK[t.toLowerCase()].tone : 'var(--muted)'}" font-weight="${on ? 700 : 400}">${t}</text>`;
-    return `<div class="card" style="margin-bottom:14px">
-      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
-        <h2 style="margin:0">Macro regime</h2>
-        <span style="font-size:12px;color:var(--muted)">data to ${esc(regime.data_as_of || '—')}${regime.stale_days > 45 ? ` · ${regime.stale_days} days old` : ''}</span></div>
-      <div style="display:flex;gap:24px;align-items:center;flex-wrap:wrap;margin-top:10px">
-        <svg viewBox="0 0 ${S} ${S}" style="width:300px;max-width:100%;height:auto;flex:none">
-          <rect x="0" y="0" width="${cx}" height="${cy}" fill="var(--panel2)" opacity=".5"/>
-          <rect x="${cx}" y="0" width="${cx}" height="${cy}" fill="var(--panel2)" opacity=".8"/>
-          <rect x="0" y="${cy}" width="${cx}" height="${cy}" fill="var(--panel2)" opacity=".3"/>
-          <rect x="${cx}" y="${cy}" width="${cx}" height="${cy}" fill="var(--panel2)" opacity=".6"/>
-          <line x1="${cx}" y1="0" x2="${cx}" y2="${S}" stroke="var(--line)"/>
-          <line x1="0" y1="${cy}" x2="${S}" y2="${cy}" stroke="var(--line)"/>
-          ${lab(cx / 2, 22, 'Inflation', regime.regime === 'inflation')}
-          ${lab(cx + cx / 2, 22, 'Reflation', regime.regime === 'reflation')}
-          ${lab(cx / 2, S - 12, 'Deflation', regime.regime === 'deflation')}
-          ${lab(cx + cx / 2, S - 12, 'Goldilocks', regime.regime === 'goldilocks')}
-          <text x="${S - 4}" y="${cy - 6}" font-size="10" text-anchor="end" fill="var(--muted)">growth →</text>
-          <text x="${cx + 6}" y="12" font-size="10" fill="var(--muted)">inflation ↑</text>
-          <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="${REGIME_LOOK[regime.regime].tone}"/>
-          <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="13" fill="none" stroke="${REGIME_LOOK[regime.regime].tone}" stroke-opacity=".4"/>
-        </svg>
-        <div style="flex:1;min-width:240px">
-          <div style="font-size:24px;font-weight:700;color:${REGIME_LOOK[regime.regime].tone}">${esc(REGIME_LOOK[regime.regime].label)}</div>
-          <p style="margin:4px 0 10px;color:var(--muted);font-size:13px">${esc(REGIME_LOOK[regime.regime].blurb)}</p>
-          <div style="font-variant-numeric:tabular-nums;font-size:13px">
-            Growth <b style="color:${g >= 0 ? 'var(--pos)' : 'var(--neg)'}">${g >= 0 ? '+' : ''}${g.toFixed(2)}σ</b> across ${regime.n_growth} series<br>
-            Inflation <b style="color:${i >= 0 ? 'var(--neg)' : 'var(--pos)'}">${i >= 0 ? '+' : ''}${i.toFixed(2)}σ</b> across ${regime.n_inflation} series<br>
-            Conviction <b>${(+regime.conviction).toFixed(2)}</b></div>
-          ${lq === null ? '' : `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-variant-numeric:tabular-nums;font-size:13px">
-            Cost of liquidity <b style="color:${lq >= 0 ? 'var(--neg)' : 'var(--pos)'}">${lq >= 0 ? '+' : ''}${lq.toFixed(2)}σ</b> across ${regime.n_liquidity} series
-            <span style="color:var(--muted)"> · ${lq >= 0 ? 'getting dearer' : 'getting cheaper'}</span>
-            ${drv ? `<br>Long rates driven by <b title="${esc(drv[1])}">${esc(drv[0])}</b>${regime.term_premium_z !== null && regime.breakeven_z !== null ? ` <span style="color:var(--muted)">(term premium ${+regime.term_premium_z >= 0 ? '+' : ''}${(+regime.term_premium_z).toFixed(2)}σ vs breakevens ${+regime.breakeven_z >= 0 ? '+' : ''}${(+regime.breakeven_z).toFixed(2)}σ)</span>` : ''}` : ''}</div>`}
-        </div></div>
-      <p class="note">Each series is reduced to how its recent change compares with its own history of that change, signed so a fall in unemployment reads as growth rising, then averaged within its factor. <b>Conviction is the distance from the centre</b>, where the four quadrants meet: ${+regime.conviction < 0.5 ? `at ${(+regime.conviction).toFixed(2)} this reading sits close enough to the boundary that the quadrant is nearly a coin toss, and it should be read as a lean rather than a call.` : 'a reading far from the centre is a regime; one near it is a coin toss wearing a regime\'s name.'}${regime.stale_days > 45 ? ` <b>The newest observation is ${regime.stale_days} days old</b>, so this is a historical reading rather than a current one. The macro feed no longer depends on an API key — it falls back to FRED's public CSV export — so a stale reading now means a network failure, a FRED outage, or a withdrawn series, and the nightly log names which.` : ''}
-      ${lq === null ? '' : `<b>The quadrant is growth against inflation only.</b> The cost of liquidity is measured and reported beside it rather than added as a third axis: the forty-two factor preference table below is keyed to these four quadrants, and a third dimension would orphan it. It still moves the risk score, at half the weight of the quadrant itself, because a book facing liquidity getting dearer is not in the same position as one facing an easing of it, whatever quadrant they share. Separating term premium from breakevens is the reason the leg was added — the inflation average alone cannot say whether a rising ten-year is the market pricing inflation or demanding to be paid for duration, and those call for opposite holdings.`}</p></div>`;
-  })();
-
-  // ---- the full preference table for this regime ----
-  const prefTable = !ranks.length ? '' : `<div class="card" style="margin-bottom:14px">
-    <h2>Preferences under ${esc(regime ? REGIME_LOOK[regime.regime].label : '')}</h2>
-    <p class="note" style="margin:0 0 10px">The owner's forty-two factor chart, for the quadrant the data is currently in. It is a framework the desk has adopted, not a measurement — stored as data so the chart and this page cannot drift apart.</p>
-    <table><thead><tr><th>Dimension</th><th>Favoured</th><th>Against</th><th class="num">3-month spread</th><th>Tape</th></tr></thead><tbody>
-    ${ranks.slice().sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99)).map(r => `<tr>
-      <td>${esc(r.dimension)}</td>
-      <td><b>${esc(r.prefer)}</b>${r.prefer_tkr ? ` <span class="chip">${esc(r.prefer_tkr)}</span>` : ''}</td>
-      <td style="color:var(--muted)">${esc(r.avoid)}${r.avoid_tkr ? ` <span class="chip">${esc(r.avoid_tkr)}</span>` : ''}</td>
-      <td class="num">${r.spread_3m === null ? '<span style="color:var(--muted)">–</span>' : `<span style="color:${+r.spread_3m >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(r.spread_3m)}</span>`}</td>
-      <td>${r.confirmed === null ? `<span style="color:var(--muted)" title="${esc(r.unavailable_reason || '')}">unscored</span>`
-        : r.confirmed ? '<span style="color:var(--pos)">agrees</span>' : '<span style="color:var(--neg)">disagrees</span>'}</td></tr>`).join('')}
-    </tbody></table></div>`;
-
-  // ---- history ----
-  const histCard = `<div class="card" style="margin-bottom:14px">
-    <h2>History</h2>
-    ${hist.length < 2
-      ? `<div class="empty">${hist.length ? 'One reading so far, taken ' + esc(hist[0].as_of) + '. The chart needs a run of them.' : 'No readings yet.'} The contest is evaluated on every nightly run and kept, so this fills in on its own.</div>`
-      : (() => {
-        const W = 760, Hh = 150, pad = { l: 34, r: 10, t: 10, b: 20 };
-        const pts = hist.filter(h => h.score !== null).slice().sort((a, b) => a.as_of.localeCompare(b.as_of));
-        if (pts.length < 2) return '<div class="empty">Not enough published readings to draw a line — the headline is withheld while fewer than half the legs are live.</div>';
-        const X = i => pad.l + (i / (pts.length - 1)) * (W - pad.l - pad.r);
-        const Y = v => pad.t + (1 - v / 100) * (Hh - pad.t - pad.b);
-        return `<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto">
-          ${[0, 40, 60, 100].map(v => `<line x1="${pad.l}" y1="${Y(v)}" x2="${W - pad.r}" y2="${Y(v)}" stroke="var(--line)"/><text x="${pad.l - 5}" y="${Y(v) + 3.5}" font-size="10" text-anchor="end" fill="var(--muted)">${v}</text>`).join('')}
-          <path d="${pts.map((p, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(+p.score).toFixed(1)}`).join('')}" fill="none" stroke="var(--accent)" stroke-width="2"/>
-          <text x="${pad.l}" y="${Hh - 5}" font-size="10" fill="var(--muted)">${esc(pts[0].as_of)}</text>
-          <text x="${W - pad.r}" y="${Hh - 5}" font-size="10" text-anchor="end" fill="var(--muted)">${esc(pts.at(-1).as_of)}</text></svg>`;
-      })()}
-    <p class="note">Every nightly run writes a reading and keeps it, so the contest can be graded later against what the market actually did. That is the point of keeping it rather than only showing today.</p></div>`;
-
-  // The contest itself -- the ranked dimensions and the reflexivity test on each -- now lives on
-  // Kate's tab, which is where sentiment and crowding are read. What stays here is the regime and
-  // the risk-on/risk-off gauge: the framework Kate's contest is run AGAINST. Adam says what should
-  // win; Kate says what the crowd is actually voting for, and whether the vote is self-feeding.
   return `<span class="eyebrow">Macro</span><h1>Adam</h1>
-   <p class="sub">The regime, and the risk-on reading behind it. The beauty contest itself is on <a href="#kate">Kate's tab</a>.</p>
-   ${gauge}${legs}${quad}${prefTable}${histCard}`;
+   <p class="sub">The four macro seasons, the path between them, the liquidity that sets the amplitude, and the consumer the cycle begins with.</p>
+   ${headCard}${mapCard}${liqCard}${consumerCard}`;
 }
 
 // The news-flow breakdown behind the percentage on Sven's table. Built from the releases array
@@ -2129,6 +2167,16 @@ function murmuration(rows, labelOf, kindOf) {
     }).join('')}
   </svg>`;
 }
+// The four macro quadrants, as the beauty contest refers to them. This lived in Adam's section
+// until his page was rebuilt around the quad numbers; it belongs here now, because the contest is
+// the only thing that reads it. Quad 1 is goldilocks, 2 reflation, 3 inflation, 4 deflation --
+// the same quadrant under the name each page uses for it.
+const REGIME_LOOK = {
+  goldilocks: { label: 'Goldilocks · Quad 1', tone: 'var(--pos)',  blurb: 'Growth rising, inflation falling. The risk-on quadrant with no price pressure.' },
+  reflation:  { label: 'Reflation · Quad 2',  tone: 'var(--flat)', blurb: 'Growth rising, inflation rising. Risk-on, but with price pressure building.' },
+  inflation:  { label: 'Inflation · Quad 3',  tone: 'var(--neg)',  blurb: 'Growth falling, inflation rising. The stagflationary quadrant.' },
+  deflation:  { label: 'Deflation · Quad 4',  tone: 'var(--neg)',  blurb: 'Growth falling, inflation falling. Defensive assets over risk.' },
+};
 const STANCE_CROWD = {
   crowded:   ['Crowded',  'var(--neg)'],
   mixed:     ['Mixed',    'var(--flat)'],
