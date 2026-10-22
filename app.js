@@ -188,7 +188,7 @@ async function load() {
     qAllSoft(() => sb.from('latest_annie_decision_quality').select('as_of,strategy_id,scope,n_scored,brier,calibration_bins,n_thresholds,n_breached,n_honoured,n_unanimous,n_contested,unanimous_worked,contested_worked,n_fielded,win_skill_share,loss_skill_share,fielding_gap,cum_selection,helped_share,headline'), 'decision quality'),
     qAllSoft(() => sb.from('macro_quad_history').select('as_of,regime,quad,growth_z,inflation_z,conviction,n_growth,n_inflation,data_as_of').order('as_of', { ascending: true }), 'quad history'),
     qSoft(sb.from('global_liquidity_readings').select('as_of,net_liquidity,walcl,tga,rrp,chg_4w,chg_13w,chg_52w,pctile_3y,direction,headline').order('as_of', { ascending: false }).limit(1), 'net liquidity'),
-    qSoft(sb.from('gli_readings').select('as_of,value,direction,change_note,drivers,headline,source_url').order('as_of', { ascending: false }).limit(1), 'howell gli'),
+    qAllSoft(() => sb.from('gli_readings').select('as_of,value,direction,change_note,drivers,headline,source_url,gli_full,gli_flash,smb,collateral_multiplier,basis,move_quoted').order('as_of', { ascending: true }), 'howell gli'),
     qAllSoft(() => sb.from('current_macro_readings').select('series_id,fred_code,name,value,obs_date,unit'), 'macro now'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
@@ -1838,7 +1838,12 @@ function adam() {
   const now = hist.length ? hist[hist.length - 1] : null;
   const live = (D.macroRegime || [])[0] || null;
   const liq = (D.netLiq || [])[0] || null;
-  const howell = (D.gli || [])[0] || null;
+  // The GLI arrives as a series now. The figures come from the newest row carrying them; the
+  // commentary from the newest row carrying a quote, which is usually a different row, because
+  // the note's text and its data table are dated differently.
+  const gliAll = D.gli || [];
+  const gliNums = [...gliAll].reverse().find(x => x.gli_full !== null) || null;
+  const howell = [...gliAll].reverse().find(x => x.change_note) || gliNums || null;
   const macro = D.macroNow || [];
   const mac = code => macro.find(m => m.fred_code === code) || null;
 
@@ -1862,7 +1867,7 @@ function adam() {
 
   const headCard = !Q ? '' : `<div class="card" style="margin-bottom:14px">
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
-      <h2 style="margin:0">The macro season</h2>
+      <h2 style="margin:0">The four macro regimes</h2>
       <span style="font-size:12px;color:var(--muted)">${now ? esc(now.as_of) : ''}${live && live.stale_days !== null ? ` · newest input ${live.stale_days} day${live.stale_days === 1 ? '' : 's'} old` : ''}</span></div>
     <div style="display:flex;align-items:center;gap:30px;flex-wrap:wrap;margin-top:14px">
       <div style="min-width:210px">
@@ -1905,35 +1910,89 @@ function adam() {
 
   const dirTone = d => d === 'expanding' ? 'var(--pos)' : d === 'contracting' ? 'var(--neg)' : 'var(--flat)';
   const gliAge = howell ? Math.round((Date.now() - Date.parse(howell.as_of)) / 864e5) : null;
+
+  // A small line through the index, the base beneath it and the multiplier between them. Levels,
+  // not rebased: the point of Howell's series is that the index IS the base times the multiplier,
+  // and normalising all three would hide the arithmetic holding them together.
+  const spark = (rows, key, tone) => {
+    const pts = rows.filter(r => r[key] !== null && r[key] !== undefined).map(r => ({ d: r.as_of, v: +r[key] }));
+    if (pts.length < 3) return '';
+    const W = 250, Hh = 42;
+    const lo = Math.min(...pts.map(p => p.v)), hi = Math.max(...pts.map(p => p.v));
+    const X = i => (i / (pts.length - 1)) * W;
+    const Y = v => hi === lo ? Hh / 2 : 4 + (1 - (v - lo) / (hi - lo)) * (Hh - 8);
+    return `<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;max-width:250px;height:auto" role="img" aria-label="trend since January 2024">
+      <path d="${pts.map((p, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(p.v).toFixed(1)}`).join('')}" fill="none" stroke="${tone}" stroke-width="1.6"/>
+      <circle cx="${X(pts.length - 1).toFixed(1)}" cy="${Y(pts[pts.length - 1].v).toFixed(1)}" r="2.6" fill="${tone}"/></svg>`;
+  };
+  const gliChg = (key, back) => {
+    const rows = gliAll.filter(r => r[key] !== null && r[key] !== undefined);
+    if (rows.length <= back) return null;
+    const a = +rows[rows.length - 1 - back][key], b = +rows[rows.length - 1][key];
+    return a > 0 ? b / a - 1 : null;
+  };
+  const gliDir = (() => { const c = gliChg('gli_full', 4); return c === null ? null : c > 0.002 ? 'expanding' : c < -0.002 ? 'contracting' : 'flat'; })();
+
   const liqCard = `<div class="card" style="margin-bottom:14px">
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
-      <h2 style="margin:0">Liquidity</h2>
-      <span style="font-size:12px;color:var(--muted)">${liq ? esc(liq.as_of) : 'not computed'}</span></div>
-    <div style="display:flex;gap:26px;flex-wrap:wrap;margin-top:12px">
-      <div style="flex:1;min-width:280px">
-        <div class="eyebrow" style="margin-bottom:6px">US net liquidity · computed</div>
-        ${!liq ? '<div class="empty">Not computed yet.</div>' : `
-        <div style="font-size:34px;font-weight:700;line-height:1">$${(+liq.net_liquidity / 1e6).toFixed(2)}tn</div>
-        <div style="font-size:13px;font-weight:600;color:${dirTone(liq.direction)};margin-top:3px">${esc((liq.direction || '').replace(/^./, c => c.toUpperCase()))}</div>
-        <table style="margin-top:12px"><tbody>
-          ${[['4 weeks', liq.chg_4w], ['13 weeks', liq.chg_13w], ['52 weeks', liq.chg_52w]].map(([lab, v]) => `<tr><td style="font-size:12.5px">${lab}</td><td class="num" style="color:${n(v) === null ? 'var(--muted)' : +v >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(v)}</td></tr>`).join('')}
-          <tr><td style="font-size:12.5px">Level, own 3 years</td><td class="num">${liq.pctile_3y === null ? '—' : (+liq.pctile_3y * 100).toFixed(0) + 'th pctile'}</td></tr>
-        </tbody></table>
-        <p class="note" style="margin-top:10px">Fed balance sheet <b>$${(+liq.walcl / 1e6).toFixed(2)}tn</b> less the Treasury account <b>$${(+liq.tga / 1e6).toFixed(2)}tn</b> and reverse repo <b>$${(+liq.rrp / 1e6).toFixed(3)}tn</b>. <b>Direction over level:</b> a large balance sheet shrinking and a small one growing are opposite conditions, and the level alone says neither.</p>`}
-      </div>
-      <div style="flex:1;min-width:280px;border-left:1px solid var(--line);padding-left:22px">
-        <div class="eyebrow" style="margin-bottom:6px">Howell · Global Liquidity Index</div>
-        ${!howell ? `<div class="empty">No reading entered. The GLI is proprietary and behind the Capital Wars paywall — the public endpoint returns a preview with no index level — so it is entered by hand with <code>node jobs/record-gli.mjs</code> rather than fetched.</div>` : `
-        <div style="font-size:34px;font-weight:700;line-height:1;color:${dirTone(howell.direction === 'rising' ? 'expanding' : howell.direction === 'falling' ? 'contracting' : 'flat')}">${esc((howell.direction || '').replace(/^./, c => c.toUpperCase()))}</div>
-        <div style="font-size:12px;color:var(--muted);margin-top:3px">${howell.value === null ? 'level behind the paywall' : `level ${howell.value}`} · as of ${esc(howell.as_of)}${gliAge !== null && gliAge > 14 ? ` · <b style="color:var(--warn)">${gliAge} days old</b>` : ''}</div>
-        ${howell.change_note ? `<p class="note" style="margin-top:10px;font-style:italic">“${esc(howell.change_note)}”</p>` : ''}
-        ${Array.isArray(howell.drivers) && howell.drivers.length ? `<div style="margin-top:8px">${howell.drivers.map(d => `<span class="chip">${esc(d)}</span>`).join(' ')}</div>` : ''}
-        <p class="note" style="margin-top:10px">Howell's own words, quoted rather than paraphrased — the desk does not restate someone else's analysis as its own. <b>Entered, not fetched</b>, so it is only as current as the last entry.</p>`}
-      </div>
-    </div>
-    <p class="note" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)"><b>These two measure different things, and the frameworks behind them disagree.</b> Net liquidity is domestic and computed from three public series. Howell's index spans central banks, cross-border flows and the collateral multiplier, none of which this desk has a feed for, so one is never a substitute for the other. The disagreement runs deeper than coverage: for Howell liquidity is the engine, while Zeberg's framework puts it outside the chain entirely — amplifying the markets that sit on top of the economy and moving them first, which is precisely why it gets mistaken for the cause. The desk holds both rather than picking.</p>
-  </div>`;
+      <h2 style="margin:0">Global Liquidity Watch</h2>
+      <span style="font-size:12px;color:var(--muted)">${gliNums ? `Howell to ${esc(gliNums.as_of)}` : 'no GLI entered'}${liq ? ` · net liquidity to ${esc(liq.as_of)}` : ''}</span></div>
 
+    ${!gliNums ? `<div class="empty" style="margin-top:10px">No GLI figures entered. The index is proprietary and the public endpoint returns a paywalled preview, so the note has to be downloaded while signed in and its table entered with <code>node jobs/record-gli.mjs</code>.</div>` : `
+    <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:12px">
+      <div style="flex:1;min-width:220px">
+        <div class="eyebrow" style="margin-bottom:4px">Global liquidity</div>
+        <div style="font-size:33px;font-weight:700;line-height:1">$${(+gliNums.gli_full).toFixed(2)}tn</div>
+        <div style="font-size:12.5px;font-weight:600;color:${dirTone(gliDir)};margin-top:3px">${esc((gliDir || '').replace(/^./, c => c.toUpperCase()))}${gliChg('gli_full', 4) === null ? '' : ` · ${pc(gliChg('gli_full', 4))} over 4 weeks`}</div>
+        ${spark(gliAll, 'gli_full', 'var(--accent)')}</div>
+      <div style="flex:1;min-width:220px">
+        <div class="eyebrow" style="margin-bottom:4px">Shadow monetary base</div>
+        <div style="font-size:33px;font-weight:700;line-height:1">$${(+gliNums.smb).toFixed(2)}tn</div>
+        <div style="font-size:12.5px;font-weight:600;color:${(gliChg('smb', 4) ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'};margin-top:3px">${pc(gliChg('smb', 4))} over 4 weeks</div>
+        ${spark(gliAll, 'smb', 'var(--neg)')}</div>
+      <div style="flex:1;min-width:220px">
+        <div class="eyebrow" style="margin-bottom:4px">Collateral multiplier</div>
+        <div style="font-size:33px;font-weight:700;line-height:1">${(+gliNums.collateral_multiplier).toFixed(2)}×</div>
+        <div style="font-size:12.5px;color:var(--muted);margin-top:3px">${howell && howell.move_quoted ? `MOVE quoted at ${howell.move_quoted}` : 'bond volatility sets the haircut'}</div>
+        ${spark(gliAll, 'collateral_multiplier', 'var(--flat)')}</div>
+    </div>
+    <p class="note" style="margin-top:12px"><b>The index is the base times the multiplier.</b> The shadow monetary base is central bank liquidity plus collateral — what Howell calls the bedrock — and the multiplier is how much broad liquidity that base supports. It moves with bond volatility through haircuts: <b>volatility down → haircuts down → multiplier up → liquidity up.</b> At the latest reading $${(+gliNums.smb).toFixed(2)}tn × ${(+gliNums.collateral_multiplier).toFixed(2)} = $${(+gliNums.smb * +gliNums.collateral_multiplier).toFixed(2)}tn against a published $${(+gliNums.gli_full).toFixed(2)}tn, and that identity is checked on every row before it is stored — a row that fails it has a transcription error, which is the real risk when figures are read off a PDF by hand. <b>The base is falling while the multiplier sits at a record</b>, which is this week's whole message: the index is being held up by haircuts that have not yet adjusted to higher volatility.</p>
+    ${howell && howell.change_note ? `<div style="margin-top:12px;padding:11px 13px;background:var(--panel2);border-radius:8px">
+      <div class="eyebrow" style="margin-bottom:5px">Howell, ${esc(howell.as_of)}${gliAge !== null && gliAge > 14 ? ` · <b style="color:var(--warn)">${gliAge} days old</b>` : ''}</div>
+      <p class="note" style="margin:0;font-style:italic">“${esc(howell.change_note)}”</p>
+      ${Array.isArray(howell.drivers) && howell.drivers.length ? `<div style="margin-top:7px">${howell.drivers.map(x => `<span class="chip">${esc(x)}</span>`).join(' ')}</div>` : ''}</div>` : ''}`}
+
+    <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+      <div class="eyebrow" style="margin-bottom:6px">US net liquidity · computed here, for comparison</div>
+      ${!liq ? '<div class="empty">Not computed yet.</div>' : `
+      <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:baseline">
+        <div><span style="font-size:25px;font-weight:700">$${(+liq.net_liquidity / 1e6).toFixed(2)}tn</span>
+          <span style="font-size:12.5px;font-weight:600;color:${dirTone(liq.direction)};margin-left:8px">${esc((liq.direction || '').replace(/^./, c => c.toUpperCase()))}</span></div>
+        <div style="font-size:12.5px;color:var(--muted)">4w ${pc(liq.chg_4w)} · 13w ${pc(liq.chg_13w)} · 52w ${pc(liq.chg_52w)}${liq.pctile_3y === null ? '' : ` · ${(+liq.pctile_3y * 100).toFixed(0)}th percentile of its own 3 years`}</div>
+      </div>
+      <p class="note" style="margin-top:8px">Fed balance sheet $${(+liq.walcl / 1e6).toFixed(2)}tn less the Treasury account $${(+liq.tga / 1e6).toFixed(2)}tn and reverse repo $${(+liq.rrp / 1e6).toFixed(3)}tn. <b>Domestic only</b>, from three public series — Howell's index spans ninety countries, cross-border flows and the collateral multiplier, so this is <b>never a substitute</b> for it. It is here because it updates weekly without anyone entering anything.</p>`}
+    </div>
+    <p class="note" style="margin-top:14px"><b>The two frameworks on this page disagree, and it is not smoothed over.</b> For Howell liquidity is the engine, leading risk assets by roughly three months. For Zeberg, below, liquidity is not in the chain at all: it sets the amplitude and never the direction, amplifying the markets that sit on top of the economy and moving them first — which is precisely why it gets mistaken for the cause. The desk holds both rather than picking.</p>
+  </div>`;
+  // Zeberg's sequence. Each link carries the series that reads it, so the chain is a map of what
+  // to look at in what order rather than a diagram.
+  const CHAIN = [
+    ['Cost of money', 'the input: rates, and through them the monthly payment', ['DFF', 'DGS2']],
+    ['The consumer', 'demand responds to that payment — 68–70% of GDP', ['PSAVERT', 'UMCSENT']],
+    ['Production', 'responds to demand', ['INDPRO']],
+    ['Employment', 'responds to the mismatch — coincident, not lagging', ['PAYEMS', 'JTSJOL']],
+    ['Wages', 'respond to employment', ['CES0500000003']],
+    ['Inflation', 'responds to wages — the caboose', ['CPIAUCSL', 'MICH']],
+  ];
+  const chainRow = (label, why, codes, i) => {
+    const liveSeries = codes.map(c => mac(c)).filter(Boolean);
+    return `<div style="display:flex;gap:12px;align-items:flex-start;padding:7px 0${i ? ';border-top:1px solid var(--line)' : ''}">
+      <div style="width:20px;height:20px;border-radius:50%;background:var(--panel2);border:1px solid var(--line);flex:none;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted);margin-top:1px">${i + 1}</div>
+      <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600">${esc(label)}</div>
+        <div style="font-size:11.5px;color:var(--muted)">${why}</div></div>
+      <div style="text-align:right;font-size:11.5px;color:var(--muted);flex:none">${liveSeries.length ? liveSeries.map(m => esc(m.fred_code)).join(' · ') : 'not loaded'}</div>
+    </div>`;
+  };
   const cRow = (label, code, fmt, good) => {
     const m = mac(code);
     const v = m && m.value !== null ? +m.value : null;
@@ -1941,39 +2000,39 @@ function adam() {
       <td class="num"${good && v !== null ? ` style="color:${good(v)}"` : ''}>${v === null ? '<span style="color:var(--muted)">—</span>' : fmt(v)}</td>
       <td style="font-size:11px;color:var(--muted)">${m ? esc(m.obs_date) : '—'}</td></tr>`;
   };
-  const consumerCard = `<div class="card" style="margin-bottom:14px">
+  const codeCard = `<div class="card" style="margin-bottom:14px">
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
-      <h2 style="margin:0">The consumer</h2>
-      <span style="font-size:12px;color:var(--muted)">68–70% of GDP</span></div>
-    <p class="note" style="margin:6px 0 12px">Zeberg's sequence: the cost of money sets the household's monthly payment, demand responds, production responds to demand, inventories to production, employment to the mismatch, wages to employment, inflation to wages — and the policy rate that answers inflation sets the cost of money for the next turn. The cycle begins and ends here, which is why this sits beside the quad rather than under it.</p>
+      <h2 style="margin:0">The Macro Code</h2>
+      <span style="font-size:12px;color:var(--muted)">the sequence, and the consumer at both ends of it</span></div>
+    <p class="note" style="margin:6px 0 14px">Zeberg's claim is that the economy is forecastable because it is <b>sequential</b>, and that the profession reads the right indicators in the wrong order. The cost of money sets the household's monthly payment; demand responds; production responds to demand; employment responds to the mismatch; wages respond to employment; inflation responds to wages — and the policy rate answering inflation sets the cost of money for the next turn. <b>Liquidity is not in this chain.</b> It amplifies the markets sitting on top of it and moves them first, which is why it gets mistaken for the engine.</p>
     <div style="display:flex;gap:26px;flex-wrap:wrap">
-      <div style="flex:1;min-width:270px">
-        <div class="eyebrow" style="margin-bottom:6px">Cash flow and leverage</div>
+      <div style="flex:1;min-width:300px">
+        <div class="eyebrow" style="margin-bottom:6px">The sequence</div>
+        ${CHAIN.map(([l, w, c], i) => chainRow(l, w, c, i)).join('')}
+        <p class="note" style="margin-top:10px"><b>Housing leads</b>, because it is the largest monthly payment and the first to turn when that payment changes. <b>Employment is coincident</b>, not lagging — the job-creation trend moves with output, while the unemployment rate does lag and the monthly print is noise. <b>Inflation is last</b>, still rising after the economy has turned, which is why a central bank steering by it is late by construction.</p>
+      </div>
+      <div style="flex:1;min-width:280px">
+        <div class="eyebrow" style="margin-bottom:6px">The consumer, where it begins and ends</div>
         <table><tbody>
           ${cRow('Personal saving rate', 'PSAVERT', v => v.toFixed(1) + '%', v => v < 5 ? 'var(--neg)' : 'var(--text)')}
           ${cRow('Real disposable income per capita', 'A229RX0', v => '$' + v.toLocaleString(undefined, { maximumFractionDigits: 0 }))}
           ${cRow('Consumer credit outstanding', 'TOTALSL', v => '$' + (v / 1e6).toFixed(2) + 'tn')}
           ${cRow('Credit card delinquency', 'DRCCLACBS', v => v.toFixed(2) + '%', v => v > 2.5 ? 'var(--neg)' : 'var(--text)')}
           ${cRow('Mortgage delinquency', 'DRSFRMACBS', v => v.toFixed(2) + '%')}
-        </tbody></table>
-      </div>
-      <div style="flex:1;min-width:270px">
-        <div class="eyebrow" style="margin-bottom:6px">Labour security and psychology</div>
-        <table><tbody>
           ${cRow('Quit rate', 'JTSQUR', v => v.toFixed(1) + '%', v => v < 2.2 ? 'var(--neg)' : 'var(--text)')}
           ${cRow('Job openings', 'JTSJOL', v => (v / 1000).toFixed(2) + 'm')}
           ${cRow('Consumer sentiment', 'UMCSENT', v => v.toFixed(1), v => v < 65 ? 'var(--neg)' : 'var(--text)')}
           ${cRow('Inflation expected, 12 months', 'MICH', v => v.toFixed(1) + '%')}
           ${cRow('Building permits', 'PERMIT', v => (v / 1000).toFixed(2) + 'm')}
         </tbody></table>
+        <p class="note" style="margin-top:10px"><b>The quit rate is the honest confidence measure</b>, because being wrong about it costs something: a worker only quits when they believe another job is there. Sentiment can be talked down; a resignation cannot.</p>
       </div>
     </div>
-    <p class="note" style="margin-top:12px"><b>The quit rate is the honest confidence measure</b>, because being wrong about it costs something: a worker only quits when they believe another job is there. <b>Housing leads</b> — it is the largest monthly payment and the first thing to turn when that payment changes. <b>Inflation is the caboose</b>, still rising after the economy has turned, which is why a central bank steering by it is late by construction. These series are loaded but deliberately kept <b>out of the quad</b>: dropping thirteen new inputs into the growth leg would silently move the regime and make every reading stored before today incomparable with the ones after.</p>
+    <p class="note" style="margin-top:12px">These series are loaded but deliberately kept <b>out of the quad</b>. Dropping thirteen new inputs into the growth leg would silently move the regime and make every reading stored before today incomparable with the ones after. They describe the cycle; they do not call it.</p>
   </div>`;
-
   return `<span class="eyebrow">Macro</span><h1>Adam</h1>
    <p class="sub">The four macro seasons, the path between them, the liquidity that sets the amplitude, and the consumer the cycle begins with.</p>
-   ${headCard}${mapCard}${liqCard}${consumerCard}`;
+   ${headCard}${mapCard}${liqCard}${codeCard}`;
 }
 
 // The news-flow breakdown behind the percentage on Sven's table. Built from the releases array

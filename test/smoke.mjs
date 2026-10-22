@@ -710,7 +710,7 @@ if (!argRoute) {
   currentRoute = 'adam';
   await go('#adam');
   const ad = app();
-  for (const want of ['The macro season', 'The path', 'Liquidity', 'The consumer'])
+  for (const want of ['The four macro regimes', 'The path', 'Global Liquidity Watch', 'The Macro Code'])
     need(ad.includes(want), `[adam] the ${want} section is missing`);
   need(!/Macro Beauty Contest|week's beauty contest/.test(ad), '[adam] the beauty contest is back on Adam\'s page');
   need(/rates of change, not levels/i.test(ad), '[adam] the page does not say the axes are rates of change');
@@ -1394,7 +1394,7 @@ if (!argRoute) {
     // Adam's page was rebuilt around the quads on 2026-10-22 and the risk-on gauge went with the
     // contest, so the old assertion that it stayed no longer describes the desk. What still
     // matters is that the contest is on exactly one page: Kate's.
-    need(/The macro season/.test(a), '[adam] the rebuilt macro page is not rendering');
+    need(/The four macro regimes/.test(a), '[adam] the rebuilt macro page is not rendering');
     need(/beauty contest/i.test(k), '[kate] the contest is not on Kate\'s page either, so it is nowhere');
     say(` ok  kate handover          -> the contest is on Kate's tab alone; Adam is the quads now`);
 
