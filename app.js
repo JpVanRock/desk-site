@@ -1227,8 +1227,8 @@ function stan() {
     const failsLead = def && calm && +def.value >= +calm.value;
     return `<div class="card" style="margin-bottom:14px">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
-        <h2 style="margin:0">Market fragility</h2>
-        <span style="font-size:12px;color:var(--muted)">${esc(frag.as_of)} · ${frag.n_legs} legs · equal-weighted</span></div>
+        <h2 style="margin:0">Market Fragility Index <span style="color:var(--muted);font-weight:400">(MFI)</span></h2>
+        <span style="font-size:12px;color:var(--muted)">${esc(frag.as_of)} · ${frag.n_legs} legs · equal-weighted · layer 2</span></div>
       <div style="display:flex;gap:26px;align-items:baseline;flex-wrap:wrap;margin:12px 0 10px">
         <div><div style="font-size:34px;font-weight:700;color:${L.tone};line-height:1">${(+frag.mfi).toFixed(0)}</div>
           <div style="color:var(--muted);font-size:11px">of 100</div></div>
@@ -1241,7 +1241,8 @@ function stan() {
           <td class="num"><span style="color:${+l.pctile >= 0.90 ? 'var(--neg)' : +l.pctile >= 0.70 ? 'var(--warn)' : 'var(--muted)'};font-weight:600">${(+l.pctile * 100).toFixed(0)}%</span></td>
           <td style="font-size:12px;color:var(--muted)">${esc(l.source)}</td></tr>`).join('')}
       </tbody></table></div>
-      <p class="note" style="margin-top:12px"><b>Equal weights, not the whitepaper's 30/25/20/15/10.</b> Those are five free parameters chosen before any evidence existed. Equal weighting says the desk does not yet know which leg matters most, which is true, and a weight moves only when walk-forward evidence demands it. <b>The dominant-leg override is the design, not a refinement:</b> any mean of five legs pulls to the middle by construction, so credit seizing while four legs are calm would read the same as five legs mildly elevated — and those are not the same world.</p>
+      <p class="note" style="margin-top:12px"><b>This is the whitepaper's MFI.</b> Five legs scored 0&ndash;100 where rising means worsening, normalised against prior-only empirical distributions, as specified &mdash; with two deliberate departures named below. It is <b>layer 2</b> of the brake system: the Speed Limit is the view, this is the road.</p>
+      <p class="note"><b>Equal weights, not the whitepaper's 30/25/20/15/10.</b> Those are five free parameters chosen before any evidence existed. Equal weighting says the desk does not yet know which leg matters most, which is true, and a weight moves only when walk-forward evidence demands it. <b>The dominant-leg override is the design, not a refinement:</b> any mean of five legs pulls to the middle by construction, so credit seizing while four legs are calm would read the same as five legs mildly elevated — and those are not the same world.</p>
       <p class="note"><b>Point-in-time throughout.</b> Every leg is ranked against its own trailing three years <i>as they stood on that date</i>, and the states come from the index's own prior-only distribution rather than fixed cut points. An index normalised with hindsight looks prescient in a backtest and fails live.</p>
 
       <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
