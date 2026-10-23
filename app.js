@@ -102,7 +102,8 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -149,9 +150,9 @@ async function load() {
     qSoft(sb.from('latest_model_trades').select('strategy_id,as_of,ticker,entry_date,exit_date,avg_weight,entry_weight,exit_weight,total_return,contribution_bps,excess_bps,status,sizing_verdict,starts_in_gap,pre_existing,unavailable_reason'), 'trade ledger'),
     qSoft(sb.from('latest_position_decision_scores').select('strategy_id,as_of,ticker,window_key,sort_order,start_date,end_date,weight,position_return,benchmark_return,decision_bps,is_partial,starts_in_gap,unavailable_reason').order('sort_order'), 'position decision scores'),
     qSoft(sb.from('latest_model_decision_stats').select('strategy_id,as_of,n_closed,n_open,n_wins,n_losses,batting_average,slugging_bps,win_bps,loss_bps,median_weight,n_unpriced,first_snapshot,last_snapshot,gap_days,n_beat_benchmark,excess_bps_total,n_type_i,type_i_bps,n_type_ii,type_ii_reason,avg_hold_days,n_trades_ytd'), 'decision stats'),
-    qSoft(sb.from('annie_assessments').select('as_of,kind,strategy_id,ticker,headline,body_md,score,score_scale,confidence,sources,author').order('as_of', { ascending: false }), 'Annie assessments'),
+    qSoft(sb.from('annie_assessments').select('as_of,kind,strategy_id,ticker,narrative,headline,body_md,score,score_scale,confidence,sources,author').order('as_of', { ascending: false }), 'Annie assessments'),
     qSoft(sb.from('latest_annie_trade_reviews').select('strategy_id,as_of,ticker,entry_date,exit_date,held_return,held_excess_bps,days_since_exit,after_return,after_bench,after_excess,held_instead_bps,better_ticker,better_return,better_gain_bps,n_alternatives,exit_verdict,entry_verdict,headline,lesson,unavailable_reason'), 'trade reviews'),
-    qSoft(sb.from('latest_sven_rule_signals').select('as_of,ticker,rule_key,rule_no,rule_title,state,headline,detail,method,adapted').order('rule_no'), 'Raschke rules'),
+    qSoft(sb.from('latest_sven_rule_signals').select('as_of,ticker,rule_key,rule_no,rule_title,state,headline,detail,method,adapted,market_state,vs_market').order('rule_no'), 'Raschke rules'),
     qSoft(sb.from('latest_news_failure_readings').select('as_of,ticker,label,asset_class,window_days,n_releases,n_positive,n_negative,n_series,n_factors,agreement,price_change,made_new_high,made_new_low,verdict,headline,held_in,impacted,n_events,signal_strength,events,releases,pub_basis'), 'news failure'),
     qSoft(sb.from('macro_beauty_readings').select('as_of,score,stance,n_live,n_total,headline').order('as_of', { ascending: false }).limit(1), 'beauty reading'),
     qSoft(sb.from('latest_macro_beauty_components').select('as_of,component,label,score,status,headline,measure,value_text,source,how_to_supply,data_as_of'), 'beauty components'),
@@ -194,6 +195,14 @@ async function load() {
     qAllSoft(() => sb.from('generations').select('name,birth_from,birth_to,sample,sort_order').order('sort_order', { ascending: true }), 'generations'),
     qAllSoft(() => sb.from('latest_tape_ticker').select('as_of,measure,horizon,sort_order,label,value,value_kind,secondary,verdict,detail,return_days,lookback_days,n_obs').order('sort_order', { ascending: true }), 'tape ticker'),
     qAllSoft(() => sb.from('latest_risk_humility').select('as_of,scope,strategy_id,window_days,window_worst,history_days,history_worst,history_worst_date,coverage,calm_streak,calm_streak_pctile,vol_pctile,drawdown_now,near_high_share,avg_pair_corr,complacency,complacency_legs,sim_paths,sim_p05,sim_p50,sim_p95,sim_dd_median,sim_dd_p95,sim_worse_share,beta_up,beta_down,convexity_gap,hit_rate,avg_win,avg_loss,skew,n_live,n_departed,headline'), 'risk humility'),
+    // Kate, from The Alchemy of Finance: the test count, the equilibrium gate and the asymmetry.
+    qAllSoft(() => sb.from('latest_narrative_reflexivity').select('as_of,narrative,proxy_ticker,leg_start,leg_days,test_threshold,tests,test_dates,days_since_test,median_gap,gap_ratio,test_verdict,test_note,attention_pctile,price_pctile,gap_now,gap_4w,gap_12w,gap_trend,equilibrium,equilibrium_note,n_advances,n_declines,adv_days_median,dec_days_median,adv_move_median,dec_move_median,asymmetry,asymmetry_verdict,asymmetry_note,n_bars'), 'narrative reflexivity'),
+    qAllSoft(() => sb.from('latest_credit_cycle_legs').select('as_of,leg,label,sort_order,series_id,obs_date,level,level_unit,change,acceleration,window_label,direction,accel_sign,headline,detail').order('sort_order', { ascending: true }), 'credit cycle legs'),
+    qSoft(sb.from('credit_cycle_readings').select('as_of,phase,n_easing,n_tightening,n_accelerating,n_decelerating,n_legs,oldest_obs,headline,caveat').order('as_of', { ascending: false }).limit(1), 'credit cycle'),
+    // Sven, from Reminiscences: acting right, the precedent-break flag, the quiet tape.
+    qAllSoft(() => sb.from('latest_sven_precedent_tests').select('as_of,ticker,precedent_key,precedent_label,sort_order,horizon_days,n_precedents,hist_median,hist_p25,hist_p75,hist_hit_rate,trigger_date,realised,realised_pctile,verdict,headline,detail,method').order('sort_order', { ascending: true }), 'precedent tests'),
+    qAllSoft(() => sb.from('latest_sven_precedent_breaks').select('as_of,ticker,vol_20,vol_pctile,vol_streak,vol_broken,corr_60,corr_pctile,corr_streak,corr_broken,verdict,headline,detail,n_bars'), 'precedent breaks'),
+    qSoft(sb.from('latest_sven_tape_quiet').select('as_of,n_indices,mid_range_share,no_read_share,directional,vol_pctile,breadth,extremes,verdict,headline,detail,legs'), 'quiet tape'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -286,7 +295,9 @@ async function load() {
     narAttention: narAttention || [], narratives: narratives || [],
     decisionQuality: decisionQuality || [], quadHistory: quadHistory || [],
     netLiq: netLiq || [], gli: gli || [], macroNow: macroNow || [],
-    turnings: turnings || [], generations: generations || [], tapeTicker: tapeTicker || [], humility: humility || [] };
+    turnings: turnings || [], generations: generations || [], tapeTicker: tapeTicker || [], humility: humility || [],
+    narReflex: narReflex || [], creditLegs: creditLegs || [], creditReading: creditReading || [],
+    svenPrecedent: svenPrecedent || [], svenBreaks: svenBreaks || [], tapeQuiet: tapeQuiet || [] };
 }
 
 // ---------- Views ----------
@@ -2235,6 +2246,63 @@ const FLOCK_LOOK = {
 };
 const KIND_LOOK = { asset_class: 'Asset class', sector: 'Sector', theme: 'Theme' };
 
+// THE GATE SOROS WROTE A PREFACE TO INSTALL. In 1994 he said he had presented reflexivity "as if
+// it were relevant at all times" and called that a mistake: the two-way feedback can engage at any
+// moment, but in most situations it is so feeble it can safely be ignored. So this is the first
+// thing read on a narrative, before any loop is discussed, and most of the flock should sit in the
+// first row. A reflexivity reading offered on an ordinary tape is not insight.
+const EQUIL_LOOK = {
+  near_equilibrium:      { label: 'near equilibrium', tone: 'var(--muted)', short: 'Attention and price sit at similar points in their own ranges. The prevailing bias here is noise, and Soros says to call it noise.' },
+  stretched:             { label: 'stretched',        tone: 'var(--warn)',  short: 'Perception and price have drifted well apart but are no longer drifting. Stretched and sitting there is not the same as a loop running.' },
+  far_from_equilibrium:  { label: 'far from equilibrium', tone: 'var(--neg)', short: 'Drifted apart and still drifting. The only state in which a reflexivity claim is worth making.' },
+  insufficient:          { label: 'no reading',       tone: 'var(--line)',  short: 'Either attention has no percentile yet or the proxy has no year of monthly returns to rank against.' },
+};
+// "When the process is advanced, corrections become scarcer and the danger of a climactic reversal
+// greater." The verdicts below are that sentence turned into arithmetic. There is deliberately NO
+// stage number: Soros calls his own nine-stage sequence "only one possible path" and says it hardly
+// needs emphasizing how crude the model is.
+const TEST_LOOK = {
+  early:           { label: 'early',            tone: 'var(--muted)', short: 'The advance is young and has not been tested yet. Early is not the same as untested.' },
+  tested_recently: { label: 'tested recently',  tone: 'var(--pos)',   short: 'Being tested about as often as it has been. A trend that keeps getting tested and keeps surviving is behaving like a young one.' },
+  maturing:        { label: 'maturing',         tone: 'var(--warn)',  short: 'Going longer than usual between tests. Corrections are becoming scarcer, which is what a maturing process looks like.' },
+  late_untested:   { label: 'late, untested',   tone: 'var(--neg)',   short: 'More than twice its own normal stretch without a test. A trend that has stopped being tested is late, not strong.' },
+  untested:        { label: 'never tested',     tone: 'var(--neg)',   short: 'A long advance that has never had a drawdown of the size that counts as a test for this instrument. Nothing has argued with it.' },
+  no_leg:          { label: 'no advance',       tone: 'var(--line)',  short: 'The proxy is below its 200-day average. There is no advance to be testing, and "untested" would be the wrong word for a downtrend.' },
+  insufficient:    { label: 'no reading',       tone: 'var(--line)',  short: 'Not enough price history to date an advance.' },
+};
+// The credit chapter's asymmetry, stated precisely: at the inception of a boom both the volume of
+// credit and the value of collateral are at a minimum; at the time of the bust both are at a
+// maximum. So the decline is compressed where the advance was drawn out. The murmuration draws
+// gathering and dispersing the same way, which implies a symmetry the book denies.
+const ASYM_LOOK = {
+  slow_up_fast_down: { label: 'slow up, fast down', tone: 'var(--neg)',   short: 'Advances take longer than declines. The credit-cycle shape: drawn-out boom, compressed bust.' },
+  symmetric:         { label: 'symmetric',          tone: 'var(--muted)', short: 'Advances and declines take about the same time. Here the murmuration\u2019s even treatment of gathering and dispersing is fair.' },
+  fast_up_slow_down: { label: 'fast up, slow down', tone: 'var(--warn)',  short: 'Declines take longer than advances \u2014 the opposite of the credit-cycle shape. Worth knowing before reading a dispersal as a collapse.' },
+  insufficient:      { label: 'no reading',         tone: 'var(--line)',  short: 'Too few swings of the size that counts to compare durations.' },
+};
+// Every leg is signed in the BORROWER'S terms, so "easing" means the same thing on a spread, a
+// growth rate and a delinquency rate. A widening spread is tightening even while its level still
+// looks historically low, and that distinction is the point of the panel.
+const CREDIT_DIR = {
+  easing:      { label: 'easing',      tone: 'var(--pos)' },
+  tightening:  { label: 'tightening',  tone: 'var(--neg)' },
+  flat:        { label: 'flat',        tone: 'var(--muted)' },
+  unavailable: { label: '\u2014',     tone: 'var(--line)' },
+};
+const CREDIT_ACC = {
+  accelerating: { label: 'accelerating', tone: 'var(--pos)' },
+  decelerating: { label: 'decelerating', tone: 'var(--neg)' },
+  steady:       { label: 'steady',       tone: 'var(--muted)' },
+  unavailable:  { label: '\u2014',      tone: 'var(--line)' },
+};
+const CREDIT_PHASE = {
+  expanding:    { label: 'Expanding',    tone: 'var(--pos)' },
+  decelerating: { label: 'Decelerating', tone: 'var(--warn)' },
+  contracting:  { label: 'Contracting',  tone: 'var(--neg)' },
+  mixed:        { label: 'Mixed',        tone: 'var(--muted)' },
+  insufficient: { label: 'No reading',   tone: 'var(--line)' },
+};
+
 // The murmuration. Each narrative is a bird placed by how unusual its attention is (across) and
 // what its tradeable proxy has done over the month (up). The trail behind it is where it actually
 // sat four, eight and twelve weeks ago, each percentile computed against the year that preceded
@@ -2506,6 +2574,32 @@ function kate() {
   // narrative that is gathering can gather for a long time, and fading a live loop is how people
   // lose money being early. The row worth saying out loud is CROWDING -- attention still rising
   // after the proxy stopped paying for it.
+  // NAMING THE FLAW. "There is bound to be a flaw in the participants' perception of the
+  // fundamentals" is the most useful sentence in the chapter for a desk, and nothing recorded an
+  // attempt at it. This column is AUTHORED, not computed: it comes from annie_assessments, which
+  // refuses a scored row with no sources, and it is dated and attributed on the page. A computed
+  // flaw would be the error the 1994 preface corrects, industrialised.
+  //
+  // Where no row exists the cell says the flaw has not been named. That is an honest state and a
+  // more useful one than a blank: it says the desk has looked at the crowd's story and has not yet
+  // found the hole in it, rather than implying there isn't one. Soros's claim is that there always
+  // is one, and that it may not be visible early.
+  const flaws = {};
+  for (const a of (D.assessments || [])) {
+    if (a.kind !== 'narrative_flaw' || !a.narrative) continue;
+    const prev = flaws[a.narrative];
+    if (!prev || String(a.as_of) > String(prev.as_of)) flaws[a.narrative] = a;
+  }
+  const flawCell = slug => {
+    const f = flaws[slug];
+    if (!f) return '<span style="color:var(--muted);font-size:12px">not yet named</span>';
+    const srcs = Array.isArray(f.sources) ? f.sources : [];
+    const tip = `${f.body_md || ''}${srcs.length ? `\n\nSources: ${srcs.map(x => `${x.title || x.url}${x.as_of ? ` (${x.as_of})` : ''}`).join('; ')}` : ''}\n\nWritten by ${f.author || 'kate'} on ${f.as_of}.`;
+    return `<span title="${esc(tip)}" style="font-size:12px;cursor:help">${esc(f.headline)}
+      <span style="color:var(--muted);font-size:10px">${srcs.length} src · ${esc(String(f.as_of))}</span></span>`;
+  };
+  const nFlaws = Object.keys(flaws).length;
+
   const topN5 = flock.filter(r => r.attention_ratio !== null).slice(0, 5);
   const crowdingNow = flock.filter(r => r.state === 'crowding');
   const contrarian = !topN5.length ? `<div class="card" style="margin-bottom:14px"><h2>Contrarian Top 5</h2>
@@ -2517,7 +2611,7 @@ function kate() {
     <p class="note" style="margin:8px 0 14px">Ranked by how unusual each narrative's attention is for <b>itself</b>, not by how much of it there is. A narrative at 1.6× its own normal is being talked about more than it usually is, which is the thing that moves; a famous subject sitting at 1.0× is not news.</p>
     <div style="overflow-x:auto"><table style="min-width:760px"><thead><tr>
       <th class="num">#</th><th>Narrative</th><th>Kind</th><th class="num">Attention</th><th class="num">Own year</th>
-      <th>Proxy</th><th class="num">1 month</th><th class="num">3 months</th><th>State</th></tr></thead><tbody>
+      <th>Proxy</th><th class="num">1 month</th><th class="num">3 months</th><th>State</th><th>The flaw</th></tr></thead><tbody>
       ${topN5.map(r => `<tr>
         <td class="num">${r.attention_rank}</td>
         <td><b>${esc(labelOf(r.narrative))}</b>${r.n_sources > 1 ? `<br><span style="font-size:11px;color:var(--muted)">${r.n_sources} sources agree it is ${(+r.attention_ratio) >= 1 ? 'busier' : 'quieter'} than normal</span>` : ''}</td>
@@ -2527,8 +2621,10 @@ function kate() {
         <td><span class="chip">${esc(proxyOf(r.narrative))}</span></td>
         <td class="num" style="color:${(n(r.price_1m) ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(r.price_1m)}</td>
         <td class="num" style="color:${(n(r.price_3m) ?? 0) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(r.price_3m)}</td>
-        <td title="${esc(r.state_note || '')}">${flockChip(r.state)}</td></tr>`).join('')}
+        <td title="${esc(r.state_note || '')}">${flockChip(r.state)}</td>
+        <td>${flawCell(r.narrative)}</td></tr>`).join('')}
     </tbody></table></div>
+    <p class="note" style="margin-top:12px"><b>The flaw is written, not computed.</b> <i>"There is bound to be a flaw in the participants' perception of the fundamentals"</i> — and Soros adds that it may not be visible early. ${nFlaws ? `${nFlaws} ${nFlaws === 1 ? 'narrative has' : 'narratives have'} one named, each with its sources and the date it was written; hover for the argument.` : 'None has been named yet.'} A cell reading <b>not yet named</b> means the desk has looked at the crowd's story and has not found the hole in it — <b>not</b> that there isn't one. Computing this field would give an opinion the authority of arithmetic, which is the error the 1994 preface exists to correct.</p>
     ${!crowdingNow.length ? `<p class="note" style="margin-top:12px">Nothing in the flock is <b>crowding</b> right now — no narrative is drawing rising attention while its proxy falls. That is the case where a contrarian list is a watchlist rather than a trade.</p>`
       : `<div style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
       <div class="eyebrow" style="margin-bottom:8px">Where the boat is leaning hardest — ${crowdingNow.length} narrative${crowdingNow.length === 1 ? '' : 's'} crowding</div>
@@ -2536,6 +2632,93 @@ function kate() {
       <p class="note">These are the narratives the crowd is still turning toward after the price stopped rewarding it. It is the combination worth naming, not a signal to sell: being early into a reversal costs the same as being wrong about it.</p></div>`}
     <p class="note" style="margin-top:12px"><b>This is not positioning data.</b> The desk has no Commitment of Traders report, no short interest, no fund flows and no investor survey. What is measured here is public attention — pageviews, forum posts, message velocity — set against what the tradeable proxy actually did. That is a weaker claim than knowing who owns what, and the weaker claim is the true one.</p>
   </div>`;
+
+  // ---- the equilibrium gate, the test count and the asymmetry ----
+  //
+  // THIS CARD COMES BEFORE THE CONTEST ON PURPOSE. Soros's 1994 preface corrects his own readers
+  // for treating reflexivity as always relevant, and the correction is structural: the first
+  // question about a narrative is not "is a loop running" but "is this even a tape where that
+  // question has an answer". Most rows read near equilibrium, and that is the honest shape.
+  //
+  // There is no stage number anywhere on it. The sequence Soros describes is "only one possible
+  // path" by his own account, and he says it hardly needs emphasizing how crude the model is.
+  // Printing "stage 6 of 9" would be inventing a precision the author disclaimed, so the card
+  // shows the test count and the stretch since the last test and lets the reader place it.
+  const reflex = D.narReflex || [];
+  const reflexByNar = Object.fromEntries(reflex.map(r => [r.narrative, r]));
+  const EQ_RANK = { far_from_equilibrium: 0, stretched: 1, near_equilibrium: 2, insufficient: 3 };
+  const chip = (look, key) => { const L = look[key]; return !L ? '<span style="color:var(--muted)">—</span>'
+    : `<span title="${esc(L.short || '')}" style="color:${L.tone};font-weight:600">${esc(L.label)}</span>`; };
+  const reflexRows = reflex.slice().sort((a, b) =>
+    (EQ_RANK[a.equilibrium] ?? 9) - (EQ_RANK[b.equilibrium] ?? 9) || (n(b.gap_now) ?? -1) - (n(a.gap_now) ?? -1));
+  const nFar = reflex.filter(r => r.equilibrium === 'far_from_equilibrium').length;
+  const nNear = reflex.filter(r => r.equilibrium === 'near_equilibrium').length;
+  const lateOnes = reflex.filter(r => r.test_verdict === 'late_untested' || r.test_verdict === 'untested');
+
+  const reflexCard = !reflex.length ? '' : `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Is the loop even worth asking about?</h2>
+      <span style="font-size:12px;color:var(--muted)">${esc(reflex.map(r => r.as_of).sort().pop() || '')} · ${reflex.length} narratives</span></div>
+    <p class="note" style="margin:8px 0 14px">Soros published <i>The Alchemy of Finance</i> in 1987 and wrote a preface in 1994 to correct his own readers: he had presented reflexivity <i>"as if it were relevant at all times"</i> and called that a mistake. The feedback can engage at any moment, but <b>in most situations it is so feeble it can safely be ignored</b>. So this is the first thing read on a narrative, and it currently says <b>${nNear} of ${reflex.length}</b> are near equilibrium — where the prevailing bias is noise and should be called noise. <b>${nFar}</b> ${nFar === 1 ? 'is' : 'are'} far from it.</p>
+    <div style="overflow-x:auto"><table style="min-width:900px"><thead><tr>
+      <th>Narrative</th><th>Proxy</th><th class="num">Attention</th><th class="num">Price</th><th class="num">Gap</th>
+      <th>State</th><th class="num">Advance</th><th class="num">Tests</th><th class="num">Since</th><th>Sequence</th><th>Shape</th></tr></thead><tbody>
+      ${reflexRows.map(r => {
+        const far = r.equilibrium === 'far_from_equilibrium';
+        const late = r.test_verdict === 'late_untested' || r.test_verdict === 'untested';
+        return `<tr${far || late ? ' style="background:var(--panel2)"' : ''}>
+        <td><b>${esc(labelOf(r.narrative))}</b> <span style="font-size:11px;color:var(--muted)">${esc(KIND_LOOK[kindOf(r.narrative)] || '')}</span></td>
+        <td><span class="chip">${esc(r.proxy_ticker || '')}</span></td>
+        <td class="num">${r.attention_pctile === null ? '—' : pct0(r.attention_pctile)}</td>
+        <td class="num">${r.price_pctile === null ? '—' : pct0(r.price_pctile)}</td>
+        <td class="num" title="${esc(r.equilibrium_note || '')}" style="color:${far ? 'var(--neg)' : 'var(--text)'}">${r.gap_now === null ? '—' : (+r.gap_now).toFixed(0)}${r.gap_trend === null ? '' : `<span style="font-size:10px;color:var(--muted)"> ${+r.gap_trend > 0 ? '↑' : +r.gap_trend < 0 ? '↓' : '='}</span>`}</td>
+        <td>${chip(EQUIL_LOOK, r.equilibrium)}</td>
+        <td class="num" style="color:var(--muted)">${r.leg_days === null ? '—' : r.leg_days}</td>
+        <td class="num">${r.tests === null ? '—' : r.tests}</td>
+        <td class="num">${r.days_since_test === null ? '—' : r.days_since_test}${r.median_gap === null ? '' : `<span style="font-size:10px;color:var(--muted)">/${(+r.median_gap).toFixed(0)}</span>`}</td>
+        <td title="${esc(r.test_note || '')}">${chip(TEST_LOOK, r.test_verdict)}</td>
+        <td title="${esc(r.asymmetry_note || '')}">${chip(ASYM_LOOK, r.asymmetry_verdict)}</td></tr>`;
+      }).join('')}
+    </tbody></table></div>
+    <p class="note" style="margin-top:12px"><b>Gap</b> is how far apart attention and price sit in their own trailing years, in percentile points, with an arrow for whether it has widened over twelve weeks. The gate is <b>68 points</b>, and it is not a round number: two unrelated percentiles differ by 33 points on average, so a 30-point gate would measure coincidence and call it divergence. Under that null a gap of 68 or more turns up about a tenth of the time, which is a drift large enough that chance is an uncomfortable explanation. <b>An earlier version of this card used 30 and flagged 18 of 32 narratives</b> — the opposite of what the book says the answer should look like.</p>
+    <p class="note"><b>Advance</b> is how many sessions the proxy has been above its 200-day average. <b>Tests</b> counts the drawdowns inside that advance which the advance went on to survive — Soros's "successful test", and the threshold is scaled to the instrument, because a 7% drawdown is a genuine test of the S&P and an ordinary fortnight for uranium miners. <b>Since</b> is sessions since the last test against this advance's own normal stretch between them. ${lateOnes.length ? `<b style="color:var(--neg)">${lateOnes.length} advance${lateOnes.length === 1 ? '' : 's'} ${lateOnes.length === 1 ? 'has' : 'have'} stopped being tested</b> — ${lateOnes.map(r => esc(labelOf(r.narrative))).join(', ')}. <i>"When the process is advanced, corrections become scarcer and the danger of a climactic reversal greater."</i>` : 'Nothing is currently running long past its own normal stretch between tests.'}</p>
+    <p class="note"><b>Shape</b> is the asymmetry the credit chapter describes — at the inception of a boom both credit and collateral are at a minimum, at the bust both are at a maximum, so declines are compressed where advances were drawn out. It is measured on the <b>proxy's price history, not on attention</b>: the attention series is days old and would give a shape rather than a finding. The murmuration draws gathering and dispersing the same way, and this column says for which narratives that even treatment is fair.</p></div>`;
+
+  // ---- the credit cycle, as conditions ----
+  //
+  // THE CAVEAT IS NOT A FOOTNOTE HERE. Soros's credit cycle runs between a loan and the value of
+  // the collateral behind it; the desk has no collateral-value series, no loan-to-value
+  // distribution and no private-credit data. So this is the loop's shadow, and the panel says so
+  // above the numbers rather than beneath them.
+  const cLegs = (D.creditLegs || []).slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const cRead = (D.creditReading || [])[0] || null;
+  const creditCard = !cLegs.length ? '' : `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">The credit cycle</h2>
+      ${!cRead ? '' : `<span style="font-size:12px;color:var(--muted)">${cLegs.length} legs · oldest observation ${esc(cRead.oldest_obs || '—')}</span>`}</div>
+    <p class="note" style="margin:8px 0 0"><b>This is credit conditions, not Soros's loop.</b> ${esc(cRead ? cRead.caveat : '')}</p>
+    ${!cRead ? '' : `<div style="display:flex;gap:18px;align-items:baseline;flex-wrap:wrap;margin:14px 0 4px">
+      <div style="font-size:26px;font-weight:700;color:${(CREDIT_PHASE[cRead.phase] || {}).tone}">${esc((CREDIT_PHASE[cRead.phase] || {}).label || cRead.phase)}</div>
+      <div style="color:var(--muted);font-size:13px;max-width:62ch">${esc(cRead.headline)}</div></div>`}
+    <div style="overflow-x:auto;margin-top:12px"><table style="min-width:820px"><thead><tr>
+      <th>Leg</th><th class="num">Level</th><th class="num">Change</th><th>Direction</th>
+      <th class="num">Change in the change</th><th>Second derivative</th><th class="num">As of</th></tr></thead><tbody>
+      ${cLegs.map(r => {
+        const d = CREDIT_DIR[r.direction] || CREDIT_DIR.unavailable;
+        const a = CREDIT_ACC[r.accel_sign] || CREDIT_ACC.unavailable;
+        const sgn = v => v === null ? '—' : `${+v >= 0 ? '+' : '−'}${Math.abs(+v).toFixed(2)}`;
+        return `<tr title="${esc(r.detail || '')}">
+        <td><b>${esc(r.label)}</b> <span style="font-size:11px;color:var(--muted)">${esc(r.series_id || '')}</span></td>
+        <td class="num">${r.level === null ? '—' : (+r.level).toFixed(2)}<span style="font-size:10px;color:var(--muted)">${esc(r.level_unit === 'index' ? '' : r.level_unit === 'pp' ? 'pp' : '%')}</span></td>
+        <td class="num">${sgn(r.change)}</td>
+        <td style="color:${d.tone};font-weight:600">${esc(d.label)}</td>
+        <td class="num">${sgn(r.acceleration)}</td>
+        <td style="color:${a.tone};font-weight:600">${esc(a.label)}</td>
+        <td class="num" style="font-size:11px;color:var(--muted)">${esc(r.obs_date || '—')}</td></tr>`;
+      }).join('')}
+    </tbody></table></div>
+    <p class="note" style="margin-top:12px"><b>Read the second derivative, not the level.</b> <i>"Only net new lending stimulates"</i> — debt service withdraws resources, so total new lending has to keep rising just to hold net new lending flat. That makes credit which is abundant and decelerating the condition that <i>ends</i> a boom rather than the condition of one, and it looks like a boom on every level-based measure. Each leg is signed in the borrower's terms, so <b>easing means the same thing on a spread, a growth rate and a delinquency rate</b>: a widening spread is tightening even while its level still looks historically low. Hover a row for what it is and why it is here.</p>
+    <p class="note"><b>Every leg carries its own observation date</b> because they are not equally fresh — spreads are daily, bank credit is weekly with a lag, delinquencies are quarterly. One as-of date across the panel would imply the slowest leg is as current as the fastest. Soros is also explicit that how the credit and regulatory cycles interact was the main source of his own confusion, and nothing here claims to model that.</p></div>`;
 
   // ---- where the desk's own book sits ----
   // The part that is actionable: crowding in the abstract is interesting, crowding in something
@@ -2581,11 +2764,26 @@ function kate() {
         <td><span style="color:${LOOP_LOOK[k].tone};font-weight:600">${esc(LOOP_LOOK[k].label)}</span></td>
         <td style="font-size:12px">${esc(LOOP_LOOK[k].short)}</td></tr>`).join('')}
     </tbody></table>
+    <div class="eyebrow" style="margin:16px 0 6px">The gate — whether the question applies at all</div>
+    <p class="note" style="margin:0 0 10px">Read this before either vocabulary above. Both of them describe a loop, and Soros's 1994 preface says most of the time there isn't one: the feedback can engage at any moment but <i>in most situations it is so feeble it can safely be ignored</i>, and <i>"what is normal in one is abnormal in the other"</i>.</p>
+    <table><thead><tr><th>State</th><th>What it means</th></tr></thead><tbody>
+      ${['near_equilibrium', 'stretched', 'far_from_equilibrium'].map(k => `<tr>
+        <td><span style="color:${EQUIL_LOOK[k].tone};font-weight:600">${esc(EQUIL_LOOK[k].label)}</span></td>
+        <td style="font-size:12px">${esc(EQUIL_LOOK[k].short)}</td></tr>`).join('')}
+    </tbody></table>
+    <div class="eyebrow" style="margin:16px 0 6px">The sequence — how far along an advance is</div>
+    <p class="note" style="margin:0 0 10px">The one stage marker that is genuinely computable is the <b>successful test</b>: a drawdown inside an advance that the advance survives. Early processes are tested often; late ones are not. <b>No stage number is printed anywhere</b>, because Soros calls his own nine-stage sequence "only one possible path" and says it hardly needs emphasizing how crude the model is.</p>
+    <table><thead><tr><th>State</th><th>What it means</th></tr></thead><tbody>
+      ${['early', 'tested_recently', 'maturing', 'late_untested', 'untested', 'no_leg'].map(k => `<tr>
+        <td><span style="color:${TEST_LOOK[k].tone};font-weight:600">${esc(TEST_LOOK[k].label)}</span></td>
+        <td style="font-size:12px">${esc(TEST_LOOK[k].short)}</td></tr>`).join('')}
+    </tbody></table>
+    <p class="note"><b>What is deliberately absent from this page.</b> No stage number. No model of how the credit and regulatory cycles interact — Soros says that was the main source of his own confusion, and the desk should not be more certain than the author. And no second reflexivity score: Kate already has one for single names, written with sources, and computing a rival that merely looked measured would be the preface's error at scale.</p>
   </div>`;
 
   return `<span class="eyebrow">Sentiment</span><h1>Kate</h1>
    <p class="sub">The popularity contest — which narratives the crowd is talking about, how full each one already is, and whether the loop behind it still pays.</p>
-   ${gauge}${contestCard}${contrarian}${bookCard}${legend}`;
+   ${gauge}${reflexCard}${contestCard}${contrarian}${creditCard}${bookCard}${legend}`;
 }
 
 // ---------- Annie: decision quality, from Thinking in Bets ----------
@@ -2696,17 +2894,35 @@ function decisionQualityCard(strategyId) {
 // Two dashboards. The rule matrix is Linda Raschke's twelve technical rules evaluated nightly on
 // daily bars; the news-failure table asks whether an asset is responding to its own news. Both are
 // arithmetic — nothing on this page is written by an agent — and both carry what they cannot see.
+// FOUR STATES, AND neutral NO LONGER DOES TWO JOBS. Livermore: "If a stock doesn't act right don't
+// touch it; because, being unable to tell precisely what is wrong, you cannot tell which way it is
+// going. No diagnosis, no prognosis. No prognosis, no profit." That is a state, and the matrix
+// could not express it -- neutral was carrying both "the rule was tested and did not resolve" and
+// "the rule had no precondition to test", and the second is the more useful claim.
 const RULE_STATE = {
-  bullish:       { dot: 'var(--pos)',   label: 'bullish' },
-  bearish:       { dot: 'var(--neg)',   label: 'bearish' },
-  neutral:       { dot: 'var(--muted)', label: 'neutral' },
-  not_evaluable: { dot: 'transparent',  label: 'not evaluable on daily bars' },
+  bullish:       { dot: 'var(--pos)',   label: 'bullish', short: 'The rule tested and resolved bullish.' },
+  bearish:       { dot: 'var(--neg)',   label: 'bearish', short: 'The rule tested and resolved bearish.' },
+  neutral:       { dot: 'var(--muted)', label: 'neutral', short: 'The rule was testable and the test failed, or resolved to no direction. Informative — a strong close that does not follow through is the rule failing, and Raschke treats that as a finding.' },
+  no_read:       { dot: 'none',         label: 'no read', short: 'The precondition is absent, or the inputs conflict: no new extreme to react to, no gap worth the name, no run of strong closes, price and the averages disagreeing. No diagnosis, so no direction is offered.' },
+  not_evaluable: { dot: 'transparent',  label: 'not evaluable on daily bars', short: 'The rule cannot be tested on daily bars at all, on any day. Rules 3, 9 and 10 are entirely about when inside the session something happened, and a daily bar has no inside.' },
+};
+// Livermore's admired chart room compared "individual curves with the general market curve". A
+// bullish read on emerging markets in a bullish market is not the same observation as one in a
+// bearish market, and only the second is worth anything.
+const VS_MARKET = {
+  is_market:      { label: 'is the market', short: 'SPY\u2019s own row. Marked rather than left blank, because a blank reads as missing data.' },
+  with_market:    { label: 'with the market', short: 'The same read as SPY on the same rule. The common case, and much the weaker one.' },
+  against_market: { label: 'against the market', short: 'The opposite read to SPY on the same rule \u2014 this index is saying something the market is not. The informative cell.' },
+  market_silent:  { label: 'market has no direction', short: 'This index resolved bullish or bearish and SPY did not \u2014 it read neutral, or had no precondition to test. There is nothing to agree or disagree with, and agreeing with silence is not agreement.' },
+  silent:         { label: 'no direction here',  short: 'This index has no direction on this rule \u2014 no read, or tested and failed \u2014 so the comparison does not arise.' },
 };
 const GROUPS = [['US equity', 'US equity'], ['International', 'International'], ['Commodity', 'Commodity']];
 const SVEN_GROUP = { SPY: 'US equity', QQQ: 'US equity', MDY: 'US equity', IWM: 'US equity', DIA: 'US equity', EFA: 'International', EEM: 'International', GLD: 'Commodity', USO: 'Commodity' };
 // The order the owner reads them in, broad market first. Kept here rather than left to whatever
 // order the rows arrive in, which is the database's business and not a reading order.
 const SVEN_ORDER = ['SPY', 'QQQ', 'MDY', 'IWM', 'DIA', 'EFA', 'EEM', 'GLD', 'USO'];
+// The general curve. SPY rather than a tenth series, so a row on this page can BE the market.
+const MARKET_T = 'SPY';
 const SVEN_LABEL = { SPY: 'S&P 500', QQQ: 'Nasdaq 100', MDY: 'S&P MidCap 400', IWM: 'Russell 2000', DIA: 'Dow Industrials', EFA: 'Developed ex-US', EEM: 'Emerging markets', GLD: 'Gold', USO: 'Crude oil', AGG: 'US aggregate bonds' };
 // The colour marks the VERDICT, not the direction it implies: any news failure is red, a
 // confirming read is green. An earlier cut coloured by market implication, so a negative failure
@@ -2731,7 +2947,7 @@ function sven() {
   if (!rules.length && !news.length) {
     return `<span class="eyebrow">Market internals</span><h1>Sven</h1>
      <p class="sub">Raschke's rules across the major indices, and whether assets are responding to their own news.</p>
-     <div class="card"><div class="empty">Nothing computed yet. Run jobs/compute-raschke-rules.mjs and jobs/compute-news-failure.mjs.</div></div>`;
+     <div class="card"><div class="empty">Nothing computed yet. Run jobs/compute-raschke-rules.mjs, jobs/compute-tape-precedent.mjs and jobs/compute-news-failure.mjs.</div></div>`;
   }
 
   // ---- the rule matrix ----
@@ -2750,31 +2966,146 @@ function sven() {
       <span style="font-size:12px;color:var(--muted)">${esc(asOf)} · ${ruleCols.length} rules × ${tickers.length} indices · click an index for the detail</span></div>
     <div style="overflow-x:auto;margin-top:12px"><table style="min-width:720px"><thead><tr>
       <th>Index</th>${ruleCols.map(c => `<th class="num" style="font-size:11px" title="${esc(c.rule_title)}">${c.rule_no}${/^r11/.test(c.rule_key) ? c.rule_key.slice(3, 4) : ''}</th>`).join('')}
-      <th class="num">Net</th></tr></thead><tbody>
+      <th class="num">Net</th><th class="num" title="Rules reading the opposite of SPY's read on the same rule. These are the cells saying something the market is not.">vs mkt</th></tr></thead><tbody>
     ${GROUPS.map(([g]) => {
       const rows = tickers.filter(t => SVEN_GROUP[t] === g);
       if (!rows.length) return '';
-      return `<tr><td colspan="${ruleCols.length + 2}" style="padding-top:10px;color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase">${esc(g)}</td></tr>` +
+      return `<tr><td colspan="${ruleCols.length + 3}" style="padding-top:10px;color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase">${esc(g)}</td></tr>` +
         rows.map(t => {
           const mine = ruleCols.map(c => cellFor(t, c.rule_key));
           const bull = mine.filter(r => r && r.state === 'bullish').length;
           const bear = mine.filter(r => r && r.state === 'bearish').length;
           const net = bull - bear;
+          const againstCount = mine.filter(r => r && r.vs_market === 'against_market').length;
           return `<tr><td class="click" data-go="#sven/${esc(t)}" style="cursor:pointer"><b>${esc(t)}</b> <span style="color:var(--muted)">${esc(SVEN_LABEL[t] || '')}</span></td>
             ${mine.map(r => {
               if (!r) return '<td class="num">·</td>';
-              const st = RULE_STATE[r.state];
-              const tip = `${r.rule_no}. ${r.rule_title}\n${r.headline}${r.adapted ? '\n[adapted to daily bars]' : ''}`;
-              return `<td class="num" data-tip="${esc(tip)}" style="cursor:default">${r.state === 'not_evaluable'
-                ? '<span style="color:var(--line)">–</span>'
-                : `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${st.dot}"></span>`}${r.adapted ? '<sup style="color:var(--warn);font-size:9px">a</sup>' : ''}</td>`;
+              const st = RULE_STATE[r.state] || RULE_STATE.neutral;
+              const vm = VS_MARKET[r.vs_market] || null;
+              const against = r.vs_market === 'against_market';
+              const tip = `${r.rule_no}. ${r.rule_title}\n${r.headline}`
+                + (r.state === 'no_read' ? '\n[no read: the precondition is absent]' : '')
+                + (vm && r.vs_market !== 'silent' ? `\n[${vm.label}${r.market_state && r.vs_market !== 'is_market' ? `: SPY reads ${r.market_state.replace('_', ' ')}` : ''}]` : '')
+                + (r.adapted ? '\n[adapted to daily bars]' : '');
+              // A no_read is a hollow ring: visibly a cell that was looked at, visibly carrying no
+              // direction, and distinct from the dash of a rule that can never be tested.
+              const mark = r.state === 'not_evaluable' ? '<span style="color:var(--line)">–</span>'
+                : r.state === 'no_read' ? '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;border:1.5px solid var(--line);box-sizing:border-box"></span>'
+                : `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${st.dot}${against ? ';box-shadow:0 0 0 2.5px var(--panel),0 0 0 4px currentColor' : ''}"></span>`;
+              return `<td class="num" data-tip="${esc(tip)}" style="cursor:default;color:${against ? st.dot : 'inherit'}">${mark}${r.adapted ? '<sup style="color:var(--warn);font-size:9px">a</sup>' : ''}</td>`;
             }).join('')}
-            <td class="num"><b style="color:${net > 0 ? 'var(--pos)' : net < 0 ? 'var(--neg)' : 'var(--muted)'}">${net > 0 ? '+' : ''}${net}</b></td></tr>`;
+            <td class="num"><b style="color:${net > 0 ? 'var(--pos)' : net < 0 ? 'var(--neg)' : 'var(--muted)'}">${net > 0 ? '+' : ''}${net}</b></td>
+            <td class="num">${t === MARKET_T ? '<span style="color:var(--muted);font-size:11px">market</span>'
+              : againstCount ? `<b style="color:var(--warn)">${againstCount}</b>`
+              : '<span style="color:var(--muted)">·</span>'}</td></tr>`;
         }).join('');
     }).join('')}
     </tbody></table></div>
-    <p class="note">Columns are Raschke's rules in her numbering; <b>11a–11d</b> are the four principles of price behaviour she lists under rule 11. A dot is the rule's read on that index today — green bullish, red bearish, grey neutral — and <b>Net</b> is bullish rules minus bearish. Hover a cell for what the rule says; click an index for all of it with the numbers.
+    <p class="note">Columns are Raschke's rules in her numbering; <b>11a–11d</b> are the four principles of price behaviour she lists under rule 11. A dot is the rule's read on that index today — green bullish, red bearish, grey neutral — and <b>Net</b> is bullish rules minus bearish. Hover a cell for what the rule says; click an index for all of it with the numbers.</p>
+    <p class="note"><b>A hollow ring is a fourth state, and it is the one Livermore cared about most.</b> <i>"If a stock doesn't act right don't touch it; because, being unable to tell precisely what is wrong, you cannot tell which way it is going. No diagnosis, no prognosis. No prognosis, no profit."</i> The ring means the rule's precondition is absent or its inputs conflict — no new extreme to react to, no gap worth the name, no run of strong closes, price and the averages disagreeing. <b>Grey now means something narrower than it used to:</b> the rule was testable and the test failed or resolved to no direction, which is itself a finding. Those were one colour before, and they are two different claims.</p>
+    <p class="note"><b>A haloed dot reads the opposite of the market.</b> Livermore's admired chart room compared <i>"individual curves with the general market curve"</i>, and this matrix used to score nine indices independently — which makes a bullish read on emerging markets in a bullish market look identical to one in a bearish market. SPY is the general curve here, its own row is marked <i>market</i> in the last column, and <b>vs mkt</b> counts the rules on which an index disagrees with it. ${(() => { const a = rules.filter(r => r.vs_market === 'against_market'); return a.length ? `Today <b>${a.length}</b> cell${a.length === 1 ? '' : 's'} disagree${a.length === 1 ? 's' : ''} with the market: ${a.map(r => `${esc(r.ticker)} rule ${r.rule_no}`).join(', ')}.` : 'Today nothing disagrees with the market on a rule where both have a read.'; })()}
     Rules marked <sup style="color:var(--warn)">a</sup> are <b>adapted</b>: Raschke wrote for an intraday screen, and where a daily bar can carry the spirit of a rule but not the rule itself — a close in the top third of the range standing in for "the last hour" — the substitution is named rather than hidden. <b>Rules 3, 9 and 10 are not evaluable at all</b> and show a dash: they are entirely about when inside the session something happened, and a daily bar has no inside. Approximating them would be inventing the number the rule turns on.</p></div>`;
+
+  // ---- the quiet tape ----
+  //
+  // "No man can always have adequate reasons for buying or selling stocks daily." There is a Wall
+  // Street fool who thinks he must trade all the time, and the analyst's version is thinking he
+  // must have a view every day. A dashboard that always says something is that fool with a
+  // stylesheet, so this sits at the TOP of the page: the first thing it says is whether there is
+  // anything to say. A page that can print "quiet" is one worth believing when it prints anything
+  // else.
+  const qt = (D.tapeQuiet || [])[0] || null;
+  const QUIET_LOOK = {
+    quiet:        { label: 'Quiet',      tone: 'var(--muted)' },
+    ordinary:     { label: 'Ordinary',   tone: 'var(--flat)' },
+    active:       { label: 'Active',     tone: 'var(--warn)' },
+    loud:         { label: 'Loud',       tone: 'var(--neg)' },
+    insufficient: { label: 'No reading', tone: 'var(--line)' },
+  };
+  const quietCard = !qt ? '' : (() => {
+    const L = QUIET_LOOK[qt.verdict] || QUIET_LOOK.insufficient;
+    const legs = Array.isArray(qt.legs) ? qt.legs : [];
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Is there anything to say?</h2>
+        <span style="font-size:12px;color:var(--muted)">${esc(qt.as_of)} · ${qt.n_indices} indices</span></div>
+      <div style="display:flex;gap:18px;align-items:baseline;flex-wrap:wrap;margin:12px 0 6px">
+        <div style="font-size:26px;font-weight:700;color:${L.tone}">${esc(L.label)}</div>
+        <div style="color:var(--muted);font-size:13px;max-width:64ch">${esc(qt.headline)}</div></div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px 20px;margin-top:10px">
+        ${legs.map(l => `<div style="display:flex;gap:8px;align-items:baseline;font-size:12px">
+          <span style="color:${l.says === 'quiet' ? 'var(--muted)' : l.says === 'unavailable' ? 'var(--line)' : 'var(--warn)'};font-weight:700">${l.says === 'quiet' ? '·' : l.says === 'unavailable' ? '–' : '!'}</span>
+          <span>${esc(l.text || l.label || '')}</span></div>`).join('')}
+      </div>
+      <p class="note" style="margin-top:12px">Five internals, each a count or a share of something already computed, and the verdict is a statement rather than a direction. A <b>·</b> is an internal saying nothing in particular; a <b>!</b> is one doing something worth naming. ${esc(qt.detail || '')}</p></div>`;
+  })();
+
+  // ---- "acting right": behaviour against each index's own precedent ----
+  //
+  // LIVERMORE'S ACTUAL DEFINITION of tape reading is "the behavior of a stock, actions that enable
+  // you to judge whether or not it is going to proceed in accordance with the precedents that your
+  // observation has noted" -- two parts, what the thing normally does and whether it is doing that
+  // now. The rule matrix above only ever answered a third question: what the indicators read today.
+  //
+  // THIS IS NOT A FORECAST, and the design is what makes that true. Each test runs on a COMPLETED
+  // response: the most recent time the index entered a named condition long enough ago that the
+  // ten-session window has closed. So the claim is never "this will go up"; it is "this has or has
+  // not behaved the way it normally behaves", which is knowable from data the desk already holds.
+  const prec = (D.svenPrecedent || []).slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const brk = Object.fromEntries((D.svenBreaks || []).map(r => [r.ticker, r]));
+  const PREC_LOOK = {
+    acting_right:     { dot: 'var(--pos)',   label: 'acting right' },
+    acting_strong:    { dot: 'var(--accent)', label: 'acting right, strongly' },
+    not_acting_right: { dot: 'var(--neg)',   label: 'NOT acting right' },
+    no_precedent:     { dot: 'none',         label: 'no precedent' },
+    untested:         { dot: 'none',         label: 'untested' },
+  };
+  const precCols = [...new Map(prec.map(r => [r.precedent_key, r])).values()].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const precTickers = [...new Set(prec.map(r => r.ticker))].sort((a, b) => {
+    const ia = SVEN_ORDER.indexOf(a), ib = SVEN_ORDER.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+  });
+  const precFor = (t, k) => prec.find(r => r.ticker === t && r.precedent_key === k) || null;
+  const notRight = prec.filter(r => r.verdict === 'not_acting_right');
+  const broken = (D.svenBreaks || []).filter(r => r.verdict !== 'holds' && r.verdict !== 'insufficient');
+
+  const actingCard = !prec.length ? '' : `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Is it acting right?</h2>
+      <span style="font-size:12px;color:var(--muted)">${esc(prec.map(r => r.as_of).sort().pop() || '')} · ${precCols.length} conditions × ${precTickers.length} indices · ${prec[0] ? prec[0].horizon_days : 10}-session response</span></div>
+    <p class="note" style="margin:8px 0 14px">Livermore's definition of tape reading has two parts: <b>what the thing normally does</b>, and <b>whether it is doing that now</b>. For each named condition this compares the most recent completed response against every other time that same index was in that same condition. <b>Where it does not match, the output is not a direction</b> — <i>"being unable to tell precisely what is wrong, you cannot tell which way it is going"</i>.</p>
+    <div style="overflow-x:auto"><table style="min-width:800px"><thead><tr>
+      <th>Index</th>${precCols.map(c => `<th class="num" style="font-size:11px" title="${esc(c.precedent_label)}">${esc(c.precedent_label.replace(/^New (\d+)-day/, '$1d').replace('Gap of half an ATR or more', 'Gap').replace('Narrowest range in seven', 'NR7').replace('Climax day', 'Climax'))}</th>`).join('')}
+      <th class="num">Off</th><th>Precedent</th></tr></thead><tbody>
+      ${precTickers.map(t => {
+        const mine = precCols.map(c => precFor(t, c.precedent_key));
+        const off = mine.filter(r => r && r.verdict === 'not_acting_right').length;
+        const b = brk[t] || null;
+        const bTone = !b ? 'var(--line)' : b.verdict === 'holds' ? 'var(--muted)' : b.verdict === 'insufficient' ? 'var(--line)' : 'var(--warn)';
+        const bLabel = !b ? '—' : b.verdict === 'holds' ? 'holds' : b.verdict === 'insufficient' ? 'no reading'
+          : b.verdict === 'both' ? 'volatility + correlation' : b.verdict === 'volatility_regime' ? 'volatility regime' : 'correlation regime';
+        return `<tr${off ? ' style="background:var(--panel2)"' : ''}>
+          <td class="click" data-go="#sven/${esc(t)}" style="cursor:pointer"><b>${esc(t)}</b> <span style="color:var(--muted)">${esc(SVEN_LABEL[t] || '')}</span></td>
+          ${mine.map(r => {
+            if (!r) return '<td class="num">·</td>';
+            const L = PREC_LOOK[r.verdict] || PREC_LOOK.no_precedent;
+            const tip = `${r.precedent_label}\n${r.headline}${r.detail ? `\n\n${r.detail}` : ''}\n\n${r.method || ''}`;
+            const mark = r.verdict === 'no_precedent' || r.verdict === 'untested'
+              ? `<span style="color:var(--line)">${r.verdict === 'untested' ? '\u00b7' : '\u2013'}</span>`
+              : `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${L.dot}"></span>`;
+            return `<td class="num" data-tip="${esc(tip)}" style="cursor:default">${mark}</td>`;
+          }).join('')}
+          <td class="num">${off ? `<b style="color:var(--neg)">${off}</b>` : '<span style="color:var(--muted)">·</span>'}</td>
+          <td title="${esc(b ? b.detail || '' : '')}" style="font-size:12px;color:${bTone};font-weight:${b && b.verdict !== 'holds' && b.verdict !== 'insufficient' ? '600' : '400'}">${esc(bLabel)}</td></tr>`;
+      }).join('')}
+    </tbody></table></div>
+    <p class="note" style="margin-top:12px"><b>A green dot is an index doing what it normally does after that condition; a red dot is not acting right.</b> A dash means this index has not been in that condition enough times to have a precedent — fewer than twelve occurrences, or a median response so small there is no characteristic behaviour to match. <b>Occurrences are counted at least a full response window apart</b>, because a twenty-day high can print for nine sessions running and counting each one would turn one event into nine near-identical observations and make a thin precedent look thick. Precedents are per index and never pooled: gold's response to a new high is not the Russell's, and the average of them describes neither. Hover any cell for the distribution behind it.</p>
+    ${notRight.length ? `<div style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+      <div class="eyebrow" style="margin-bottom:8px">${notRight.length} reading${notRight.length === 1 ? '' : 's'} not acting right</div>
+      ${notRight.slice(0, 8).map(r => `<p class="note" style="margin:0 0 7px"><b>${esc(r.ticker)}</b> <span style="color:var(--muted)">${esc(r.precedent_label.toLowerCase())}</span> — ${esc(r.headline)}</p>`).join('')}
+      <p class="note">These are the rows Livermore says to stand aside on rather than to trade against. The instruction is explicitly not a direction.</p></div>`
+      : `<p class="note"><b>Nothing is failing its own precedent right now.</b> Every tested index responded to its last named condition within the middle range of how it has responded before.</p>`}
+    <p class="note" style="margin-top:12px"><b>Precedent</b> is the other half of the question, and it comes from the book's clearest cautionary tale: the chartist with decades of correlations across stocks, bonds, grain, cotton and money who <i>"lost millions"</i> when the war <i>"knocked all precedents into a cocked hat"</i>. A flag means realised volatility, or correlation to the market, has sat outside its own two-year 10–90 band for <b>ten consecutive sessions</b> — and each of those sessions is judged against the two years that preceded <i>it</i>, not against today, because a band drawn with hindsight would move under the streak it is counting. One wild week is not a regime, and <b>a flag that cries wolf is worse than none</b>. ${broken.length ? `Flagged now: ${broken.map(r => `<b>${esc(r.ticker)}</b>`).join(', ')}.` : 'Nothing is flagged.'}</p></div>`;
 
   // ---- news failure ----
   // Which positions a reading reaches, in firm dollars, and which way. The direction is the
@@ -2863,8 +3194,8 @@ function sven() {
     Only weekly, monthly and quarterly series count: the daily ones here are market prices, not announcements. <b>Publication dates</b> are taken from the day this desk watched each figure appear where the loader was running continuously around it, and assumed from frequency where the figure arrived in a backfill — each row says which, and the two are different claims.</p></div>`;
 
   return `<span class="eyebrow">Market internals</span><h1>Sven</h1>
-   <p class="sub">Raschke's twelve rules across the major indices, and whether assets are responding to their own news.</p>
-   ${matrix}${newsCard}`;
+   <p class="sub">Raschke's twelve rules across the major indices, whether each index is behaving the way it normally behaves, and whether assets are responding to their own news.</p>
+   ${quietCard}${matrix}${actingCard}${newsCard}`;
 }
 
 // All twelve rules for one index, with the numbers and the method behind each.
@@ -2873,12 +3204,47 @@ function svenDrawer(ticker) {
   if (!rows.length) return `<button class="close" data-go="#sven">Close</button><h1>${esc(ticker)}</h1><div class="card"><div class="empty">No rule signals for this index.</div></div>`;
   return `<button class="close" data-go="#sven">Close</button>
    <span class="eyebrow">Raschke's rules · ${esc(rows[0].as_of)}</span><h1>${esc(ticker)} — ${esc(SVEN_LABEL[ticker] || '')}</h1>
+   ${(() => {
+     // The precedent half of the drawer, first, because it is the question Livermore actually
+     // asked -- what this index normally does, and whether it is doing that now.
+     const prec = (D.svenPrecedent || []).filter(r => r.ticker === ticker).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+     const b = (D.svenBreaks || []).find(r => r.ticker === ticker) || null;
+     if (!prec.length && !b) return '';
+     const pc2 = v => v === null || v === undefined ? '\u2014' : `${+v >= 0 ? '+' : '\u2212'}${Math.abs(+v * 100).toFixed(2)}%`;
+     const tone = v => v === 'not_acting_right' ? 'var(--neg)' : v === 'acting_strong' ? 'var(--accent)' : v === 'acting_right' ? 'var(--pos)' : 'var(--line)';
+     return `<div class="card" style="margin-bottom:14px">
+       <h2 style="margin:0 0 4px">Is it acting right?</h2>
+       <p class="note" style="margin:0 0 12px">What this index normally does after each named condition, and what it did the last time the condition finished its ${prec[0] ? prec[0].horizon_days : 10}-session window. Run on a completed response, never a live one, so nothing here is a forecast.</p>
+       ${!prec.length ? '<div class="empty" style="margin:0">No precedent tests for this index.</div>'
+         : `<div style="overflow-x:auto"><table style="min-width:640px"><thead><tr>
+         <th>Condition</th><th class="num">Times</th><th class="num">Normally</th><th class="num">Middle half</th>
+         <th class="num">Last trigger</th><th class="num">What followed</th><th>Verdict</th></tr></thead><tbody>
+         ${prec.map(r => `<tr title="${esc(r.detail || '')}">
+           <td>${esc(r.precedent_label)}</td>
+           <td class="num">${r.n_precedents}</td>
+           <td class="num">${pc2(r.hist_median)}${r.hist_hit_rate === null ? '' : `<span style="font-size:10px;color:var(--muted)"> ${(+r.hist_hit_rate * 100).toFixed(0)}%</span>`}</td>
+           <td class="num" style="font-size:11px;color:var(--muted)">${r.hist_p25 === null ? '\u2014' : `${pc2(r.hist_p25)} to ${pc2(r.hist_p75)}`}</td>
+           <td class="num" style="font-size:11px;color:var(--muted)">${esc(r.trigger_date || '\u2014')}</td>
+           <td class="num" style="color:${r.realised === null ? 'var(--muted)' : +r.realised >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc2(r.realised)}${r.realised_pctile === null ? '' : `<span style="font-size:10px;color:var(--muted)"> p${(+r.realised_pctile * 100).toFixed(0)}</span>`}</td>
+           <td style="color:${tone(r.verdict)};font-weight:600;font-size:12px">${esc((r.verdict || '').replace(/_/g, ' '))}</td></tr>`).join('')}
+       </tbody></table></div>
+       <p class="note" style="margin-top:10px">${esc(prec[0].method || '')}</p>`}
+       ${!b ? '' : `<div style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+         <div class="eyebrow" style="margin-bottom:6px">Does the precedent still apply?</div>
+         <p style="margin:0 0 4px;color:${b.verdict === 'holds' ? 'var(--muted)' : 'var(--warn)'}"><b>${esc(b.headline)}</b></p>
+         <p class="note" style="margin:0">${esc(b.detail || '')}</p></div>`}
+     </div>`;
+   })()}
    ${rows.map(r => {
-     const st = RULE_STATE[r.state];
-     return `<div class="card" style="margin-bottom:10px;border-left:3px solid ${r.state === 'not_evaluable' ? 'var(--line)' : st.dot}">
+     const st = RULE_STATE[r.state] || RULE_STATE.neutral;
+     const vm = VS_MARKET[r.vs_market] || null;
+     const edge = r.state === 'not_evaluable' ? 'var(--line)' : r.state === 'no_read' ? 'var(--line)' : st.dot;
+     return `<div class="card" style="margin-bottom:10px;border-left:3px solid ${edge}">
        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap">
          <h2 style="margin:0;font-size:13px">${r.rule_no}. ${esc(r.rule_title)}</h2>
-         <span class="chip" style="color:${st.dot === 'transparent' ? 'var(--muted)' : st.dot}">${esc(st.label)}</span></div>
+         <div style="display:flex;gap:6px;align-items:baseline">
+           ${vm && r.vs_market !== 'silent' && r.vs_market !== 'is_market' ? `<span class="chip" title="${esc(vm.short)}" style="color:${r.vs_market === 'against_market' ? 'var(--warn)' : 'var(--muted)'}">${esc(vm.label)}${r.market_state && r.vs_market !== 'market_silent' ? ` · ${esc(MARKET_T)} ${esc(r.market_state.replace('_', ' '))}` : ''}</span>` : ''}
+           <span class="chip" title="${esc(st.short || '')}" style="color:${st.dot === 'transparent' || st.dot === 'none' ? 'var(--muted)' : st.dot}">${esc(st.label)}</span></div></div>
        <p style="margin:8px 0 0">${esc(r.headline)}</p>
        ${r.detail ? `<p style="margin:6px 0 0;color:var(--muted);font-size:12.5px;font-variant-numeric:tabular-nums">${esc(r.detail)}</p>` : ''}
        ${r.method ? `<p class="note" style="margin-top:8px">${r.adapted ? '<b>Adapted to daily bars.</b> ' : ''}${esc(r.method)}</p>` : ''}</div>`;
@@ -6472,6 +6838,12 @@ document.addEventListener('change', e => {
 // Test: rebuild a daily series from the proposed weights and measure it over two windows.
 document.addEventListener('click', async e => {
   if (!e.target.closest('[data-satest]')) return;
+  // GUARDED because saRows is only populated by sandboxAllocation(), which returns early when the
+  // model list is empty -- and the model list is empty whenever the strategies query failed. The
+  // button is still in the DOM from the previous render, so a click then threw a TypeError that
+  // killed every later handler on the page. An intermittent query timeout should degrade to a
+  // message, not to a dead page.
+  if (!saRows) { saMsg = { ok: false, text: 'No model is loaded, so there is nothing to measure. Reload the page — the strategy list did not arrive.' }; return saRedraw(); }
   const rows = saRows.filter(r => r.security_id && +r.weight > 0);
   if (!rows.length) { saMsg = { ok: false, text: 'Nothing priceable to measure: every row needs a known ticker and a weight above zero.' }; return saRedraw(); }
   saBusy = true; saMsg = null; saRedraw();

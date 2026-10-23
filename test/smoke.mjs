@@ -1556,9 +1556,23 @@ if (!argRoute) {
     }
     say(` ok  kate reflexivity       -> ${withLoop.length} of ${ranks.length} dimensions carry a loop verdict`);
     // Top five of the contest, and only five.
+    //
+    // SCOPED TO THE CONTEST CARD, not to the whole page. This check used to substring-match the
+    // entire rendered page, which worked only while no other section happened to use a dimension's
+    // name as an ordinary word. The credit panel added 2026-10-23 says "Credit" several times, and
+    // "Credit" is dimension nine -- so the loose version failed on content that was perfectly
+    // correct. A test that breaks when an unrelated card is added was testing the wrong thing.
+    const contestCard = (() => {
+      const i = k.indexOf("This week's beauty contest");
+      if (i < 0) return '';
+      const j = k.indexOf('<h2', k.indexOf('</h2>', i));
+      return j < 0 ? k.slice(i) : k.slice(i, j);
+    })();
+    need(contestCard.length > 200, '[kate] the beauty contest card could not be isolated on the page');
     const winners = ranks.filter(r => r.confirmed && r.rank !== null).sort((a, b) => a.rank - b.rank);
-    for (const w of winners.slice(0, 5)) need(k.includes(w.dimension), `[kate] ${w.dimension} is in the contest's top five but is not on the page`);
-    need(!winners.slice(5).some(w => k.includes(w.dimension) && !ranks.find(x => x.dimension === w.dimension && x.confirmed === false)), '[kate] more than five winners are listed');
+    for (const w of winners.slice(0, 5)) need(contestCard.includes(w.dimension), `[kate] ${w.dimension} is in the contest's top five but is not in the contest card`);
+    need(!winners.slice(5).some(w => contestCard.includes(w.dimension)
+      && !ranks.find(x => x.dimension === w.dimension && x.confirmed === false)), '[kate] more than five winners are listed in the contest card');
 
     // And Adam must have handed the contest over rather than keeping a second copy of it.
     await go('#adam');
@@ -1761,7 +1775,9 @@ if (!argRoute) {
   currentRoute = 'sven';
   await go('#sven');
   const s0 = app();
-  const idx = (s0.match(/data-go="#sven\/\w+"/g) || []).length;
+  // Distinct tickers, not link occurrences: the acting-right card added 2026-10-23 links the same
+  // nine indices a second time, and counting links reported eighteen indices on a nine-index page.
+  const idx = new Set((s0.match(/data-go="#sven\/(\w+)"/g) || []).map(m => m.slice(16, -1))).size;
   say(` ok  sven matrix            -> ${idx} indices`);
   need(idx > 0, '[sven] rule matrix rendered no indices');
   need(s0.includes('News failure'), '[sven] news failure card missing');
@@ -1805,6 +1821,244 @@ if (!argRoute) {
   }
   await click('[data-newswin]', { newswin: '90' });
   need(app() !== s0, '[sven] switching the news window did not change the table');
+
+  // -------------------------------------------------------------------------
+  // 13. Sven, from Reminiscences of a Stock Operator: the fourth state, the market comparison,
+  //     "acting right", the precedent-break flag and the quiet tape.
+  //
+  //     The guards are about MEANING, not rendering. no_read must never carry a direction, and it
+  //     must not have simply absorbed what neutral used to mean -- neutral has to keep existing for
+  //     the cases where the rule was tested and failed. The market comparison must follow the two
+  //     states it is drawn from. And an "acting right" verdict must follow the distribution it is
+  //     drawn from, in the median's own direction, since that sign flip is the easiest thing in the
+  //     job to get backwards and the hardest to see by eye.
+  // -------------------------------------------------------------------------
+  currentRoute = 'tape-reading';
+  await go('#sven');
+  {
+    const sv = app();
+
+    // ---- the fourth state ----
+    const rules = await rest('latest_sven_rule_signals', 'ticker,rule_key,rule_no,state,headline,market_state,vs_market');
+    need(rules.length > 0, '[no_read] no rule rows at all');
+    const states = [...new Set(rules.map(r => r.state))];
+    need(states.includes('no_read'), '[no_read] the fourth state is not in use; neutral is still doing two jobs');
+    need(states.includes('neutral'), '[no_read] neutral has vanished — no_read has absorbed it, and "tested and failed" can no longer be said');
+    let tb = [];
+    for (const r of rules) {
+      if (r.state === 'no_read' && /\bbullish\b|\bbearish\b/i.test(r.headline || '')) tb.push(`${r.ticker} ${r.rule_key}: no_read with a directional headline`);
+      if (!['bullish', 'bearish', 'neutral', 'no_read', 'not_evaluable'].includes(r.state)) tb.push(`${r.ticker} ${r.rule_key}: unknown state ${r.state}`);
+    }
+    need(/no read/.test(sv), '[no_read] the matrix legend does not name the fourth state');
+    need(/No diagnosis, no prognosis/.test(sv), '[no_read] the sentence the state exists for is not on the page');
+    const nNo = rules.filter(r => r.state === 'no_read').length;
+    say(` ok  sven fourth state      -> ${nNo} of ${rules.length} cells read no_read, ${states.length} states in use`);
+
+    // ---- every reading against the general market ----
+    const OPP = { bullish: 'bearish', bearish: 'bullish' };
+    const mkt = Object.fromEntries(rules.filter(r => r.ticker === 'SPY').map(r => [r.rule_key, r.state]));
+    for (const r of rules) {
+      if (r.ticker === 'SPY') { if (r.vs_market !== 'is_market') tb.push(`SPY ${r.rule_key} is not marked as the market`); continue; }
+      // Only a direction can agree or disagree with a direction. The job's first version fell
+      // through to with_market for every pair that was neither identical nor opposite, which filed
+      // a bullish cell against a neutral market as agreement; these four lines are what found it.
+      const dir = st => st === 'bullish' || st === 'bearish';
+      if (r.vs_market === 'against_market' && OPP[mkt[r.rule_key]] !== r.state) tb.push(`${r.ticker} ${r.rule_key}: against the market without an opposite state`);
+      if (r.vs_market === 'with_market' && mkt[r.rule_key] !== r.state) tb.push(`${r.ticker} ${r.rule_key}: with the market on a different state`);
+      if (r.vs_market === 'market_silent' && !(dir(r.state) && !dir(mkt[r.rule_key]))) tb.push(`${r.ticker} ${r.rule_key}: market called directionless while this reads ${r.state} and SPY reads ${mkt[r.rule_key]}`);
+      if (r.vs_market === 'silent' && dir(r.state) && mkt[r.rule_key] !== r.state) tb.push(`${r.ticker} ${r.rule_key}: called silent while reading ${r.state}`);
+      if (r.market_state !== null && r.market_state !== mkt[r.rule_key]) tb.push(`${r.ticker} ${r.rule_key}: carries market_state ${r.market_state} but SPY reads ${mkt[r.rule_key]}`);
+    }
+    need(/vs mkt/.test(sv), '[market] the matrix has no column for disagreement with the market');
+    need(/individual curves with the general market curve/.test(sv), '[market] the page does not say why the market column is there');
+    const nAgainst = rules.filter(r => r.vs_market === 'against_market').length;
+    say(` ok  sven vs the market     -> ${nAgainst} cells disagree with SPY, ${rules.filter(r => r.vs_market === 'with_market').length} agree`);
+
+    // ---- acting right ----
+    const prec = await rest('latest_sven_precedent_tests', 'ticker,precedent_key,precedent_label,horizon_days,n_precedents,hist_median,hist_p25,hist_p75,hist_hit_rate,trigger_date,realised,realised_pctile,verdict');
+    need(prec.length > 0, '[acting] no precedent tests computed');
+    need(/Is it acting right\?/.test(sv), '[acting] the acting-right card is not on the page');
+    for (const r of prec) {
+      if (r.realised_pctile !== null && (+r.realised_pctile < 0 || +r.realised_pctile > 1)) tb.push(`${r.ticker} ${r.precedent_key}: percentile ${r.realised_pctile} out of range`);
+      if (r.hist_hit_rate !== null && (+r.hist_hit_rate < 0 || +r.hist_hit_rate > 1)) tb.push(`${r.ticker} ${r.precedent_key}: hit rate ${r.hist_hit_rate} out of range`);
+      if (['acting_right', 'acting_strong', 'not_acting_right'].includes(r.verdict)) {
+        if (!(r.n_precedents >= 12)) tb.push(`${r.ticker} ${r.precedent_key}: judged on ${r.n_precedents} occurrences, under the 12 minimum`);
+        if (r.realised === null) tb.push(`${r.ticker} ${r.precedent_key}: a verdict with no realised response`);
+        if (!r.trigger_date) tb.push(`${r.ticker} ${r.precedent_key}: a verdict with no trigger date`);
+        if (!(+r.hist_p25 <= +r.hist_median && +r.hist_median <= +r.hist_p75)) tb.push(`${r.ticker} ${r.precedent_key}: median outside its own quartiles`);
+        // The sign flip: the same realised number means opposite things depending on which way
+        // this index normally goes after the condition.
+        const up = +r.hist_median > 0;
+        const want = up ? (+r.realised >= +r.hist_p75 ? 'acting_strong' : +r.realised >= +r.hist_p25 ? 'acting_right' : 'not_acting_right')
+                        : (+r.realised <= +r.hist_p25 ? 'acting_strong' : +r.realised <= +r.hist_p75 ? 'acting_right' : 'not_acting_right');
+        if (r.verdict !== want) tb.push(`${r.ticker} ${r.precedent_key}: verdict ${r.verdict} but its own distribution says ${want}`);
+      }
+      if (r.verdict === 'no_precedent' && r.n_precedents >= 12 && r.hist_median !== null && Math.abs(+r.hist_median) >= 0.002)
+        tb.push(`${r.ticker} ${r.precedent_key}: called no_precedent on ${r.n_precedents} occurrences with a median of ${r.hist_median}`);
+    }
+    // Not acting right must never be rendered as a direction.
+    const nr = prec.filter(r => r.verdict === 'not_acting_right');
+    if (nr.length) need(/being unable to tell precisely what is wrong/i.test(sv), '[acting] not-acting-right is shown without the warning that it is not a direction');
+    const perTicker = new Set(prec.map(r => r.ticker));
+    const keys = new Set(prec.map(r => r.precedent_key));
+    for (const t of perTicker) if (prec.filter(r => r.ticker === t).length !== keys.size)
+      tb.push(`${t} carries ${prec.filter(r => r.ticker === t).length} conditions, not the ${keys.size} every other index carries`);
+    say(` ok  sven acting right      -> ${prec.length} tests, ${nr.length} not acting right, ${prec.filter(r => r.verdict === 'no_precedent').length} with no precedent`);
+
+    // ---- the precedent-break flag, and its sustain guard ----
+    const brk = await rest('latest_sven_precedent_breaks', 'ticker,vol_20,vol_pctile,vol_streak,vol_broken,corr_60,corr_pctile,corr_streak,corr_broken,verdict');
+    need(brk.length > 0, '[precedent] no break readings computed');
+    for (const r of brk) {
+      if (r.vol_broken && r.vol_streak < 10) tb.push(`${r.ticker}: volatility broken on a ${r.vol_streak}-session streak, under the 10 required`);
+      if (r.corr_broken && r.corr_streak < 10) tb.push(`${r.ticker}: correlation broken on a ${r.corr_streak}-session streak, under the 10 required`);
+      if (r.verdict === 'volatility_regime' && !r.vol_broken) tb.push(`${r.ticker}: a volatility verdict without the flag`);
+      if (r.verdict === 'correlation_regime' && !r.corr_broken) tb.push(`${r.ticker}: a correlation verdict without the flag`);
+      if (r.verdict === 'both' && !(r.vol_broken && r.corr_broken)) tb.push(`${r.ticker}: verdict "both" without both flags`);
+      if (r.verdict === 'holds' && (r.vol_broken || r.corr_broken)) tb.push(`${r.ticker}: says it holds while carrying a flag`);
+      if (r.corr_60 !== null && (+r.corr_60 < -1.0001 || +r.corr_60 > 1.0001)) tb.push(`${r.ticker}: correlation ${r.corr_60} outside -1..1`);
+      if (r.ticker === 'SPY' && r.corr_60 !== null) tb.push('SPY is correlated against itself');
+    }
+    need(/knocked all precedents into a cocked hat/.test(sv), '[precedent] the break flag is shown without the reason it exists');
+    need(/ten consecutive sessions/i.test(sv), '[precedent] the sustain guard is not stated on the page');
+    const flagged = brk.filter(r => r.verdict !== 'holds' && r.verdict !== 'insufficient');
+    say(` ok  sven precedent breaks  -> ${brk.length} indices, ${flagged.length} flagged${flagged.length ? ` (${flagged.map(r => `${r.ticker} ${r.verdict}`).join(', ')})` : ''}`);
+
+    // ---- the quiet tape ----
+    const qt = (await rest('latest_sven_tape_quiet', 'as_of,n_indices,mid_range_share,no_read_share,directional,vol_pctile,breadth,extremes,verdict,headline,legs'))[0];
+    need(Boolean(qt), '[quiet] no quiet-tape reading');
+    need(/Is there anything to say\?/.test(sv), '[quiet] the quiet-tape card is not on the page');
+    need(/no man can always have adequate reasons/i.test(sv), '[quiet] the card is there without the sentence it exists for');
+    {
+      const legs = Array.isArray(qt.legs) ? qt.legs : [];
+      need(legs.length === 5, `[quiet] ${legs.length} legs, expected 5`);
+      for (const l of legs) if (!['quiet', 'something', 'unavailable'].includes(l.says)) tb.push(`quiet leg ${l.leg} says "${l.says}"`);
+      const nq = legs.filter(l => l.says === 'quiet').length;
+      const nlive = legs.filter(l => l.says !== 'unavailable').length;
+      // "quiet" must mean every readable internal is quiet. A partial quiet is "ordinary".
+      if (qt.verdict === 'quiet' && nq !== nlive) tb.push(`called quiet with ${nlive - nq} internal(s) saying otherwise`);
+      if (qt.verdict === 'loud' && nq !== 0) tb.push(`called loud with ${nq} quiet internal(s)`);
+      for (const f of ['mid_range_share', 'no_read_share', 'vol_pctile', 'breadth'])
+        if (qt[f] !== null && (+qt[f] < 0 || +qt[f] > 1)) tb.push(`${f} is ${qt[f]}, not a share`);
+      // The no_read share must agree with the rule table it is counted from.
+      const ev = rules.filter(r => r.state !== 'not_evaluable');
+      const want = ev.length ? ev.filter(r => r.state === 'no_read').length / ev.length : null;
+      if (want !== null && qt.no_read_share !== null && Math.abs(+qt.no_read_share - want) > 0.02)
+        tb.push(`no_read share ${qt.no_read_share} does not match the ${want.toFixed(3)} in the rule table`);
+      say(` ok  sven quiet tape        -> ${qt.verdict}, ${nq} of ${nlive} internals say nothing`);
+    }
+
+    tb = [...new Set(tb)];
+    for (const b of tb) errors.push(`[tape-reading] ${b}`);
+    need(tb.length === 0, `[tape-reading] ${tb.length} problem(s) above`);
+  }
+
+  // -------------------------------------------------------------------------
+  // 14. Kate, from The Alchemy of Finance: the equilibrium gate, the successful-test count, the
+  //     asymmetry, the credit panel and the named flaw.
+  //
+  //     THE LOAD-BEARING GUARD IS THE GATE'S CALIBRATION. Soros wrote a preface to say reflexivity
+  //     is feeble in most situations, so a page on which most narratives read far-from-equilibrium
+  //     is not reporting his framework, it is reporting a threshold error -- which is exactly what
+  //     the first version did, flagging 18 of 32. The test asserts the majority sit near
+  //     equilibrium, because that is the claim the book makes about the world.
+  //
+  //     And nowhere may a stage number appear. Soros calls his own nine-stage sequence "only one
+  //     possible path" and says it hardly needs emphasizing how crude the model is.
+  // -------------------------------------------------------------------------
+  currentRoute = 'reflexivity';
+  await go('#kate');
+  {
+    const kt = app();
+    const rx = await rest('latest_narrative_reflexivity', 'narrative,proxy_ticker,leg_start,leg_days,test_threshold,tests,days_since_test,median_gap,gap_ratio,test_verdict,attention_pctile,price_pctile,gap_now,gap_4w,gap_12w,gap_trend,equilibrium,n_advances,n_declines,adv_days_median,dec_days_median,asymmetry,asymmetry_verdict,n_bars');
+    need(rx.length > 0, '[reflexivity] nothing computed');
+    need(/Is the loop even worth asking about\?/.test(kt), '[reflexivity] the gate card is not on the page');
+    need(/so feeble it can safely be ignored/.test(kt), '[reflexivity] the 1994 correction is not quoted, so the gate looks arbitrary');
+
+    let kb = [];
+    const GATE = 68;
+    for (const r of rx) {
+      if (r.gap_now !== null && (+r.gap_now < 0 || +r.gap_now > 100)) kb.push(`${r.narrative}: gap ${r.gap_now} is not in percentile points`);
+      for (const f of ['attention_pctile', 'price_pctile'])
+        if (r[f] !== null && (+r[f] < 0 || +r[f] > 1)) kb.push(`${r.narrative}: ${f} is ${r[f]}, not a share`);
+      if (r.equilibrium === 'near_equilibrium' && r.gap_now !== null && +r.gap_now >= GATE) kb.push(`${r.narrative}: near equilibrium at ${r.gap_now} points, over the ${GATE} gate`);
+      if (['stretched', 'far_from_equilibrium'].includes(r.equilibrium) && !(+r.gap_now >= GATE)) kb.push(`${r.narrative}: off the gate at ${r.gap_now} points`);
+      if (r.equilibrium === 'far_from_equilibrium' && !(+r.gap_trend > 0)) kb.push(`${r.narrative}: far from equilibrium without a widening gap`);
+      if (r.gap_now !== null && r.attention_pctile !== null && r.price_pctile !== null
+        && Math.abs(+r.gap_now - Math.abs(+r.attention_pctile - +r.price_pctile) * 100) > 0.2)
+        kb.push(`${r.narrative}: gap ${r.gap_now} does not equal the distance between its own two percentiles`);
+      // The test counter.
+      if (r.test_verdict === 'no_leg' && r.leg_start) kb.push(`${r.narrative}: no advance, yet an advance start date`);
+      if (r.test_verdict === 'late_untested' && !(+r.gap_ratio > 2)) kb.push(`${r.narrative}: called late without the gap ratio`);
+      if (r.test_verdict === 'untested' && !(r.tests === 0)) kb.push(`${r.narrative}: called never tested with ${r.tests} tests`);
+      if (r.test_verdict === 'untested' && !(r.leg_days >= 120)) kb.push(`${r.narrative}: called never tested on a ${r.leg_days}-session advance, which is early`);
+      if (r.tests === 0 && r.days_since_test !== null) kb.push(`${r.narrative}: zero tests but a count since the last one`);
+      if (r.test_threshold !== null && +r.test_threshold < 0.04) kb.push(`${r.narrative}: test threshold ${r.test_threshold} is under the 4% floor`);
+      // The asymmetry. A zigzag alternates, so the two counts can differ by at most one.
+      if (r.n_advances !== null && r.n_declines !== null && Math.abs(r.n_advances - r.n_declines) > 1)
+        kb.push(`${r.narrative}: ${r.n_advances} advances against ${r.n_declines} declines — a zigzag cannot do that`);
+      if (r.asymmetry_verdict !== 'insufficient' && (r.n_advances < 3 || r.n_declines < 3))
+        kb.push(`${r.narrative}: an asymmetry verdict on ${r.n_advances}/${r.n_declines} swings`);
+      if (r.asymmetry !== null && r.adv_days_median && r.dec_days_median
+        && Math.abs(+r.asymmetry - +r.adv_days_median / +r.dec_days_median) > 0.01)
+        kb.push(`${r.narrative}: asymmetry ${r.asymmetry} is not its own two medians divided`);
+      if (r.asymmetry_verdict === 'slow_up_fast_down' && !(+r.asymmetry >= 1.3)) kb.push(`${r.narrative}: slow-up-fast-down at ${r.asymmetry}`);
+    }
+    // The calibration claim: most of the flock must be near equilibrium, or the gate is wrong.
+    const near = rx.filter(r => r.equilibrium === 'near_equilibrium').length;
+    need(near > rx.length / 2, `[reflexivity] only ${near} of ${rx.length} narratives are near equilibrium — Soros says most situations are, so the gate is miscalibrated`);
+    // A zigzag that never reverses reports zero swings, which is how the dir=0 bug was found.
+    need(!rx.some(r => r.n_advances === 0 && r.n_bars > 1000), '[reflexivity] a narrative with years of history reports zero swings; the zigzag is stuck');
+    // No stage number, anywhere.
+    need(!/stage\s*[1-9]\s*(of|\/)\s*9/i.test(kt), '[reflexivity] a stage number is on the page; Soros disclaimed that precision');
+    need(/corrections become scarcer/.test(kt), '[reflexivity] the test counter is shown without the sentence it encodes');
+    need(/not on attention/.test(kt), '[reflexivity] the asymmetry is shown without saying it is measured on price');
+    say(` ok  kate equilibrium gate  -> ${near} of ${rx.length} near equilibrium, ${rx.filter(r => r.equilibrium === 'far_from_equilibrium').length} far from it`);
+    say(` ok  kate successful tests  -> ${rx.filter(r => r.test_verdict === 'untested' || r.test_verdict === 'late_untested').length} advances no longer being tested, ${rx.filter(r => r.test_verdict === 'no_leg').length} with no advance`);
+    say(` ok  kate asymmetry         -> ${rx.filter(r => r.asymmetry_verdict === 'slow_up_fast_down').length} slow up / fast down, ${rx.filter(r => r.asymmetry_verdict === 'symmetric').length} symmetric`);
+
+    // ---- the credit panel ----
+    const cl = await rest('latest_credit_cycle_legs', 'leg,label,series_id,obs_date,level,level_unit,change,acceleration,direction,accel_sign');
+    const cr = (await rest('credit_cycle_readings', 'as_of,phase,n_easing,n_tightening,n_accelerating,n_decelerating,n_legs,oldest_obs,caveat')).sort((a, b) => String(b.as_of).localeCompare(String(a.as_of)))[0];
+    need(cl.length >= 4, `[credit] only ${cl.length} legs computed`);
+    need(Boolean(cr), '[credit] no credit reading');
+    need(/The credit cycle/.test(kt), '[credit] the credit card is not on the page');
+    // The caveat is the load-bearing part: this is conditions, not Soros's loan/collateral loop.
+    need(/not Soros'?.?s loop/i.test(kt), '[credit] the panel does not say it is conditions rather than the loop');
+    need(/collateral/i.test(kt), '[credit] the loop being approximated is never named');
+    need(/Only net new lending stimulates/i.test(kt), '[credit] the reason acceleration is the signal is missing');
+    for (const r of cl) {
+      if (!r.obs_date) kb.push(`credit leg ${r.leg} carries no observation date, so its staleness is hidden`);
+      if (!['easing', 'tightening', 'flat', 'unavailable'].includes(r.direction)) kb.push(`credit leg ${r.leg} direction "${r.direction}"`);
+      if (!r.series_id) kb.push(`credit leg ${r.leg} names no series, so it cannot be audited`);
+    }
+    if (cr.n_legs !== cl.length) kb.push(`the reading counts ${cr.n_legs} legs against ${cl.length} rows`);
+    if (cr.n_easing + cr.n_tightening > cl.length) kb.push(`${cr.n_easing} easing plus ${cr.n_tightening} tightening exceeds ${cl.length} legs`);
+    if (cr.phase === 'decelerating' && !(cr.n_easing > cr.n_tightening && cr.n_decelerating > cr.n_accelerating))
+      kb.push('phase says decelerating without the legs to support it');
+    if (cr.oldest_obs !== cl.map(r => r.obs_date).sort()[0]) kb.push('the stated oldest observation is not the oldest leg');
+    say(` ok  kate credit cycle      -> ${cr.phase}, ${cl.length} legs, ${cr.n_easing} easing / ${cr.n_tightening} tightening, oldest ${cr.oldest_obs}`);
+
+    // ---- the named flaw ----
+    // Authored, never computed. The column must exist, a missing row must read as not-yet-named
+    // rather than as a blank, and any row that IS there must carry sources and a date.
+    need(/>The flaw</.test(kt), '[flaw] the contrarian list has no column for the flaw');
+    need(/There is bound to be a flaw/.test(kt), '[flaw] the column is there without the sentence it comes from');
+    need(/written, not computed/i.test(kt), '[flaw] the page does not say the flaw is authored rather than measured');
+    const fl = (await rest('annie_assessments', 'as_of,kind,narrative,headline,body_md,sources,author')).filter(r => r.kind === 'narrative_flaw');
+    const slugs = new Set(rx.map(r => r.narrative));
+    for (const f of fl) {
+      if (!f.narrative) kb.push('a narrative_flaw row carries no narrative');
+      else if (!slugs.has(f.narrative)) kb.push(`a flaw is written against "${f.narrative}", which is not a narrative`);
+      if (!(Array.isArray(f.sources) && f.sources.length)) kb.push(`the flaw on ${f.narrative} cites nothing`);
+      if (!f.body_md) kb.push(`the flaw on ${f.narrative} has a headline and no argument`);
+    }
+    if (!fl.length) need(/not yet named/.test(kt), '[flaw] no flaw is written and the page does not say so');
+    say(` ok  kate the flaw           -> ${fl.length} named, ${fl.length ? fl.map(f => f.narrative).join(', ') : 'column shows not yet named'}`);
+
+    kb = [...new Set(kb)];
+    for (const b of kb) errors.push(`[reflexivity] ${b}`);
+    need(kb.length === 0, `[reflexivity] ${kb.length} problem(s) above`);
+  }
 }
 
 // ---------------------------------------------------------------------------
