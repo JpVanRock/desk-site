@@ -103,7 +103,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, stressTests, sleeves] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, frag, fragEps, stressTests, sleeves] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -208,6 +208,8 @@ async function load() {
     // Which brake is worth owning, measured rather than modelled.
     qAllSoft(() => sb.from('latest_insurance_value').select('as_of,instrument,label,sort_order,window_key,window_from,window_to,n_days,n_stress,drawdowns_seen,crash_1pct,crash_5pct,worst_day_offset,carry_daily,carry_annual,free_carry,payoff_per_carry,carry_days_repaid,offset_per_1pct,corr_calm,corr_stress,corr_shift,episodes,episodes_helped,worst_episode,verdict,headline,detail').order('sort_order', { ascending: true }), 'insurance value'),
     qSoft(sb.from('latest_insurance_pricing').select('as_of,vix,vix_3m,realised_21d,vol_premium,vol_premium_pctile,term_ratio,term_state,term_pctile,verdict,headline,detail'), 'insurance pricing'),
+    qSoft(sb.from('latest_fragility_index').select('as_of,mfi,mfi_mean,mfi_pctile,override_leg,state,state_days,legs,n_legs,headline'), 'fragility index'),
+    qAllSoft(() => sb.from('latest_fragility_episodes').select('as_of,episode,trough,depth,mfi_at_peak,state_at_peak,first_warn,lead_days,lead_to_peak,worst_mfi,verdict,headline').order('episode', { ascending: true }), 'fragility episodes'),
     qAllSoft(() => sb.from('latest_stress_results').select('as_of,family,scenario,subject,sort_order,window_from,window_to,n_obs,value,value_kind,baseline,delta,p05,p50,p95,fit_r2,extrapolated,extrapolation,verdict,headline,detail').order('sort_order', { ascending: true }), 'stress results'),
     qAllSoft(() => sb.from('latest_sleeve_candidates').select('as_of,sleeve_key,label,sort_order,rationale,composition,window_from,window_to,n_days,episodes_covered,sleeve_carry,sleeve_crash,funding_ratio,iso_weight,iso_equity,iso_real_cagr,iso_max_dd,iso_days_under,baseline_dd,baseline_real_cagr,uplift,curve,best_weight,plateau_from,plateau_to,episodes,episodes_helped,loo_rank,loo_chosen,verdict,headline,detail').order('sort_order', { ascending: true }), 'sleeve candidates'),
   ]);
@@ -305,7 +307,7 @@ async function load() {
     turnings: turnings || [], generations: generations || [], tapeTicker: tapeTicker || [], humility: humility || [],
     narReflex: narReflex || [], creditLegs: creditLegs || [], creditReading: creditReading || [],
     svenPrecedent: svenPrecedent || [], svenBreaks: svenBreaks || [], tapeQuiet: tapeQuiet || [],
-    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [], stressTests: stressTests || [], sleeves: sleeves || [] };
+    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [], stressTests: stressTests || [], sleeves: sleeves || [], frag: frag || [], fragEps: fragEps || [] };
 }
 
 // ---------- Views ----------
@@ -1132,6 +1134,83 @@ function stan() {
     </div>`;
   })();
 
+  // ---- Market fragility ----
+  //
+  // LAYER 2, AND THE ONE THAT DID NOT PASS ITS OWN TEST. The Speed Limit measures what the desk's
+  // sources believe and moves when somebody records a call. This measures what market structure is
+  // doing and moves every day. The desk had the view and lacked the road, which is why a brake
+  // modulated off the Speed Limit alone would have been a constant.
+  //
+  // The card leads with the failure on purpose. Graded against the plan's own kill criterion --
+  // the index must LEAD fragility -- a defensive reading precedes BETTER forward returns than a
+  // calm one, which is the signature of a coincident measure: the index is most defensive near
+  // troughs, so the quarter that follows is the rebound. The honest response is to report that and
+  // narrow what the index is used for, not to tune six episodes until the backtest looks better.
+  const frag = (D.frag || [])[0] || null;
+  const fragEps = D.fragEps || [];
+  const fragLead = (D.stressTests || []).filter(r => r.family === 'fragility_lead');
+  const FRAG_STATE = {
+    accelerate:    { label: 'Accelerate',    tone: 'var(--pos)' },
+    recovery:      { label: 'Recovery',      tone: 'var(--flat)' },
+    deteriorating: { label: 'Deteriorating', tone: 'var(--warn)' },
+    defensive:     { label: 'Defensive',     tone: 'var(--neg)' },
+  };
+  const fragCard = !frag ? '' : (() => {
+    const p2 = (v, d = 2) => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : '\u2212'}${Math.abs(+v * 100).toFixed(d)}%`;
+    const L = FRAG_STATE[frag.state] || FRAG_STATE.accelerate;
+    const legs = Array.isArray(frag.legs) ? frag.legs : [];
+    const fwd = fragLead.filter(r => r.scenario === 'forward_63d');
+    const calm = fwd.find(r => r.subject === 'accelerate');
+    const def = fwd.find(r => r.subject === 'defensive');
+    const fp = fragLead.find(r => r.scenario === 'false_positives');
+    const led = fragEps.filter(e => e.verdict === 'led').length;
+    const graded = fragEps.filter(e => e.verdict !== 'no_data').length;
+    const failsLead = def && calm && +def.value >= +calm.value;
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Market fragility</h2>
+        <span style="font-size:12px;color:var(--muted)">${esc(frag.as_of)} · ${frag.n_legs} legs · equal-weighted</span></div>
+      <div style="display:flex;gap:26px;align-items:baseline;flex-wrap:wrap;margin:12px 0 10px">
+        <div><div style="font-size:34px;font-weight:700;color:${L.tone};line-height:1">${(+frag.mfi).toFixed(0)}</div>
+          <div style="color:var(--muted);font-size:11px">of 100</div></div>
+        <div><div style="font-size:19px;font-weight:700;color:${L.tone}">${esc(L.label)}</div>
+          <div style="color:var(--muted);font-size:12px">${frag.state_days} session${frag.state_days === 1 ? '' : 's'}${frag.mfi_pctile === null ? '' : ` · ${(+frag.mfi_pctile * 100).toFixed(0)}th percentile of its own prior three years`}</div></div>
+        ${!frag.override_leg ? '' : `<div style="font-size:12px;color:var(--warn);max-width:40ch"><b>Carried by ${esc(frag.override_leg)} alone.</b> One leg past its own 95th percentile overrides the mean rather than being averaged into it.</div>`}
+      </div>
+      <div style="overflow-x:auto"><table style="min-width:560px"><thead><tr><th>Leg</th><th class="num">Against its own three years</th><th>Measured from</th></tr></thead><tbody>
+        ${legs.map(l => `<tr><td><b>${esc(l.label)}</b></td>
+          <td class="num"><span style="color:${+l.pctile >= 0.90 ? 'var(--neg)' : +l.pctile >= 0.70 ? 'var(--warn)' : 'var(--muted)'};font-weight:600">${(+l.pctile * 100).toFixed(0)}%</span></td>
+          <td style="font-size:12px;color:var(--muted)">${esc(l.source)}</td></tr>`).join('')}
+      </tbody></table></div>
+      <p class="note" style="margin-top:12px"><b>Equal weights, not the whitepaper's 30/25/20/15/10.</b> Those are five free parameters chosen before any evidence existed. Equal weighting says the desk does not yet know which leg matters most, which is true, and a weight moves only when walk-forward evidence demands it. <b>The dominant-leg override is the design, not a refinement:</b> any mean of five legs pulls to the middle by construction, so credit seizing while four legs are calm would read the same as five legs mildly elevated — and those are not the same world.</p>
+      <p class="note"><b>Point-in-time throughout.</b> Every leg is ranked against its own trailing three years <i>as they stood on that date</i>, and the states come from the index's own prior-only distribution rather than fixed cut points. An index normalised with hindsight looks prescient in a backtest and fails live.</p>
+
+      <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
+        <div class="eyebrow" style="margin-bottom:8px">Graded against its own kill criterion</div>
+        ${!fwd.length ? '' : `<div style="overflow-x:auto"><table style="min-width:540px"><thead><tr><th>State</th><th class="num">Book over the next 63 sessions</th><th class="num">Worst 5%</th><th class="num">Observations</th></tr></thead><tbody>
+          ${['accelerate', 'recovery', 'deteriorating', 'defensive'].map(st => { const r = fwd.find(x => x.subject === st); if (!r) return '';
+            const worse = calm && +r.value < +calm.value;
+            return `<tr><td>${esc((FRAG_STATE[st] || {}).label || st)}</td>
+              <td class="num" style="color:${st === 'accelerate' ? 'var(--muted)' : worse ? 'var(--pos)' : 'var(--neg)'}"><b>${p2(r.value)}</b></td>
+              <td class="num" style="color:var(--muted)">${p2(r.p05)}</td>
+              <td class="num" style="color:var(--muted)">${r.n_obs}</td></tr>`; }).join('')}
+        </tbody></table></div>`}
+        ${!failsLead ? '' : `<p class="note" style="margin-top:10px;color:var(--neg)"><b>This index fails the test the plan set for it.</b> A defensive reading precedes <b>${p2(def.value)}</b> over the next quarter against <b>${p2(calm.value)}</b> after a calm one — better, not worse. That is the signature of a coincident measure rather than a leading one: the index is most defensive near troughs, so the quarter that follows is the rebound. It is a fragility <b>thermometer</b>, and on this evidence <b>it must not be used to time the brake on and off</b>.</p>
+        <p class="note"><b>Reported rather than tuned.</b> Weights and thresholds could be fitted until the backtest looked good, against six episodes, and the result would be a better-looking chart and a worse instrument. The standing instruction on this desk is top-decile outcomes, and a fitted signal is how a process becomes median.</p>
+        <p class="note"><b>What it is still for.</b> It moves daily, which the Speed Limit does not; it explains <i>which</i> leg is stretched, which a single light cannot; and the dominant-leg override makes it loud when one thing breaks while the rest look fine. That is monitoring and explanation. The sleeve work already concluded the brake should be held continuously rather than switched, so losing the timing claim costs less than it first appears.</p>`}
+        ${!fragEps.length ? '' : `<div style="overflow-x:auto;margin-top:12px"><table style="min-width:620px"><thead><tr><th>Drawdown</th><th class="num">Depth</th><th class="num">Index at the peak</th><th>State at the peak</th><th class="num">Lead to peak</th><th>Verdict</th></tr></thead><tbody>
+          ${fragEps.map(e => `<tr title="${esc(e.headline)}"><td>${esc(e.episode)}</td>
+            <td class="num" style="color:var(--neg)">${p2(e.depth, 0)}</td>
+            <td class="num">${e.mfi_at_peak === null ? '—' : (+e.mfi_at_peak).toFixed(0)}</td>
+            <td style="font-size:12px;color:${(FRAG_STATE[e.state_at_peak] || {}).tone || 'var(--muted)'}">${esc((FRAG_STATE[e.state_at_peak] || {}).label || '—')}</td>
+            <td class="num" style="color:${+e.lead_to_peak > 0 ? 'var(--pos)' : 'var(--neg)'}">${e.lead_to_peak === null ? '—' : `${e.lead_to_peak > 0 ? '+' : ''}${e.lead_to_peak}`}</td>
+            <td style="font-size:12px;color:${e.verdict === 'led' ? 'var(--pos)' : e.verdict === 'no_data' ? 'var(--line)' : 'var(--neg)'};font-weight:600">${esc(e.verdict)}</td></tr>`).join('')}
+        </tbody></table></div>
+        <p class="note" style="margin-top:10px"><b>Lead to peak</b> is sessions between the warning that was still in force at the top and the top itself. Positive means the index was calling for brakes while the book was still making highs — the only kind of warning worth having. <b>${led} of ${graded}</b> qualify. An earlier version of this test searched the whole year before each peak for any warning and graded every episode a success; since the index sits in a warning state about a third of the time, that search almost always succeeds, and it was the test finding what it was built to find.${!fp ? '' : ` Across ${(+frag.as_of.slice(0, 4)) - 2008} years there were <b>${fp.n_obs} separate warning runs</b> and ${((1 - +fp.value) * fp.n_obs).toFixed(0)} overlapped a 10% drawdown — a false-positive rate of <b>${(+fp.value * 100).toFixed(0)}%</b>.`}</p>`}
+      </div>
+    </div>`;
+  })();
+
   // ---- The stress programme ----
   //
   // WHAT A STRESS TEST IS ALLOWED TO BE HERE. The desk's rule is that no number may be shown which
@@ -1455,7 +1534,7 @@ function stan() {
         <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
     }).join('')}
    </div>
-   ${cautionCard}${sleeveCard}${stressCard}${insCard}${tapeCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
+   ${cautionCard}${fragCard}${sleeveCard}${stressCard}${insCard}${tapeCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
 }
 
 // ---------- Markets: a trading desk's wall, not a spreadsheet ----------

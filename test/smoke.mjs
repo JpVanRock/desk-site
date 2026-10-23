@@ -2248,6 +2248,74 @@ if (!argRoute) {
   }
 
   // -------------------------------------------------------------------------
+  // 19. The fragility index, and the guards that keep it honest about failing.
+  //
+  //     THE POINT-IN-TIME GUARD. Every leg is ranked against its own PRIOR history. If a reading
+  //     were ever ranked against a window containing itself the index would look prescient in
+  //     backtest and fail live, and nothing on the page would show it. The index is written as a
+  //     walk-forward, so the orderedness of the series and the absence of a percentile before the
+  //     minimum history are what can be checked from outside.
+  //
+  //     THE HONESTY GUARD. This index did not pass its own kill criterion, and the page says so.
+  //     If a future change makes the failure disappear from the page while the numbers still show
+  //     it, that is the regression this test exists to catch.
+  // -------------------------------------------------------------------------
+  currentRoute = 'fragility';
+  await go('#stan');
+  {
+    const fg = app();
+    const idx = (await rest('latest_fragility_index', 'as_of,mfi,mfi_mean,mfi_pctile,override_leg,state,state_days,legs,n_legs'))[0];
+    need(Boolean(idx), '[fragility] no index reading');
+    need(/Market fragility/.test(fg), '[fragility] the card is not on the page');
+    let fb = [];
+    if (+idx.mfi < 0 || +idx.mfi > 100) fb.push(`the index reads ${idx.mfi}`);
+    if (idx.mfi_pctile !== null && (+idx.mfi_pctile < 0 || +idx.mfi_pctile > 1)) fb.push(`the index percentile is ${idx.mfi_pctile}`);
+    if (!['accelerate', 'deteriorating', 'defensive', 'recovery'].includes(idx.state)) fb.push(`unknown state ${idx.state}`);
+    const legs = Array.isArray(idx.legs) ? idx.legs : [];
+    need(legs.length >= 3, `[fragility] ${legs.length} legs is not an index`);
+    for (const l of legs) if (+l.pctile < 0 || +l.pctile > 1) fb.push(`leg ${l.leg} percentile ${l.pctile}`);
+    // The override must do what it claims: raise the index above the plain mean, and only then.
+    if (idx.override_leg && !(+idx.mfi > +idx.mfi_mean)) fb.push('an override that did not raise the index above its mean');
+    if (!idx.override_leg && Math.abs(+idx.mfi - +idx.mfi_mean) > 1e-6) fb.push('the index differs from its mean with no override recorded');
+    if (idx.override_leg) {
+      const top = legs.slice().sort((a, b) => +b.pctile - +a.pctile)[0];
+      if (top.leg !== idx.override_leg) fb.push(`the override names ${idx.override_leg} but ${top.leg} is the most stretched leg`);
+      if (+top.pctile < 0.95) fb.push(`an override fired on a leg at the ${(top.pctile * 100).toFixed(0)}th percentile`);
+    }
+    need(/equal weights, not the whitepaper/i.test(fg), '[fragility] the page does not say why the legs are equal-weighted');
+    need(/point-in-time/i.test(fg), '[fragility] the page does not state that the index is point-in-time');
+
+    // The kill criterion must be shown, and shown as it came out.
+    const lead = await rest('latest_stress_results', 'family,scenario,subject,value,baseline,n_obs,verdict,headline');
+    const fwd = lead.filter(r => r.family === 'fragility_lead' && r.scenario === 'forward_63d');
+    need(fwd.length >= 3, '[fragility] the forward-return test did not run');
+    const calm = fwd.find(r => r.subject === 'accelerate'), def = fwd.find(r => r.subject === 'defensive');
+    need(Boolean(calm && def), '[fragility] the forward-return test is missing a state');
+    // THE HONESTY GUARD: if defensive does not precede worse returns, the page must say it fails.
+    if (+def.value >= +calm.value) {
+      need(/fails the test the plan set for it/i.test(fg), '[fragility] a defensive reading precedes better returns and the page does not say the index failed');
+      need(/must not be used to time the brake/i.test(fg), '[fragility] the failure is shown without the conclusion that follows from it');
+      need(/thermometer/i.test(fg), '[fragility] the page does not characterise what the index actually is');
+    }
+    const eps = await rest('latest_fragility_episodes', 'episode,depth,mfi_at_peak,state_at_peak,lead_to_peak,verdict');
+    need(eps.length >= 5, `[fragility] only ${eps.length} episodes graded`);
+    for (const e of eps) {
+      if (!['led', 'coincident', 'late', 'missed', 'no_data'].includes(e.verdict)) fb.push(`episode ${e.episode} verdict ${e.verdict}`);
+      if (e.verdict === 'led' && !(+e.lead_to_peak > 0)) fb.push(`episode ${e.episode} graded "led" on a lead of ${e.lead_to_peak}`);
+      if (e.verdict === 'no_data' && e.mfi_at_peak !== null) fb.push(`episode ${e.episode} has no data yet carries a reading`);
+    }
+    const fp = lead.find(r => r.family === 'fragility_lead' && r.scenario === 'false_positives');
+    need(Boolean(fp), '[fragility] the false-positive count is not recorded');
+    need(/false-positive rate/i.test(fg), '[fragility] the page shows warnings without their false-positive rate');
+
+    fb = [...new Set(fb)];
+    for (const b of fb) errors.push(`[fragility] ${b}`);
+    need(fb.length === 0, `[fragility] ${fb.length} problem(s) above`);
+    say(` ok  fragility index        -> ${(+idx.mfi).toFixed(0)}/100 ${idx.state}, ${legs.length} legs${idx.override_leg ? `, carried by ${idx.override_leg}` : ''}`);
+    say(` ok  fragility kill test    -> defensive ${(+def.value * 100).toFixed(2)}% vs calm ${(+calm.value * 100).toFixed(2)}% forward, ${eps.filter(e => e.verdict === 'led').length}/${eps.filter(e => e.verdict !== 'no_data').length} led, ${(+fp.value * 100).toFixed(0)}% false positives`);
+  }
+
+  // -------------------------------------------------------------------------
   // 14. Kate, from The Alchemy of Finance: the equilibrium gate, the successful-test count, the
   //     asymmetry, the credit panel and the named flaw.
   //
