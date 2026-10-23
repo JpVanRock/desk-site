@@ -103,7 +103,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -126,7 +126,7 @@ async function load() {
     qSoft(sb.from('latest_strategy_stress_results').select('strategy_id,scenario_id,as_of,factor_score,coverage,n_windows,mean_return,worst_return,best_return,replay_coverage,windows,factor_detail').order('as_of', { ascending: false }), 'stress results'),
     qSoft(sb.from('latest_strategy_performance').select('strategy_id,period,as_of,start_date,end_date,portfolio_return,peer_benchmark_return,policy_benchmark_return,coverage,max_drawdown,peer_max_drawdown,gold_return,btc_return,weighted_expense_ratio,expense_coverage,cpi_return,cpi_window_start,cpi_window_end,model_return_cpi_window').order('as_of', { ascending: false }), 'performance'),
     qSoft(sb.from('latest_strategy_attribution').select('strategy_id,period,as_of,asset_class_id,w_portfolio,w_benchmark,r_portfolio,r_benchmark,contribution,allocation_effect,selection_effect,interaction_effect,attributable').order('as_of', { ascending: false }), 'attribution'),
-    qSoft(sb.from('latest_speed_limit_readings').select('as_of,category,score,light,weight,n_calls,n_recorded,target_beta_low,target_beta_high,sign_label').order('as_of', { ascending: false }), 'speed limit'),
+    qSoft(sb.from('latest_speed_limit_readings').select('as_of,category,score,light,raw_light,weight,n_calls,n_recorded,target_beta_low,target_beta_high,sign_label,evidence_raw,evidence_live,freshness,conviction,n_silent,oldest_call,newest_call,detail').order('as_of', { ascending: false }), 'speed limit'),
     qSoft(sb.from('latest_strategy_speed_limit').select('strategy_id,as_of,actual_beta,r_squared,n_obs,target_low,target_high,light,note').order('as_of', { ascending: false }), 'model speed limit'),
     qSoft(sb.from('market_roc_board').select('as_of,security_id,label,sort_order,close,price_roc_1d,price_roc_1w,price_roc_1m,volume_roc_1w,vol_ann,vol_roc_1m').order('sort_order'), 'ROC board'),
     qSoft(sb.from('trigger_hits').select('as_of,headline,value,rule_id,security_id,strategy_id').order('as_of', { ascending: false }).limit(200), 'trigger hits'),
@@ -203,6 +203,8 @@ async function load() {
     qAllSoft(() => sb.from('latest_sven_precedent_tests').select('as_of,ticker,precedent_key,precedent_label,sort_order,horizon_days,n_precedents,hist_median,hist_p25,hist_p75,hist_hit_rate,trigger_date,realised,realised_pctile,verdict,headline,detail,method').order('sort_order', { ascending: true }), 'precedent tests'),
     qAllSoft(() => sb.from('latest_sven_precedent_breaks').select('as_of,ticker,vol_20,vol_pctile,vol_streak,vol_broken,corr_60,corr_pctile,corr_streak,corr_broken,verdict,headline,detail,n_bars'), 'precedent breaks'),
     qSoft(sb.from('latest_sven_tape_quiet').select('as_of,n_indices,mid_range_share,no_read_share,directional,vol_pctile,breadth,extremes,verdict,headline,detail,legs'), 'quiet tape'),
+    // What caution has cost: the Speed Limit, graded.
+    qAllSoft(() => sb.from('latest_speed_limit_scoreboard').select('as_of,scope,strategy_id,period,period_start,period_end,model_return,bench_return,excess,beta_used,beta_drag,residual,light,target_low,target_high,inside_band,cum_excess,cum_beta_drag,cum_residual,n_months,headline,detail').order('period', { ascending: true }), 'speed limit scoreboard'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -297,7 +299,8 @@ async function load() {
     netLiq: netLiq || [], gli: gli || [], macroNow: macroNow || [],
     turnings: turnings || [], generations: generations || [], tapeTicker: tapeTicker || [], humility: humility || [],
     narReflex: narReflex || [], creditLegs: creditLegs || [], creditReading: creditReading || [],
-    svenPrecedent: svenPrecedent || [], svenBreaks: svenBreaks || [], tapeQuiet: tapeQuiet || [] };
+    svenPrecedent: svenPrecedent || [], svenBreaks: svenBreaks || [], tapeQuiet: tapeQuiet || [],
+    slBoard: slBoard || [] };
 }
 
 // ---------- Views ----------
@@ -619,6 +622,7 @@ function speedLimitMasterCard() {
      <div style="margin-top:6px;font-size:22px;font-weight:700;color:${master.light ? LIGHT_COLOR[master.light] : 'var(--muted)'}">${esc((master.sign_label || '').replace(/^Speed Limit\s*/i, '') || '—')}</div>
      <div style="color:var(--muted);font-size:12px">${master.light ? esc(LIGHT_MEANING[master.light]) : 'no reading'}${master.score !== null ? ` · score ${(+master.score).toFixed(2)}` : ''}</div>
      ${master.target_beta_low !== null ? `<div style="color:var(--muted);font-size:12px">target beta ${master.target_beta_low}–${master.target_beta_high}×</div>` : ''}
+     ${master.freshness === null || master.freshness === undefined ? '' : `<div style="color:${+master.freshness < 0.34 ? 'var(--neg)' : +master.freshness < 0.66 ? 'var(--warn)' : 'var(--muted)'};font-size:12px;margin-top:4px">evidence ${(+master.freshness * 100).toFixed(0)}% fresh · ${esc(master.conviction || '')}</div>`}
     </div>
     <table style="flex:1;min-width:280px;margin:0"><thead><tr><th>Lens</th><th class="num">Weight</th><th class="num">Score</th><th>Light</th><th class="num">Calls</th></tr></thead><tbody>
     ${cats.map(c => `<tr><td>${esc(c.category)}</td><td class="num">${(+c.weight * 100).toFixed(0)}%</td>
@@ -626,7 +630,10 @@ function speedLimitMasterCard() {
       <td>${c.light ? `${lightDot(c.light, 10)} <span style="color:${LIGHT_COLOR[c.light]}">${esc(LIGHT_MEANING[c.light])}</span>` : '<span style="color:var(--muted)">no reading</span>'}</td>
       <td class="num">${c.n_calls}${c.n_recorded > c.n_calls ? ` <span style="color:var(--muted)">of ${c.n_recorded}</span>` : ''}</td></tr>`).join('')}
     </tbody></table></div>
-   <p class="note"><b>Draft rule.</b> The framework set the lens weights; the scoring rule was left open, so this is a proposal to argue with, not a settled measure. A lens scores the confidence-weighted mean direction of its open research calls — green above +0.33, red below −0.33 — and the master is the weighted mean over the lenses that actually have calls, so a silent lens abstains rather than counting as neutral. ${master.n_calls < 6 ? `<b>This reading rests on ${master.n_calls} scoring call${master.n_calls === 1 ? '' : 's'}</b>, far too few to lean on — read it as the machinery working, not as a signal.` : ''} Only equities, commodities and cash calls carry a sign: bond and gold calls are counted but score zero, because their risk reading is genuinely ambiguous.</p>`;
+   <p class="note"><b>Draft rule.</b> The framework set the lens weights; the scoring rule was left open, so this is a proposal to argue with, not a settled measure. A lens scores the confidence-weighted mean direction of its open research calls — green above +0.33, red below −0.33 — and the master is the weighted mean over the lenses that actually have calls, so a silent lens abstains rather than counting as neutral. ${master.n_calls < 6 ? `<b>This reading rests on ${master.n_calls} scoring call${master.n_calls === 1 ? '' : 's'}</b>, far too few to lean on — read it as the machinery working, not as a signal.` : ''} Only equities, commodities and cash calls carry a sign: bond and gold calls are counted but score zero, because their risk reading is genuinely ambiguous.</p>
+   ${master.freshness === null || master.freshness === undefined ? '' : `<p class="note"><b>Calls decay over their own horizon.</b> This light printed one value — −0.1303, yellow — on all 18 readings between 2026-09-24 and 2026-10-23, because the nine calls behind it were all recorded on two days in September and all sat inside their review dates, so the same nine confidences passed the same filter every day. A call now carries full conviction the day it is made and nothing the day it comes up for review, straight line between, which adds no new setting — the horizon is the analyst's own declaration of how long the call is good for. Evidence is <b>${(+master.freshness * 100).toFixed(0)}% fresh</b>${master.oldest_call ? `, the newest call was made ${esc(String(master.newest_call))}` : ''}.</p>
+   <p class="note"><b>A light it can no longer support is suppressed.</b> As evidence decays the boundary widens: green or red needs a score past ±0.33 ÷ freshness, so at ${(+master.freshness * 100).toFixed(0)}% it needs <b>|score| &gt; ${(0.33 / +master.freshness).toFixed(2)}</b>, and below about a third fresh the light pins to yellow because nothing honest is left to say.${master.raw_light && master.raw_light !== master.light ? ` <b style="color:var(--warn)">Suppressed now:</b> the ungated score would have read ${esc(master.raw_light)}.` : ''}${+master.n_silent > 0 ? ` <b>${master.n_silent} of 4 lenses have no open calls at all</b>${master.detail && master.detail.silent_categories ? ` (${master.detail.silent_categories.map(esc).join(', ')})` : ''} — the master renormalises them away, so it is a partial framework reported as the whole one.` : ''}</p>
+   <p class="note"><b>What decay does not fix.</b> Every call on file was recorded on one of two dates, so inside a lens the decay factors are identical and cancel in the ratio: the score itself still will not move until calls arrive on new dates. The mechanism is fixed; the signal needs feeding. Market responsiveness is a different layer and deliberately not bolted on here — mixing price action into a panel of analyst conviction would quietly turn it into a momentum signal wearing their names.</p>`}`;
 }
 
 // Each model's beta against the band the master light calls for.
@@ -929,6 +936,72 @@ function stan() {
     </div>`;
   })();
 
+  // ---- What caution has cost ----
+  //
+  // THE AUDIT NOBODY HAD RUN. The desk measured in October 2026 that security selection cost it
+  // about 4bp a decision and helped on only 42% of them -- the edge is allocation, not selection.
+  // The other side was never measured, because a trade not made leaves no trade to audit. A Speed
+  // Limit can instruct this desk to carry less risk every day for a year and never be asked what
+  // the instruction was worth.
+  //
+  // The split is the whole point. Trailing a benchmark because you held the wrong things and
+  // trailing it because you held LESS OF EVERYTHING are different mistakes with different fixes:
+  //
+  //     beta drag = (beta - 1) x benchmark return       the return given up by carrying less
+  //     residual  = excess - beta drag                  everything that was not risk posture
+  //
+  // Negative drag means caution cost money, and it is signed that way on purpose. Buried inside a
+  // tracking-error figure the same fact reads as neutral.
+  const board = D.slBoard || [];
+  const firmBoard = board.filter(r => r.scope === 'posture' && !r.strategy_id).sort((a, b) => String(a.period).localeCompare(String(b.period)));
+  const modelBoard = board.filter(r => r.scope === 'posture' && r.strategy_id);
+  const sigFirm = board.find(r => r.scope === 'signal' && !r.strategy_id) || null;
+  const cautionCard = !firmBoard.length ? '' : (() => {
+    const f = firmBoard.at(-1);
+    const yrs = (f.n_months || 0) / 12;
+    const down = firmBoard.filter(r => +r.bench_return < 0);
+    const up = firmBoard.filter(r => +r.bench_return > 0);
+    const earned = down.reduce((a, r) => a + (+r.beta_drag || 0), 0);
+    const paid = up.reduce((a, r) => a + (+r.beta_drag || 0), 0);
+    const cov = firmBoard.map(r => r.detail && r.detail.coverage).filter(c => c !== null && c !== undefined);
+    const avgCov = cov.length ? cov.reduce((a, b) => a + +b, 0) / cov.length : null;
+    const perModel = (D.models || []).map(m => {
+      const rows = modelBoard.filter(r => r.strategy_id === m.id).sort((a, b) => String(a.period).localeCompare(String(b.period)));
+      return rows.length ? { m, last: rows.at(-1), n: rows.filter(r => r.beta_drag !== null).length } : null;
+    }).filter(Boolean).sort((a, b) => (+a.last.cum_beta_drag) - (+b.last.cum_beta_drag));
+    const big = v => `${+v >= 0 ? '+' : '\u2212'}${Math.abs(+v * 100).toFixed(1)}%`;
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">What has caution cost?</h2>
+        <span style="font-size:12px;color:var(--muted)">${f.n_months} months to ${esc(f.period)} · AUM-weighted · ${avgCov === null ? '' : `${(avgCov * 100).toFixed(0)}% average coverage`}</span></div>
+      <p class="note" style="margin:8px 0 14px">The desk knows selection costs it money because somebody measured it. Nobody had measured the defensive instruction — a trade not made leaves no trade to audit. This splits realised return against benchmark into <b>the part explained by running below benchmark beta</b> and everything else.</p>
+      <div style="display:flex;gap:26px;flex-wrap:wrap;align-items:flex-start;margin-bottom:14px">
+        <div><div class="eyebrow">Cost of posture</div>
+          <div style="font-size:30px;font-weight:700;color:${+f.cum_beta_drag < 0 ? 'var(--neg)' : 'var(--pos)'}">${big(f.cum_beta_drag)}</div>
+          <div style="color:var(--muted);font-size:12px">${big(+f.cum_beta_drag / (yrs || 1))} a year, at ${f.beta_used === null ? '—' : (+f.beta_used).toFixed(2)}× beta</div></div>
+        <div><div class="eyebrow">Everything else</div>
+          <div style="font-size:30px;font-weight:700;color:${+f.cum_residual >= 0 ? 'var(--pos)' : 'var(--neg)'}">${big(f.cum_residual)}</div>
+          <div style="color:var(--muted);font-size:12px">what the decisions themselves added</div></div>
+        <div><div class="eyebrow">Net vs benchmark</div>
+          <div style="font-size:30px;font-weight:700;color:${+f.cum_excess >= 0 ? 'var(--pos)' : 'var(--neg)'}">${big(f.cum_excess)}</div>
+          <div style="color:var(--muted);font-size:12px">the two added together</div></div>
+      </div>
+      <p class="note" style="margin-bottom:14px"><b>Caution worked exactly as advertised, and was still a losing trade.</b> It paid in <b>${down.filter(r => +r.beta_drag > 0).length} of ${down.length}</b> months the benchmark fell, earning <b style="color:var(--pos)">${big(earned)}</b>, and cost in <b>${up.filter(r => +r.beta_drag < 0).length} of ${up.length}</b> months it rose, giving up <b style="color:var(--neg)">${big(paid)}</b>. Markets rose roughly twice as often as they fell, so the insurance was bought ${(up.length / Math.max(1, down.length)).toFixed(1)}× more often than it paid. <b>That is the case for brakes rather than a lower beta:</b> cutting exposure cannot change that ratio, and convexity is the only thing that can.</p>
+      <div style="overflow-x:auto"><table style="min-width:620px"><thead><tr>
+        <th>Model</th><th class="num">Months</th><th class="num">Beta</th><th class="num">Posture</th><th class="num">Everything else</th><th class="num">Net</th></tr></thead><tbody>
+        ${perModel.map(({ m, last, n }) => `<tr>
+          <td>${esc(m.label || m.name)}</td>
+          <td class="num" style="color:var(--muted)">${n}</td>
+          <td class="num">${last.beta_used === null ? '—' : (+last.beta_used).toFixed(2) + '×'}</td>
+          <td class="num" style="color:${+last.cum_beta_drag < 0 ? 'var(--neg)' : 'var(--pos)'}">${last.cum_beta_drag === null ? '—' : big(last.cum_beta_drag)}</td>
+          <td class="num" style="color:${+last.cum_residual >= 0 ? 'var(--pos)' : 'var(--neg)'}">${last.cum_residual === null ? '—' : big(last.cum_residual)}</td>
+          <td class="num"><b style="color:${+last.cum_excess >= 0 ? 'var(--pos)' : 'var(--neg)'}">${big(last.cum_excess)}</b></td></tr>`).join('')}
+      </tbody></table></div>
+      <p class="note" style="margin-top:12px"><b>This is not a claim the desk should have run 1.0× beta.</b> It is the price tag on the posture actually run. A month is only split when the benchmark explains enough of the model for its beta to mean risk posture rather than mandate mismatch — below an r-squared of 0.5 the excess is reported whole, which is why the month counts differ by model and why firm coverage averages ${avgCov === null ? '—' : (avgCov * 100).toFixed(0)}% of AUM rather than 100%. Monthly contributions are summed rather than compounded, which is standard attribution practice and understates a compounding effect over four years.</p>
+      ${!sigFirm ? '' : `<p class="note"><b>The light itself cannot be graded yet.</b> ${esc(sigFirm.headline || '')}</p>`}
+    </div>`;
+  })();
+
   // ---- Model Surveillance ----
   // A performance cell: green when ahead, red when behind, with the comparison named in the
   // tooltip so a colour never has to be guessed at.
@@ -1152,7 +1225,7 @@ function stan() {
     <div class="card kpi click" data-go="#stan/speed-limit" style="cursor:pointer" title="Open the master Speed Limit and how each model sits against it">
       <span class="eyebrow">Speed Limit</span>
       <b style="font-size:26px;color:${master && master.light ? LIGHT_COLOR[master.light] : 'var(--muted)'}">${master && master.sign_label ? esc(master.sign_label.replace(/^Speed Limit\s*/i, '')) : '—'}</b>
-      <small>${master && master.light ? esc(LIGHT_MEANING[master.light]) : 'no reading'}${master && master.n_calls ? ` · ${master.n_calls} call${master.n_calls === 1 ? '' : 's'}` : ''}</small></div>
+      <small>${master && master.light ? esc(LIGHT_MEANING[master.light]) : 'no reading'}${master && master.n_calls ? ` · ${master.n_calls} call${master.n_calls === 1 ? '' : 's'}` : ''}${master && master.freshness !== null && master.freshness !== undefined ? ` · <span style="color:${+master.freshness < 0.34 ? 'var(--neg)' : +master.freshness < 0.66 ? 'var(--warn)' : 'inherit'}">${(+master.freshness * 100).toFixed(0)}% fresh</span>` : ''}</small></div>
     ${LENSES.map(l => {
       const r = (D.lensSnr || []).find(x => x.category === l.key && x.window_label === 'YTD');
       const v = r && r.signal_to_noise !== null ? +r.signal_to_noise : null;
@@ -1162,7 +1235,7 @@ function stan() {
         <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
     }).join('')}
    </div>
-   ${tapeCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
+   ${cautionCard}${tapeCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
 }
 
 // ---------- Markets: a trading desk's wall, not a spreadsheet ----------

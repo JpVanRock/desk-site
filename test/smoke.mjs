@@ -1953,6 +1953,98 @@ if (!argRoute) {
   }
 
   // -------------------------------------------------------------------------
+  // 15. The Speed Limit: decay, the conviction gate, and the scoreboard that grades it.
+  //
+  //     The decay guard is the one that matters. The light printed a single value on all 18 of its
+  //     readings, and the thing that made that invisible was that nothing on the page or in the
+  //     table recorded how old the evidence was. So: freshness must exist, must be inside 0-1, must
+  //     fall as calls age, and the gate must be arithmetically consistent with it -- a light that
+  //     survives at a freshness its own boundary cannot support is the bug coming back.
+  // -------------------------------------------------------------------------
+  currentRoute = 'speed-limit';
+  await go('#stan');
+  const stKpi = app();
+  // The full master card lives in the drawer; the page itself carries only the tile.
+  await go('#stan/speed-limit');
+  {
+    // The master card renders into the drawer, not the page body, so read both.
+    const st = both();
+    let sb2 = [];
+    need(/fresh/.test(stKpi), '[speed-limit] the Speed Limit tile does not show how fresh its evidence is');
+
+    // ---- decay and the gate ----
+    const sl = await rest('latest_speed_limit_readings', 'category,score,light,raw_light,freshness,conviction,evidence_raw,evidence_live,n_silent,oldest_call,newest_call,n_calls');
+    const m = sl.find(r => r.category === 'master');
+    need(Boolean(m), '[speed-limit] no master reading');
+    need(m.freshness !== null, '[speed-limit] the master carries no freshness — the decay fix is not in effect');
+    need(+m.freshness > 0 && +m.freshness <= 1, `[speed-limit] freshness ${m.freshness} is not a share`);
+    need(Boolean(m.conviction), '[speed-limit] no conviction label');
+    for (const r of sl) {
+      if (r.evidence_live === null) continue;
+      if (+r.evidence_live > +r.evidence_raw + 1e-6) sb2.push(`${r.category}: live evidence exceeds raw, so decay is adding conviction`);
+      if (r.freshness !== null && Math.abs(+r.freshness - +r.evidence_live / +r.evidence_raw) > 1e-3)
+        sb2.push(`${r.category}: freshness is not live evidence over raw`);
+      // The gate: the light must be reachable at this freshness, and must match the widened cut.
+      if (r.score !== null && r.freshness !== null) {
+        const cut = 0.33 / +r.freshness;
+        const want = +r.score > cut ? 'green' : +r.score < -cut ? 'red' : 'yellow';
+        if (r.light !== want) sb2.push(`${r.category}: light ${r.light} but the gate at freshness ${(+r.freshness).toFixed(2)} says ${want}`);
+        // raw_light is the ungated reading and must never be MORE cautious than the gated one.
+        const raw = +r.score > 0.33 ? 'green' : +r.score < -0.33 ? 'red' : 'yellow';
+        if (r.raw_light !== raw) sb2.push(`${r.category}: raw_light ${r.raw_light} does not match the ungated rule`);
+        if (r.light !== 'yellow' && r.raw_light === 'yellow') sb2.push(`${r.category}: the gate turned a yellow into a ${r.light}`);
+      }
+    }
+    need(/decay over their own horizon/i.test(st), '[speed-limit] the page does not explain the decay');
+    need(/18 readings/.test(st), '[speed-limit] the page does not say the light had been frozen');
+    say(` ok  speed limit decay      -> freshness ${(+m.freshness * 100).toFixed(0)}%, conviction ${m.conviction}, a light needs |score| > ${(0.33 / +m.freshness).toFixed(2)}, ${m.n_silent} silent lens(es)`);
+
+    // ---- the scoreboard ----
+    const bd = await rest('latest_speed_limit_scoreboard', 'scope,strategy_id,period,model_return,bench_return,excess,beta_used,beta_drag,residual,cum_excess,cum_beta_drag,cum_residual,n_months,headline,detail');
+    need(bd.length > 0, '[scoreboard] nothing computed');
+    const firm = bd.filter(r => r.scope === 'posture' && !r.strategy_id).sort((a, b) => String(a.period).localeCompare(String(b.period)));
+    need(firm.length > 12, `[scoreboard] only ${firm.length} firm months — the record should span years`);
+    need(/What has caution cost\?/.test(stKpi), '[scoreboard] the card is not on Stan\'s page');
+    for (const r of bd.filter(x => x.scope === 'posture')) {
+      if (/-00$/.test(r.period)) sb2.push(`${r.period}: an annual row is being counted as a month`);
+      if (r.beta_drag !== null && Math.abs((+r.beta_drag + +r.residual) - +r.excess) > 1e-4)
+        sb2.push(`${r.period}: the split does not add back to the excess`);
+      if (r.strategy_id && r.beta_drag !== null
+          && Math.abs(+r.beta_drag - (+r.beta_used - 1) * +r.bench_return) > 1e-4)
+        sb2.push(`${r.period}: drag is not (beta - 1) x benchmark`);
+      // The sign has to follow the arithmetic, and it is the whole point of the table.
+      if (r.beta_drag !== null && +r.beta_used < 1 && +r.bench_return > 0 && +r.beta_drag > 0)
+        sb2.push(`${r.period}: below-benchmark beta in a rising month should have cost, not earned`);
+      if (r.beta_drag !== null && +r.beta_used < 1 && +r.bench_return < 0 && +r.beta_drag < 0)
+        sb2.push(`${r.period}: below-benchmark beta in a falling month should have earned, not cost`);
+    }
+    // Cumulatives must actually accumulate.
+    for (let i = 1; i < firm.length; i++) {
+      if (firm[i].cum_beta_drag !== null && firm[i - 1].cum_beta_drag !== null
+          && Math.abs(+firm[i].cum_beta_drag - (+firm[i - 1].cum_beta_drag + +firm[i].beta_drag)) > 1e-4)
+        sb2.push(`${firm[i].period}: the running total does not add the month to the one before`);
+    }
+    // The signal half must refuse to conclude while the light has printed one colour.
+    const sig = bd.find(r => r.scope === 'signal' && !r.strategy_id);
+    need(Boolean(sig), '[scoreboard] no signal row');
+    if (sig.detail && sig.detail.conclusive === false) {
+      need(/nothing here to grade|has never been recorded/i.test(sig.headline || ''),
+        '[scoreboard] the signal half reports a verdict on a light that has not moved');
+      // A NUMERIC claim, not the word. The first version of this matched the disclaimer that says a
+      // hit rate on one colour is meaningless, and reported the honest sentence as the problem.
+      need(!/\d+(\.\d+)?%\s*(hit|accurate|correct)/i.test(sig.headline || ''),
+        '[scoreboard] a hit rate is claimed on a light that has printed one colour');
+    }
+    const f = firm.at(-1);
+    const down = firm.filter(r => +r.bench_return < 0), up = firm.filter(r => +r.bench_return > 0);
+    sb2 = [...new Set(sb2)];
+    for (const b of sb2) errors.push(`[speed-limit] ${b}`);
+    need(sb2.length === 0, `[speed-limit] ${sb2.length} problem(s) above`);
+    say(` ok  caution scoreboard     -> ${f.n_months} months, posture ${(+f.cum_beta_drag * 100).toFixed(1)}%, rest ${(+f.cum_residual * 100).toFixed(1)}%, net ${(+f.cum_excess * 100).toFixed(1)}%`);
+    say(` ok  caution sign check     -> paid in ${down.filter(r => +r.beta_drag > 0).length}/${down.length} down-months, cost in ${up.filter(r => +r.beta_drag < 0).length}/${up.length} up-months`);
+  }
+
+  // -------------------------------------------------------------------------
   // 14. Kate, from The Alchemy of Finance: the equilibrium gate, the successful-test count, the
   //     asymmetry, the credit panel and the named flaw.
   //
