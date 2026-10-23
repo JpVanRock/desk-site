@@ -103,7 +103,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -205,6 +205,9 @@ async function load() {
     qSoft(sb.from('latest_sven_tape_quiet').select('as_of,n_indices,mid_range_share,no_read_share,directional,vol_pctile,breadth,extremes,verdict,headline,detail,legs'), 'quiet tape'),
     // What caution has cost: the Speed Limit, graded.
     qAllSoft(() => sb.from('latest_speed_limit_scoreboard').select('as_of,scope,strategy_id,period,period_start,period_end,model_return,bench_return,excess,beta_used,beta_drag,residual,light,target_low,target_high,inside_band,cum_excess,cum_beta_drag,cum_residual,n_months,headline,detail').order('period', { ascending: true }), 'speed limit scoreboard'),
+    // Which brake is worth owning, measured rather than modelled.
+    qAllSoft(() => sb.from('latest_insurance_value').select('as_of,instrument,label,sort_order,window_key,window_from,window_to,n_days,n_stress,drawdowns_seen,crash_1pct,crash_5pct,worst_day_offset,carry_daily,carry_annual,free_carry,payoff_per_carry,carry_days_repaid,offset_per_1pct,corr_calm,corr_stress,corr_shift,episodes,episodes_helped,worst_episode,verdict,headline,detail').order('sort_order', { ascending: true }), 'insurance value'),
+    qSoft(sb.from('latest_insurance_pricing').select('as_of,vix,vix_3m,realised_21d,vol_premium,vol_premium_pctile,term_ratio,term_state,term_pctile,verdict,headline,detail'), 'insurance pricing'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -300,7 +303,7 @@ async function load() {
     turnings: turnings || [], generations: generations || [], tapeTicker: tapeTicker || [], humility: humility || [],
     narReflex: narReflex || [], creditLegs: creditLegs || [], creditReading: creditReading || [],
     svenPrecedent: svenPrecedent || [], svenBreaks: svenBreaks || [], tapeQuiet: tapeQuiet || [],
-    slBoard: slBoard || [] };
+    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [] };
 }
 
 // ---------- Views ----------
@@ -1002,6 +1005,75 @@ function stan() {
     </div>`;
   })();
 
+  // ---- Which brake is worth owning ----
+  //
+  // THE WHITEPAPER'S INSURANCE VALUE INDEX, BUILT FROM PRICES INSTEAD OF GREEKS. It asks for skew,
+  // the volatility risk premium and payoff per premium dollar. The desk holds no option chains, no
+  // skew surface and no MOVE, so that index cannot be computed from real data -- and a modelled one
+  // would put invented greeks on a page about real money. The question underneath it is answerable
+  // from prices already held, and better, because it is then asked about instruments actually
+  // ownable: what has this paid when the book fell, what does it cost the rest of the time, and
+  // did it still work when it was needed?
+  //
+  // THE EPISODE COLUMN IS THE ONE THAT DECIDES THINGS. Pooled stress statistics said long
+  // Treasuries were a brake -- positive in the worst 1%, negatively correlated, nearly free. The
+  // episode record says +22% through 2008, +16% through 2020 and MINUS 33% through 2022, when it
+  // was the second source of the loss. An average cannot tell those apart and a sleeve sized off
+  // one would have carried its largest bond weight into the single episode where bonds did not
+  // help.
+  const ins = (D.insValue || []).filter(r => r.window_key === 'full').sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const insPx = (D.insPricing || [])[0] || null;
+  const INS_LOOK = {
+    brake:        { label: 'brake',        tone: 'var(--pos)',   short: 'Paid in the book\u2019s worst days, stayed negatively correlated through stress, and made money through every drawdown it was actually in.' },
+    ballast:      { label: 'ballast',      tone: 'var(--flat)',  short: 'Helps, but either thinly or not every time. Read its episode record before sizing it as protection.' },
+    funder:       { label: 'funder',       tone: 'var(--muted)', short: 'Does not brake, but is PAID to be held \u2014 which is what pays for the instrument that does.' },
+    not_a_brake:  { label: 'not a brake',  tone: 'var(--neg)',   short: 'Negative when the book is at its worst, whatever it does the rest of the time.' },
+    insufficient: { label: 'untested',     tone: 'var(--line)',  short: 'Has not lived through enough stress to be judged. A fact about its age, not its design.' },
+  };
+  const insCard = !ins.length ? '' : (() => {
+    const p2 = (v, d = 2) => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : '\u2212'}${Math.abs(+v * 100).toFixed(d)}%`;
+    const held = new Set(['VIXM', 'CAOS', 'KMLM']);
+    const best = ins.filter(r => r.verdict === 'brake' && r.payoff_per_carry !== null)
+      .sort((a, b) => (+b.payoff_per_carry) - (+a.payoff_per_carry))[0] || null;
+    const epCell = r => {
+      const eps = Array.isArray(r.episodes) ? r.episodes : [];
+      if (!eps.length) return '<span style="color:var(--muted)">—</span>';
+      const tip = eps.map(e => `${e.peak} to ${e.trough} (book ${(e.depth * 100).toFixed(0)}%): ${p2(e.ret, 1)} to the trough${e.ret_to_recovery === null ? '' : `, ${p2(e.ret_to_recovery, 1)} if held to recovery`}`).join('\n');
+      return `<span data-tip="${esc(tip)}" style="cursor:default">${eps.map(e => `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:2px;background:${e.helped ? 'var(--pos)' : 'var(--neg)'}"></span>`).join('')}
+        <span style="color:var(--muted);font-size:11px">${r.episodes_helped}/${eps.length}</span></span>`;
+    };
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Which brake is worth owning?</h2>
+        <span style="font-size:12px;color:var(--muted)">${esc(ins[0].as_of)} · against the 50/10/10/30 reference book</span></div>
+      <p class="note" style="margin:8px 0 12px">Measured, not modelled. The desk holds no option chains and no skew surface, so this answers the question from prices it has: <b>what each instrument paid when the book fell, what it costs the rest of the time, and whether it worked every time it was needed.</b></p>
+      ${!insPx ? '' : `<div style="display:flex;gap:22px;flex-wrap:wrap;align-items:baseline;padding:10px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin-bottom:12px">
+        <div><span class="eyebrow">Protection costs</span> <b style="color:${insPx.verdict === 'cheap' ? 'var(--pos)' : insPx.verdict === 'dear' ? 'var(--neg)' : insPx.verdict === 'late' ? 'var(--warn)' : 'var(--muted)'};font-size:17px">${esc(insPx.verdict)}</b></div>
+        <div style="font-size:12px;color:var(--muted);max-width:66ch">${esc(insPx.headline)}</div></div>`}
+      <div style="overflow-x:auto"><table style="min-width:860px"><thead><tr>
+        <th>Instrument</th><th class="num">Worst 1%</th><th class="num">Carry/yr</th><th class="num">Days repaid</th>
+        <th class="num">Corr calm</th><th class="num">Corr stress</th><th>Drawdowns</th><th>Verdict</th></tr></thead><tbody>
+        ${ins.map(r => {
+          const L = INS_LOOK[r.verdict] || INS_LOOK.insufficient;
+          const thin = r.carry_annual !== null && Math.abs(+r.carry_annual) < 0.03;
+          return `<tr${held.has(r.instrument) ? ' style="background:var(--panel2)"' : ''}>
+            <td><b>${esc(r.instrument)}</b>${held.has(r.instrument) ? ' <span class="chip" style="font-size:9px">held</span>' : ''}<br><span style="font-size:11px;color:var(--muted)">${esc(r.label)}</span></td>
+            <td class="num" style="color:${+r.crash_1pct > 0 ? 'var(--pos)' : 'var(--neg)'}"><b>${p2(r.crash_1pct)}</b></td>
+            <td class="num" style="color:${r.free_carry ? 'var(--pos)' : 'var(--neg)'}">${p2(r.carry_annual, 1)}</td>
+            <td class="num" title="${esc(thin ? 'Carry is near zero, so this ratio is unstable and should not be compared across rows.' : 'Days of carry that one worst-1% day pays back.')}">${r.free_carry ? '<span style="color:var(--pos)">free</span>' : r.payoff_per_carry === null ? '—' : `${(+r.payoff_per_carry).toFixed(0)}${thin ? '<sup style="color:var(--warn)">?</sup>' : ''}`}</td>
+            <td class="num">${r.corr_calm === null ? '—' : (+r.corr_calm).toFixed(2)}</td>
+            <td class="num" style="color:${+r.corr_stress > 0 ? 'var(--neg)' : 'inherit'}">${r.corr_stress === null ? '—' : (+r.corr_stress).toFixed(2)}</td>
+            <td>${epCell(r)}</td>
+            <td title="${esc(L.short)}"><span style="color:${L.tone};font-weight:600">${esc(L.label)}</span></td></tr>`;
+        }).join('')}
+      </tbody></table></div>
+      <p class="note" style="margin-top:12px"><b>The dots are the decision.</b> One per drawdown of 10% or more that the instrument was alive at the <i>start</i> of — green where it made money from the book's peak to its trough, red where it did not. Hover for every episode with its dates and depth. An instrument is only called a <b>brake</b> if it was green on all of them; <b>pooled stress averages cannot tell four-from-four apart from three-from-four</b>, and that difference is the whole question.</p>
+      <p class="note"><b>Measured peak to trough, not peak to recovery</b>, because a brake's job is to pay at the bottom where it is monetised. The gap between the two is the cost of failing to do that, and it is not small: mid-term volatility returned <b>+104% into the March 2020 trough and −48% if carried through to recovery</b>. The hover shows both.</p>
+      ${!best ? '' : `<p class="note"><b>Payoff per unit of carry favours ${esc(best.instrument)}</b> at ${(+best.payoff_per_carry).toFixed(0)} days repaid per worst-1% day${ins.find(r => r.instrument === 'VIXM' && r.payoff_per_carry) ? `, against ${(+ins.find(r => r.instrument === 'VIXM').payoff_per_carry).toFixed(0)} for VIXM` : ''}. Where carry is near zero the ratio is marked <sup style="color:var(--warn)">?</sup> and should not be compared across rows — dividing by almost nothing produces a large number, not a good instrument.</p>`}
+      <p class="note"><b>Windows are conditions, not dates.</b> Stress is every day the reference book sat more than 5% below its own high; calm is within 2% of it. Hand-picking calendar windows would make this an argument rather than a measurement — the same sleeve reads worse than T-bills over 2023–2026 and roughly three times better over 2020–2026, purely because the second contains 2022.</p>
+    </div>`;
+  })();
+
   // ---- Model Surveillance ----
   // A performance cell: green when ahead, red when behind, with the comparison named in the
   // tooltip so a colour never has to be guessed at.
@@ -1235,7 +1307,7 @@ function stan() {
         <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
     }).join('')}
    </div>
-   ${cautionCard}${tapeCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
+   ${cautionCard}${insCard}${tapeCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
 }
 
 // ---------- Markets: a trading desk's wall, not a spreadsheet ----------

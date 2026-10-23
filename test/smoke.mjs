@@ -2045,6 +2045,76 @@ if (!argRoute) {
   }
 
   // -------------------------------------------------------------------------
+  // 16. The insurance value table: what each brake pays, costs, and whether it worked every time.
+  //
+  //     THE GUARD THAT MATTERS is that a pooled average can never promote an instrument to 'brake'
+  //     on its own. Long Treasuries pass every pooled test and lost a third of their value through
+  //     2022 while the book fell 22%. If the episode record ever stops gating the verdict, this
+  //     table becomes the thing it was built to prevent.
+  //
+  //     The second guard is the measurement window. An episode must be dated peak to TROUGH: an
+  //     earlier version measured peak to recovery and reported VIXM -- which returns nearly 8% a
+  //     day in the book's worst 1% -- as having helped in one drawdown out of five, because it
+  //     gives the spike back on the way up. That is only true for someone who never monetises.
+  // -------------------------------------------------------------------------
+  currentRoute = 'insurance';
+  await go('#stan');
+  {
+    const iv = app();
+    const rows = await rest('latest_insurance_value', 'instrument,label,window_key,n_days,n_stress,drawdowns_seen,crash_1pct,carry_annual,free_carry,payoff_per_carry,corr_calm,corr_stress,corr_shift,episodes,episodes_helped,verdict');
+    need(rows.length > 0, '[insurance] nothing computed');
+    need(/Which brake is worth owning\?/.test(iv), '[insurance] the card is not on the page');
+    const full = rows.filter(r => r.window_key === 'full');
+    need(full.length >= 8, `[insurance] only ${full.length} instruments compared — the table exists to choose between them`);
+
+    let ib = [];
+    for (const r of rows) {
+      for (const f of ['corr_calm', 'corr_stress']) if (r[f] !== null && (+r[f] < -1.0001 || +r[f] > 1.0001)) ib.push(`${r.instrument}/${r.window_key}: ${f} outside -1..1`);
+      if (r.corr_shift !== null && Math.abs(+r.corr_shift - (+r.corr_stress - +r.corr_calm)) > 1e-3) ib.push(`${r.instrument}/${r.window_key}: corr_shift is not stress minus calm`);
+      if (r.free_carry && !(+r.carry_annual > 0)) ib.push(`${r.instrument}/${r.window_key}: free carry flagged on a negative carry`);
+      if (!r.free_carry && r.payoff_per_carry !== null && !(+r.carry_annual < 0)) ib.push(`${r.instrument}/${r.window_key}: a payoff-per-carry ratio on a non-negative carry`);
+      // THE LOAD-BEARING GUARD.
+      if (r.verdict === 'brake') {
+        const eps = Array.isArray(r.episodes) ? r.episodes : [];
+        if (!eps.length) ib.push(`${r.instrument}/${r.window_key}: called a brake with no drawdown record at all`);
+        if (r.episodes_helped !== eps.length) ib.push(`${r.instrument}/${r.window_key}: called a brake having lost money through ${eps.length - r.episodes_helped} of ${eps.length} drawdowns`);
+        if (!(+r.crash_1pct > 0)) ib.push(`${r.instrument}/${r.window_key}: called a brake while losing money in the book's worst 1%`);
+        if (!(+r.corr_stress < 0)) ib.push(`${r.instrument}/${r.window_key}: called a brake while positively correlated through stress`);
+      }
+      if (r.verdict === 'funder' && !r.free_carry) ib.push(`${r.instrument}/${r.window_key}: called a funder while costing money to hold`);
+      // Episodes must be dated peak to trough, and the depth must be a drawdown.
+      for (const e of (Array.isArray(r.episodes) ? r.episodes : [])) {
+        if (!(e.peak < e.trough)) ib.push(`${r.instrument}: an episode whose peak is not before its trough`);
+        if (!(+e.depth <= -0.10)) ib.push(`${r.instrument}: an episode only ${(e.depth * 100).toFixed(0)}% deep is not a drawdown`);
+        if (e.helped !== (+e.ret > 0)) ib.push(`${r.instrument}: an episode's helped flag disagrees with its own return`);
+      }
+      if (r.verdict !== 'insufficient' && r.drawdowns_seen === 0) ib.push(`${r.instrument}/${r.window_key}: judged without ever having been in a drawdown`);
+    }
+    // The table must still identify at least one instrument that FAILED an episode, or the episode
+    // gate is not doing anything and the regression it guards against would pass unnoticed.
+    const failed = full.filter(r => r.episodes_helped !== null && r.episodes_helped < (r.episodes || []).length);
+    need(failed.length > 0, '[insurance] no instrument failed any drawdown — the episode record is not discriminating');
+    need(/peak to trough, not peak to recovery/i.test(iv), '[insurance] the page does not say which window the episodes are measured over');
+    need(/pooled stress averages cannot tell/i.test(iv), '[insurance] the page does not explain why the episode dots gate the verdict');
+
+    const px2 = (await rest('latest_insurance_pricing', 'vix,vix_3m,realised_21d,vol_premium,term_ratio,term_state,verdict,headline'))[0];
+    need(Boolean(px2), '[insurance] no pricing reading');
+    if (px2.vol_premium !== null && px2.vix !== null && px2.realised_21d !== null)
+      need(Math.abs(+px2.vol_premium - (+px2.vix - +px2.realised_21d)) < 0.02, '[insurance] the volatility premium is not VIX minus realised');
+    if (px2.term_ratio !== null && px2.vix > 0)
+      need(Math.abs(+px2.term_ratio - (+px2.vix_3m / +px2.vix)) < 0.01, '[insurance] the term ratio is not VIX3M over VIX');
+    if (px2.term_state === 'backwardation') need(+px2.term_ratio < 1, '[insurance] backwardation called on a ratio above 1');
+    if (px2.term_state === 'contango') need(+px2.term_ratio > 1, '[insurance] contango called on a ratio below 1');
+
+    ib = [...new Set(ib)];
+    for (const b of ib) errors.push(`[insurance] ${b}`);
+    need(ib.length === 0, `[insurance] ${ib.length} problem(s) above`);
+    const brakes = full.filter(r => r.verdict === 'brake');
+    say(` ok  insurance value        -> ${full.length} instruments, ${brakes.length} brakes (${brakes.map(r => r.instrument).join(', ')}), ${failed.length} failed an episode`);
+    say(` ok  insurance pricing      -> ${px2.verdict}, premium ${px2.vol_premium} pts, curve ${px2.term_state} at ${(+px2.term_ratio).toFixed(2)}`);
+  }
+
+  // -------------------------------------------------------------------------
   // 14. Kate, from The Alchemy of Finance: the equilibrium gate, the successful-test count, the
   //     asymmetry, the credit panel and the named flaw.
   //
