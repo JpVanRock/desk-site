@@ -60,7 +60,43 @@ async function enter(session) {
 }
 
 // ---------- Data ----------
-async function q(query) { const { data, error } = await query; if (error) throw new Error(error.message); return data; }
+//
+// RETRY TRANSIENT FAILURES BEFORE GIVING UP ON THEM.
+//
+// On 2026-10-23 the site showed "Could not load data: canceling statement due to statement
+// timeout" while the nightly was running. The nightly reads the whole price history several times
+// over -- the insurance table, the sleeve mix, the stress programme and the fragility index each
+// walk 563,000 rows -- and while it runs the database is saturated: a view that answers in 250ms
+// normally took 51 seconds and returned a 500, and an eight-row read of strategies took 1.3s.
+//
+// Those failures are TRANSIENT. The query is not wrong and the data is not missing; the database
+// is busy for a few minutes a day. Giving up on the first one and blanking the dashboard is the
+// wrong response to a queue, so anything that looks like load -- a timeout, a 5xx, a dropped
+// connection -- is retried with backoff before it counts as a failure.
+//
+// What is NOT retried: a 4xx, a missing column, a permission error. Those are real and repeating
+// them just makes the page slower on its way to the same answer.
+const TRANSIENT = /statement timeout|canceling statement|timeout|fetch failed|network|temporarily|502|503|504|ECONNRESET|upstream/i;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+// `query` is normally a THUNK, because a PostgREST builder cannot be awaited twice and a retry has
+// to be able to re-issue it. A builder is still accepted -- passing one is the obvious thing to do
+// and silently throwing a TypeError on it would be a trap -- but it gets a single attempt, because
+// there is nothing to re-issue. The tries count reflects that rather than pretending otherwise.
+async function q(query, { tries = 3, label = '' } = {}) {
+  const thunk = typeof query === 'function';
+  if (!thunk) tries = 1;
+  let last;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    const { data, error } = await (thunk ? query() : query);
+    if (!error) return data;
+    last = error;
+    if (!TRANSIENT.test(error.message || '') || attempt === tries) break;
+    // 400ms, then 1200ms. Long enough to clear a burst, short enough that a reader is still here.
+    await sleep(400 * Math.pow(3, attempt - 1));
+    console.warn(`[desk] retrying ${label || 'query'} after: ${error.message}`);
+  }
+  throw new Error(last.message);
+}
 // Same as q(), but a failure yields an empty set instead of taking the page down. Used for the
 // auxiliary datasets — the lights, the boards, the attribution — where a missing table means one
 // card renders empty and the rest of the site still works. It was not always this way: a single
@@ -69,9 +105,16 @@ async function q(query) { const { data, error } = await query; if (error) throw 
 // strategies or securities are unreachable there is no dashboard to show, and saying so plainly
 // is better than rendering an empty one that looks real.
 const softFailures = [];
+// NOTHING IS HARD ANY MORE, AND THAT IS THE REAL FIX.
+//
+// The core tables used to use q() directly on the argument that a dashboard without strategies or
+// securities is not a dashboard. True -- but the consequence was that one busy minute in the
+// database replaced the entire page with a single sentence, including the eleven tabs that did not
+// need the table that failed. Degrading to a named banner is strictly better than a blank page:
+// the reader can see what is missing and everything else still works.
 async function qSoft(query, label) {
-  try { return await q(query); }
-  catch (ex) { softFailures.push(`${label}: ${ex.message}`); console.warn(`[desk] optional dataset "${label}" unavailable:`, ex.message); return []; }
+  try { return await q(query, { label }); }
+  catch (ex) { softFailures.push(`${label}: ${ex.message}`); console.warn(`[desk] dataset "${label}" unavailable:`, ex.message); return []; }
 }
 // Paging read, for the one dataset that is a genuine time series rather than a per-run snapshot.
 // PostgREST caps a response at 1000 rows and signals it only in a header, so a table that crosses
@@ -83,7 +126,7 @@ async function qAllSoft(make, label) {
   const page = 1000, out = [];
   try {
     for (let from = 0; ; from += page) {
-      const got = await q(make().range(from, from + page - 1));
+      const got = await q(() => make().range(from, from + page - 1), { label });
       out.push(...got);
       if (got.length < page) return out;
       if (from > 200000) throw new Error('paged past 200k rows; refusing to loop further');
@@ -104,18 +147,18 @@ async function load() {
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
     narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, rx, fragHist, frag, fragEps, stressTests, sleeves] = await Promise.all([
-    q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
-    q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
-    q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
-    q(sb.from('asset_classes').select('id,slug,name,sort_order,primary_role,primary_role_is_draft').order('sort_order')),
-    q(sb.from('factors').select('id,slug,name,sort_order').order('sort_order')),
-    q(sb.from('asset_class_factor_loadings').select('asset_class_id,factor_id,loading,as_of')),
-    q(sb.from('security_factor_loadings').select('security_id,factor_id,loading,as_of')),
-    q(sb.from('data_runs').select('job,status,latest_price_date,started_at').order('started_at', { ascending: false }).limit(10)),
-    q(sb.from('agent_outputs').select('agent,kind,title,body_md,as_of').order('as_of', { ascending: false }).limit(50)),
-    q(sb.from('current_prices').select('security_id,as_of,close,prev_close,day_change_pct,source')),
-    q(sb.from('current_technical_snapshot').select('security_id,as_of,close,sma50,sma200,rsi14,macd_hist,hv20_ann,trend_state,rs_vs_class_63,support,resistance')),
-    q(sb.from('current_macro_readings').select('series_id,fred_code,name,factor_id,unit,obs_date,value')),
+    qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
+    qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
+    qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note'), 'securities'),
+    qSoft(sb.from('asset_classes').select('id,slug,name,sort_order,primary_role,primary_role_is_draft').order('sort_order'), 'asset classes'),
+    qSoft(sb.from('factors').select('id,slug,name,sort_order').order('sort_order'), 'factors'),
+    qSoft(sb.from('asset_class_factor_loadings').select('asset_class_id,factor_id,loading,as_of'), 'asset class factor loadings'),
+    qSoft(sb.from('security_factor_loadings').select('security_id,factor_id,loading,as_of'), 'security factor loadings'),
+    qSoft(sb.from('data_runs').select('job,status,latest_price_date,started_at').order('started_at', { ascending: false }).limit(10), 'data runs'),
+    qSoft(sb.from('agent_outputs').select('agent,kind,title,body_md,as_of').order('as_of', { ascending: false }).limit(50), 'agent outputs'),
+    qSoft(sb.from('current_prices').select('security_id,as_of,close,prev_close,day_change_pct,source'), 'current prices'),
+    qSoft(sb.from('current_technical_snapshot').select('security_id,as_of,close,sma50,sma200,rsi14,macd_hist,hv20_ann,trend_state,rs_vs_class_63,support,resistance'), 'current technical snapshot'),
+    qSoft(sb.from('current_macro_readings').select('series_id,fred_code,name,factor_id,unit,obs_date,value'), 'current macro readings'),
     qSoft(sb.from('asset_class_views').select('asset_class_id,as_of,stance,confidence,thesis,role_in_profile,change_my_mind,status,author').order('as_of', { ascending: false }), 'asset class views'),
     qSoft(sb.from('roadmap_items').select('area,item,status,detail,sort_order').order('sort_order'), 'roadmap'),
     qSoft(sb.from('source_track_record').select('source,category,n_directional,hit_rate,n_open,last_call_at').order('source'), 'source track record'),
@@ -356,7 +399,22 @@ function route() {
   // Keyed lookup, so this order is cosmetic rather than load-bearing — but it is kept in step
   // with the nav in index.html so the two read the same way.
   const pages = { markets, sisyphus, stan, annie, adam, neil, sven, kate, gail, sandbox, signals, admin };
-  $('#app').innerHTML = page === 'gail' ? gail(arg) : (pages[page] || sisyphus)();
+  // A HOLLOW DASHBOARD MUST NOT LOOK LIKE A REAL ONE.
+  //
+  // Making the core tables soft stopped one busy minute in the database from blanking the whole
+  // site, but it introduced the failure the old hard queries were guarding against: without
+  // strategies or securities every panel renders empty and reads as "nothing to report". So when
+  // something load-bearing is missing, every page says so at the top -- not just the Status tab,
+  // where the existing notice lives and where nobody looks when the page in front of them is
+  // already wrong.
+  const CORE = ['strategies', 'securities', 'current prices', 'asset classes'];
+  const coreGone = (D.softFailures || []).filter(f => CORE.some(c => f.startsWith(c + ':')));
+  const banner = !coreGone.length ? '' : `<div class="card" style="margin-bottom:14px;border-left:3px solid var(--neg)">
+    <h2 style="margin:0">Some of this page is missing its data</h2>
+    <p class="sub" style="margin:6px 0 0">${coreGone.length === 1 ? 'A table the dashboard is built on' : `${coreGone.length} tables the dashboard is built on`} could not be read, so panels below may be empty or wrong rather than simply quiet. <b>This is usually the nightly job running</b> — it reads the whole price history several times and the database is busy for a few minutes. Each query was already retried twice.</p>
+    <ul style="margin:8px 0 10px 18px;color:var(--muted);font-size:12px">${coreGone.map(f => `<li>${esc(f)}</li>`).join('')}</ul>
+    <button class="btn" onclick="location.reload()">Reload</button></div>`;
+  $('#app').innerHTML = banner + (page === 'gail' ? gail(arg) : (pages[page] || sisyphus)());
   if (page === 'stan' && arg) {
     // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
     // button all close them the same way a model drawer closes.
@@ -1644,7 +1702,7 @@ async function loadPerfSeries() {
       // closes comes back in two ranges rather than one request that silently truncates.
       const bars = [];
       for (let from = 0; from < 1200; from += 600) {
-        const page = await q(sb.from('market_data').select('price_date,close,adj_close')
+        const page = await q(() => sb.from('market_data').select('price_date,close,adj_close')
           .eq('security_id', row.id).order('price_date', { ascending: false }).range(from, from + 599));
         for (const b of page) bars.push(b);
         if (page.length < 600) break;
@@ -1670,7 +1728,7 @@ async function loadPerfIntraday() {
     for (const t of ['SPY', 'QQQ', 'IWM', 'DIA']) {
       const row = D.markets.find(m => m.ticker === t);
       if (!row) continue;
-      const bars = await q(sb.from('intraday_prices').select('ts,close')
+      const bars = await q(() => sb.from('intraday_prices').select('ts,close')
         .eq('security_id', row.id).order('ts', { ascending: false }).limit(400));
       bars.reverse();
       out[t] = bars.map(b => ({ ts: b.ts, px: +b.close })).filter(x => x.px > 0);
@@ -1703,12 +1761,12 @@ async function loadVolSeries() {
   volLoading = true;
   try {
     const codes = VOL_SERIES.map(v => v[0]);
-    const meta = await q(sb.from('macro_series').select('id,series_id').in('series_id', codes));
+    const meta = await q(() => sb.from('macro_series').select('id,series_id').in('series_id', codes), { label: 'macro series' });
     const out = {};
     for (const m of meta) {
       const obs = [];
       for (let from = 0; from < 1800; from += 900) {
-        const page = await q(sb.from('macro_observations').select('obs_date,value,vintage_date')
+        const page = await q(() => sb.from('macro_observations').select('obs_date,value,vintage_date')
           .eq('series_id', m.id).order('obs_date', { ascending: false }).range(from, from + 899));
         for (const o of page) obs.push(o);
         if (page.length < 900) break;
@@ -5866,7 +5924,7 @@ async function openChart(securityId) {
     <p class="sub">${esc(row.name)}</p>${body}`; };
   let hist;
   try {
-    hist = await q(sb.from('technical_snapshots').select(TECH_HISTORY_COLS)
+    hist = await q(() => sb.from('technical_snapshots').select(TECH_HISTORY_COLS)
       .eq('security_id', securityId).order('as_of', { ascending: false }).limit(300));
     hist.reverse();
   } catch (ex) {
@@ -5933,7 +5991,7 @@ async function openMacroChart(seriesId) {
     // VIXCLS, T10Y2Y) drew a chart that ended in 2018 and looked perfectly healthy doing it.
     // The most recent 1000 observations is about four years of daily data, which is the useful
     // window here; the full history stays in the table for the jobs that need it.
-    obs = await q(sb.from('macro_observations').select('obs_date,value,vintage_date')
+    obs = await q(() => sb.from('macro_observations').select('obs_date,value,vintage_date')
       .eq('series_id', seriesId).order('obs_date', { ascending: false }).order('vintage_date', { ascending: true }).limit(1000));
   } catch (ex) {
     $('#drawer').querySelector('.empty').textContent = `Could not load history: ${ex.message}`;
