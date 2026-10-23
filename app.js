@@ -103,7 +103,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, sleeves] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, stressTests, sleeves] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -208,6 +208,7 @@ async function load() {
     // Which brake is worth owning, measured rather than modelled.
     qAllSoft(() => sb.from('latest_insurance_value').select('as_of,instrument,label,sort_order,window_key,window_from,window_to,n_days,n_stress,drawdowns_seen,crash_1pct,crash_5pct,worst_day_offset,carry_daily,carry_annual,free_carry,payoff_per_carry,carry_days_repaid,offset_per_1pct,corr_calm,corr_stress,corr_shift,episodes,episodes_helped,worst_episode,verdict,headline,detail').order('sort_order', { ascending: true }), 'insurance value'),
     qSoft(sb.from('latest_insurance_pricing').select('as_of,vix,vix_3m,realised_21d,vol_premium,vol_premium_pctile,term_ratio,term_state,term_pctile,verdict,headline,detail'), 'insurance pricing'),
+    qAllSoft(() => sb.from('latest_stress_results').select('as_of,family,scenario,subject,sort_order,window_from,window_to,n_obs,value,value_kind,baseline,delta,p05,p50,p95,fit_r2,extrapolated,extrapolation,verdict,headline,detail').order('sort_order', { ascending: true }), 'stress results'),
     qAllSoft(() => sb.from('latest_sleeve_candidates').select('as_of,sleeve_key,label,sort_order,rationale,composition,window_from,window_to,n_days,episodes_covered,sleeve_carry,sleeve_crash,funding_ratio,iso_weight,iso_equity,iso_real_cagr,iso_max_dd,iso_days_under,baseline_dd,baseline_real_cagr,uplift,curve,best_weight,plateau_from,plateau_to,episodes,episodes_helped,loo_rank,loo_chosen,verdict,headline,detail').order('sort_order', { ascending: true }), 'sleeve candidates'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
@@ -304,7 +305,7 @@ async function load() {
     turnings: turnings || [], generations: generations || [], tapeTicker: tapeTicker || [], humility: humility || [],
     narReflex: narReflex || [], creditLegs: creditLegs || [], creditReading: creditReading || [],
     svenPrecedent: svenPrecedent || [], svenBreaks: svenBreaks || [], tapeQuiet: tapeQuiet || [],
-    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [], sleeves: sleeves || [] };
+    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [], stressTests: stressTests || [], sleeves: sleeves || [] };
 }
 
 // ---------- Views ----------
@@ -1131,6 +1132,96 @@ function stan() {
     </div>`;
   })();
 
+  // ---- The stress programme ----
+  //
+  // WHAT A STRESS TEST IS ALLOWED TO BE HERE. The desk's rule is that no number may be shown which
+  // was not computed from real data, and that bars the usual parametric test, where a covariance
+  // matrix and a normal assumption produce a loss for a shock nobody has observed. Every family is
+  // a replay, a fit with its explanatory power printed beside it, or a resampling -- and where a
+  // scenario reaches past the observed range it says so and says how far.
+  //
+  // THE TWO FAMILIES THAT CHANGED A DECISION. The bootstrap, because matching a historical maximum
+  // drawdown is NOT the same as matching tail risk: the unfunded-volatility sleeve wins on the
+  // historical path and adds almost nothing at the 5th percentile, which is the number a brake is
+  // bought for. And instrument_failure, which the whitepaper does not ask for: the brake held
+  // through the 2018 short-volatility unwind and lost a third of its value through a 130-session
+  // contango grind. The grind is the risk, not the unwind.
+  const stressTests = D.stressTests || [];
+  const STRESS_LOOK = {
+    holds:      { label: 'holds',      tone: 'var(--pos)' },
+    degrades:   { label: 'degrades',   tone: 'var(--warn)' },
+    fails:      { label: 'FAILS',      tone: 'var(--neg)' },
+    untestable: { label: 'untestable', tone: 'var(--line)' },
+  };
+  const FAMILY_LOOK = {
+    replay:             'Replay — named windows, including a calm control',
+    bootstrap:          'Block bootstrap — the 5th percentile, not the median',
+    instrument_failure: 'When the brake itself fails',
+    carry_drag:         'The longest quiet stretch',
+    shock:              'Shocks — a quadratic fit, so convexity is measured not assumed',
+    over_brake:         'Proportional weighting against each mandate\u2019s own curve',
+    monetisation:       'Monetisation — sold at the trough against held to recovery',
+  };
+  const stressCard = !stressTests.length ? '' : (() => {
+    const p2 = (v, d = 2) => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : '\u2212'}${Math.abs(+v * 100).toFixed(d)}%`;
+    const fam = f => stressTests.filter(r => r.family === f);
+    const chip = v => { const L = STRESS_LOOK[v] || STRESS_LOOK.untestable; return `<span style="color:${L.tone};font-weight:600;font-size:11px">${esc(L.label)}</span>`; };
+    const nFail = stressTests.filter(r => r.verdict === 'fails').length;
+    const boot = fam('bootstrap').slice().sort((a, b) => (+b.delta) - (+a.delta));
+    const rep = fam('replay');
+    const scen = [...new Map(rep.map(r => [r.scenario, r])).values()];
+    const subs = [...new Set(rep.map(r => r.subject))];
+    const ob = fam('over_brake');
+    const mon = fam('monetisation').filter(r => r.subject === 'VXZ' && r.baseline !== null);
+    const insF = fam('instrument_failure');
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">The stress programme</h2>
+        <span style="font-size:12px;color:var(--muted)">${esc(stressTests[0].as_of)} · ${stressTests.length} results · ${Object.keys(FAMILY_LOOK).length} families · ${nFail} read FAILS</span></div>
+      <p class="note" style="margin:8px 0 14px">No parametric testing. Every result is a <b>replay</b> of something that happened, a <b>fit</b> to something that happened with its explanatory power beside it, or a <b>resampling</b> of something that happened — because a covariance matrix generating a loss for an unobserved shock is not a measurement. Where a scenario reaches past the observed range the row says so, and by how far.</p>
+
+      <div class="eyebrow" style="margin:0 0 8px">${esc(FAMILY_LOOK.bootstrap)}</div>
+      <div style="overflow-x:auto"><table style="min-width:620px"><thead><tr><th>Sleeve</th><th class="num">p05 real</th><th class="num">Unbraked</th><th class="num">Gain at p05</th><th class="num">p95</th><th>Verdict</th></tr></thead><tbody>
+        ${boot.map(r => `<tr title="${esc(r.detail || '')}"><td>${esc(r.subject)}</td>
+          <td class="num"><b>${p2(r.p05)}</b></td><td class="num" style="color:var(--muted)">${p2(r.baseline)}</td>
+          <td class="num" style="color:${+r.delta > 0.001 ? 'var(--pos)' : 'var(--muted)'}"><b>${p2(r.delta)}</b></td>
+          <td class="num" style="color:var(--muted)">${p2(r.p95)}</td><td>${chip(r.verdict)}</td></tr>`).join('')}
+      </tbody></table></div>
+      <p class="note" style="margin-top:10px"><b>Matching a historical drawdown is not the same as matching tail risk, and this is where that shows.</b> The unfunded-volatility sleeve wins the historical iso-drawdown comparison and adds almost nothing here — it is over-geared, and only resampling reveals it. Braked and unbraked books are resampled along the <b>same paths</b>, so the difference is the sleeve rather than the sampler; the median is computed and deliberately not led with.</p>
+
+      <div class="eyebrow" style="margin:18px 0 8px">${esc(FAMILY_LOOK.replay)}</div>
+      <div style="overflow-x:auto"><table style="min-width:760px"><thead><tr><th>Sleeve</th>${scen.map(x => `<th class="num" style="font-size:11px">${esc(x.scenario.replace(/_/g, ' '))}</th>`).join('')}</tr></thead><tbody>
+        ${subs.map(sub => `<tr><td>${esc(sub)}</td>${scen.map(x => {
+          const r = rep.find(y => y.subject === sub && y.scenario === x.scenario);
+          if (!r) return '<td class="num" style="color:var(--line)">–</td>';
+          return `<td class="num" data-tip="${esc(r.headline)}" style="cursor:default;color:${+r.delta > 0 ? 'var(--pos)' : +r.delta > -0.02 ? 'var(--muted)' : 'var(--neg)'}">${p2(r.delta, 1)}</td>`;
+        }).join('')}</tr>`).join('')}
+      </tbody></table></div>
+      <p class="note" style="margin-top:10px">Each cell is the braked book minus the unbraked one through that window, at the sleeve's own iso-drawdown settings. <b>The calm control is not padding</b>: the same sleeve reads worse than T-bills over a quiet window and far better over one containing 2022, and a programme that only replayed crises would never surface it.</p>
+
+      ${!insF.length ? '' : `<div class="eyebrow" style="margin:18px 0 8px">${esc(FAMILY_LOOK.instrument_failure)}</div>
+      ${insF.map(r => `<p class="note" style="margin:0 0 6px"><b>${esc(r.subject)}</b> · ${esc(r.scenario.replace(/_/g, ' '))} — ${esc(r.headline)} ${chip(r.verdict)}</p>`).join('')}
+      <p class="note"><b>The question the whitepaper does not ask.</b> A mid-term VIX fund's payoff comes from the futures curve, not from spot volatility, so it is run through the February 2018 short-volatility unwind and through the longest sustained contango stretch in its own history — the window chosen by where the condition held longest, not by hand. <b>The brake survived the unwind and bleeds through the grind</b>, which inverts the usual worry.</p>`}
+
+      ${!ob.length ? '' : `<div class="eyebrow" style="margin:18px 0 8px">${esc(FAMILY_LOOK.over_brake)}</div>
+      <div style="overflow-x:auto"><table style="min-width:640px"><thead><tr><th>Model</th><th class="num">k = E / 70</th><th class="num">Proportional sleeve</th><th class="num">Shallowest drawdown at</th><th>Verdict</th></tr></thead><tbody>
+        ${ob.map(r => `<tr title="${esc(r.detail || '')}"><td>${esc(r.subject)}</td>
+          <td class="num" style="color:var(--muted)">${r.baseline === null ? '—' : (+r.baseline / 0.20).toFixed(2)}</td>
+          <td class="num"><b>${r.baseline === null ? '—' : (+r.baseline * 100).toFixed(1) + '%'}</b></td>
+          <td class="num">${(+r.value * 100).toFixed(1)}%</td><td>${chip(r.verdict)}</td></tr>`).join('')}
+      </tbody></table></div>
+      <p class="note" style="margin-top:10px"><b>The proportional rule holds for most mandates and under-brakes the bond-heavy ones.</b> Scaling the sleeve by k = equity weight ÷ 70 captures more than half the available drawdown reduction on six of eight books. It does not on <b>Fixed Income Core</b> (2.9% against a measured 12.5%) or <b>Liquid Core</b> (8.6% against 25%) — exactly the two whose dominant risk is duration rather than equity, so an equity-crash brake sized by equity weight arrives smallest where it is needed most. That is a narrower objection than "the rule is wrong", and it is the one the measurement supports.</p>`}
+
+      ${!mon.length ? '' : `<div class="eyebrow" style="margin:18px 0 8px">${esc(FAMILY_LOOK.monetisation)}</div>
+      <div style="overflow-x:auto"><table style="min-width:560px"><thead><tr><th>Drawdown</th><th class="num">Sold at the trough</th><th class="num">Held to recovery</th><th class="num">The decision</th></tr></thead><tbody>
+        ${mon.map(r => `<tr><td>${esc(r.scenario)}</td><td class="num" style="color:var(--pos)">${p2(r.value)}</td>
+          <td class="num" style="color:${+r.baseline >= 0 ? 'var(--muted)' : 'var(--neg)'}">${p2(r.baseline)}</td>
+          <td class="num"><b>${p2(r.delta)}</b></td></tr>`).join('')}
+      </tbody></table></div>
+      <p class="note" style="margin-top:10px"><b>A brake is monetised at the bottom or it is not monetised.</b> Through 2022 the volatility leg was up 17.8% at the trough and down 48.2% by the time the book had recovered — a 66-point decision taken by doing nothing. This is why monetisation is a layer of its own and not a detail of rebalancing.</p>`}
+    </div>`;
+  })();
+
   // ---- Model Surveillance ----
   // A performance cell: green when ahead, red when behind, with the comparison named in the
   // tooltip so a colour never has to be guessed at.
@@ -1364,7 +1455,7 @@ function stan() {
         <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
     }).join('')}
    </div>
-   ${cautionCard}${sleeveCard}${insCard}${tapeCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
+   ${cautionCard}${sleeveCard}${stressCard}${insCard}${tapeCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
 }
 
 // ---------- Markets: a trading desk's wall, not a spreadsheet ----------

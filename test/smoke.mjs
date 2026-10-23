@@ -2179,6 +2179,75 @@ if (!argRoute) {
   }
 
   // -------------------------------------------------------------------------
+  // 18. The stress programme. Three guards, each protecting a conclusion that moved.
+  //
+  //     COMMON RANDOM NUMBERS. The braked and unbraked books must be resampled along the same
+  //     paths or the difference between their 5th percentiles is partly sampler noise. The first
+  //     version drew independently and reported a cash sleeve -- arithmetically identical to the
+  //     baseline -- as making the 5th percentile 1.6 points worse. So: any sleeve whose iso weight
+  //     is zero must show a bootstrap delta of exactly zero.
+  //
+  //     EXTRAPOLATION MUST NOT CARRY A VERDICT. A -30% month estimated from a fit with an r-squared
+  //     of 0.24, reaching 5.6x past the worst month ever seen, is not evidence. Those rows read
+  //     untestable or the page is lending authority to noise.
+  //
+  //     A BOUNDARY IS NOT AN OPTIMUM. The over-brake scan ran to 35% and no mandate's curve had
+  //     turned, so every "measured optimum" was the edge of the scan and every gap to it was an
+  //     artefact. Rows that still sit at the boundary must read untestable.
+  // -------------------------------------------------------------------------
+  currentRoute = 'stress';
+  await go('#stan');
+  {
+    const sp = app();
+    const rows = await rest('latest_stress_results', 'family,scenario,subject,value,value_kind,baseline,delta,p05,p50,p95,fit_r2,extrapolated,extrapolation,verdict,headline');
+    need(rows.length >= 40, `[stress] only ${rows.length} results across the programme`);
+    need(/The stress programme/.test(sp), '[stress] the card is not on the page');
+    const families = [...new Set(rows.map(r => r.family))];
+    for (const f of ['replay', 'shock', 'instrument_failure', 'carry_drag', 'bootstrap', 'over_brake', 'monetisation'])
+      need(families.includes(f), `[stress] the ${f} family produced nothing`);
+
+    let xb = [];
+    for (const r of rows) {
+      if (r.delta !== null && r.value !== null && r.baseline !== null && Math.abs(+r.delta - (+r.value - +r.baseline)) > 1e-4)
+        xb.push(`${r.family}/${r.scenario}/${r.subject}: delta is not value minus baseline`);
+      if (r.fit_r2 !== null && (+r.fit_r2 < -0.001 || +r.fit_r2 > 1.001)) xb.push(`${r.family}/${r.subject}: r-squared ${r.fit_r2}`);
+      if (r.family === 'bootstrap') {
+        if (+r.p05 > +r.p50) xb.push(`${r.subject}: p05 above p50`);
+        if (+r.p95 < +r.p50) xb.push(`${r.subject}: p95 below p50`);
+      }
+      // Extrapolation or a weak fit may not carry a directional verdict.
+      if (r.family === 'shock' && (+r.extrapolation > 3 || (r.fit_r2 !== null && +r.fit_r2 < 0.30)) && r.verdict !== 'untestable')
+        xb.push(`${r.subject}/${r.scenario}: a verdict of "${r.verdict}" on a fit of ${r.fit_r2} reaching ${r.extrapolation}x past the sample`);
+      if (r.family === 'shock' && r.extrapolated && !(+r.extrapolation > 1))
+        xb.push(`${r.subject}/${r.scenario}: flagged extrapolated inside the observed range`);
+      // A boundary is not an optimum.
+      if (r.family === 'over_brake' && +r.value >= 0.5999 && r.verdict !== 'untestable')
+        xb.push(`${r.subject}: an optimum at the edge of the scan reported as "${r.verdict}"`);
+    }
+    // Common random numbers: a sleeve holding nothing cannot change the distribution.
+    const sleeveRows = await rest('latest_sleeve_candidates', 'sleeve_key,iso_weight');
+    const zero = new Set(sleeveRows.filter(s => +s.iso_weight === 0).map(s => s.sleeve_key));
+    for (const r of rows.filter(x => x.family === 'bootstrap' && zero.has(x.subject)))
+      need(Math.abs(+r.delta) < 1e-6, `[stress] ${r.subject} holds no sleeve yet its bootstrap delta is ${r.delta} — the two books are not being resampled along the same paths`);
+
+    // The calm control must exist, or only crises were replayed.
+    need(rows.some(r => r.family === 'replay' && r.scenario === 'calm_control'), '[stress] no calm control in the replay family');
+    need(/calm control is not padding/i.test(sp), '[stress] the page does not say why a calm window is replayed');
+    need(/resampled along the.{0,10}same.{0,10}paths/is.test(sp), '[stress] the page does not state that the bootstrap uses common random numbers');
+    need(/monetised at the bottom or it is not monetised/i.test(sp), '[stress] the monetisation finding is not stated');
+
+    xb = [...new Set(xb)];
+    for (const b of xb) errors.push(`[stress] ${b}`);
+    need(xb.length === 0, `[stress] ${xb.length} problem(s) above`);
+    const boot = rows.filter(r => r.family === 'bootstrap').sort((a, b) => +b.delta - +a.delta)[0];
+    const fails = rows.filter(r => r.verdict === 'fails');
+    say(` ok  stress programme       -> ${rows.length} results, ${families.length} families, ${fails.length} fail`);
+    say(` ok  stress bootstrap       -> best at p05 is ${boot.subject}, ${(+boot.delta * 100).toFixed(2)}pp over the unbraked book`);
+    const grind = rows.find(r => r.family === 'instrument_failure' && r.scenario === 'contango_grind');
+    if (grind) say(` ok  stress brake failure   -> ${grind.subject} ${(+grind.value * 100).toFixed(1)}% through the contango grind, ${grind.verdict}`);
+  }
+
+  // -------------------------------------------------------------------------
   // 14. Kate, from The Alchemy of Finance: the equilibrium gate, the successful-test count, the
   //     asymmetry, the credit panel and the named flaw.
   //
