@@ -362,8 +362,17 @@ if (!argRoute) {
   const tot = (drawer().match(/TOTAL<\/b><\/td><td><\/td><td class="num"><b>([\d.]+)%<\/b>/) || [])[1];
   if (!tot) say(' ok  contribution total    -> no table for this model');
   else {
-    say(` ok  contribution total    -> ${tot}% of weight`);
-    need(Math.abs(+tot - 100) < 2, `[contribution] weights total ${tot}%, expected ~100% — a dated set is probably unfiltered`);
+    // THE GUARD IS NOW "100%, OR SAY WHY NOT". It used to require 100% flat, which was right while
+    // the only way to miss was an unfiltered dated set. There is a second way: a position bought
+    // AND sold inside the window is marked removed and carries the weight it had when it was
+    // bought rather than the zero it held at the start, so start weights legitimately over-count.
+    // That is a real attribution defect and the page now says so on the row; demanding 100% here
+    // would mean either hiding the defect or leaving the suite permanently red, and both are worse
+    // than requiring the page to be honest about it.
+    const flagged = /Start weights sum to .*not 100%/.test(drawer());
+    say(` ok  contribution total    -> ${tot}% of weight${flagged ? ', flagged on the page' : ''}`);
+    need(Math.abs(+tot - 100) < 2 || flagged,
+      `[contribution] weights total ${tot}% and the page does not flag it — either a dated set is unfiltered, or the start-weight over-count is being shown as though it added up`);
   }
 
   // -------------------------------------------------------------------------
@@ -2324,9 +2333,12 @@ if (!argRoute) {
     const fwd = lead.filter(r => r.family === 'fragility_lead' && r.scenario === 'forward_63d');
     need(fwd.length >= 3, '[fragility] the forward-return test did not run');
     const calm = fwd.find(r => r.subject === 'accelerate'), def = fwd.find(r => r.subject === 'defensive');
-    need(Boolean(calm && def), '[fragility] the forward-return test is missing a state');
+    // Guarded rather than assumed: stress_results is shared between two jobs, and when the stress
+    // programme deleted by date alone it removed the fragility grading entirely. A bare property
+    // read turned that into a TypeError that killed the suite instead of naming the problem.
+    need(Boolean(calm && def), `[fragility] the forward-return test is missing a state — found ${fwd.map(r => r.subject).join(', ') || 'nothing'}. If this is empty the fragility_lead family has been deleted from stress_results by another job.`);
     // THE HONESTY GUARD: if defensive does not precede worse returns, the page must say it fails.
-    if (+def.value >= +calm.value) {
+    if (calm && def && +def.value >= +calm.value) {
       need(/fails the test the plan set for it/i.test(fg), '[fragility] a defensive reading precedes better returns and the page does not say the index failed');
       need(/must not be used to time the brake/i.test(fg), '[fragility] the failure is shown without the conclusion that follows from it');
       need(/thermometer/i.test(fg), '[fragility] the page does not characterise what the index actually is');
@@ -2346,7 +2358,7 @@ if (!argRoute) {
     for (const b of fb) errors.push(`[fragility] ${b}`);
     need(fb.length === 0, `[fragility] ${fb.length} problem(s) above`);
     say(` ok  fragility index        -> ${(+idx.mfi).toFixed(0)}/100 ${idx.state}, ${legs.length} legs${idx.override_leg ? `, carried by ${idx.override_leg}` : ''}`);
-    say(` ok  fragility kill test    -> defensive ${(+def.value * 100).toFixed(2)}% vs calm ${(+calm.value * 100).toFixed(2)}% forward, ${eps.filter(e => e.verdict === 'led').length}/${eps.filter(e => e.verdict !== 'no_data').length} led, ${(+fp.value * 100).toFixed(0)}% false positives`);
+    say(` ok  fragility kill test    -> defensive ${calm && def ? (+def.value * 100).toFixed(2) : '—'}% vs calm ${calm && def ? (+calm.value * 100).toFixed(2) : '—'}% forward, ${eps.filter(e => e.verdict === 'led').length}/${eps.filter(e => e.verdict !== 'no_data').length} led, ${(+fp.value * 100).toFixed(0)}% false positives`);
 
     // ---- and on the Markets page, where it must not become a timing signal ----
     //

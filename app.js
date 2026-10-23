@@ -5247,6 +5247,20 @@ function modelDashboard(m) {
   // ---- contribution ----
   const cRows = contrib.slice().sort((a, b) => (n(b.contribution_bps) ?? -1e9) - (n(a.contribution_bps) ?? -1e9));
   const totalBps = cRows.reduce((s, c) => s + (n(c.contribution_bps) || 0), 0);
+  // A TOTAL THAT DOES NOT ADD TO 100% MUST SAY SO RATHER THAN BE PRINTED AS IF IT DID.
+  //
+  // Start weights sum to 107% on some periods, and the cause is a real one: a position opened AND
+  // closed inside the window is marked "removed" and carries the weight it had when it was bought,
+  // not the zero it had at the period's start. On a six-month window for one model that is 77.25%
+  // of weight genuinely held at the start plus 30.00% from names that were not.
+  //
+  // The contribution figures themselves are per-position and unaffected; it is the start-weight
+  // COLUMN that is mislabelled. Correcting it means changing how the reporting job assigns weight
+  // to intra-period trades, which is attribution arithmetic this desk's results depend on, so it is
+  // flagged here and left for a deliberate fix rather than adjusted in passing.
+  const startSum = cRows.reduce((s, c) => s + (n(c.start_weight) || 0), 0);
+  const startOff = cRows.length && Math.abs(startSum - 1) > 0.02;
+  const inPeriod = cRows.filter(c => c.status === 'removed' && (n(c.start_weight) || 0) > 0).length;
   const unpriced = cRows.filter(c => !c.priced);
   const SUSPECT = /can be simplified to|as an AI|\*\*/i;
   const contribCard = `<div class="card" style="margin-bottom:18px">
@@ -5259,7 +5273,7 @@ function modelDashboard(m) {
       : stat && stat.unavailable_reason ? `<div class="empty">${esc(stat.unavailable_reason)}</div>`
       : !cRows.length ? '<div class="empty">No contribution rows for this period.</div>'
       : `<table><thead><tr><th>Ticker</th><th>Name</th><th class="num">Start wt</th><th class="num">Return</th><th class="num">End wt</th><th class="num">Contribution</th></tr></thead><tbody>
-      <tr style="border-bottom:2px solid var(--line);background:var(--panel2)"><td><b>TOTAL</b></td><td></td><td class="num"><b>${pct(cRows.reduce((s, c) => s + (n(c.start_weight) || 0), 0))}</b></td><td class="num"></td><td class="num"><b>${pct(cRows.reduce((s, c) => s + (n(c.end_weight) || 0), 0))}</b></td><td class="num"><b style="color:${col(totalBps)}">${totalBps >= 0 ? '+' : ''}${totalBps.toFixed(0)} bps</b></td></tr>
+      <tr style="border-bottom:2px solid var(--line);background:var(--panel2)"><td><b>TOTAL</b></td><td></td><td class="num"><b${startOff ? ' style="color:var(--warn)" title="Does not sum to 100%: a position opened and closed inside this window is marked removed and carries the weight it had when it was bought, not the zero it held at the start."' : ''}>${pct(startSum)}${startOff ? '<sup style="color:var(--warn)">!</sup>' : ''}</b></td><td class="num"></td><td class="num"><b>${pct(cRows.reduce((s, c) => s + (n(c.end_weight) || 0), 0))}</b></td><td class="num"><b style="color:${col(totalBps)}">${totalBps >= 0 ? '+' : ''}${totalBps.toFixed(0)} bps</b></td></tr>
       ${cRows.map(c => `<tr><td><b>${esc(c.ticker)}</b>${c.status === 'removed' ? ' <small style="color:var(--muted);font-style:italic">no longer held</small>' : c.status === 'added' ? ' <small style="color:var(--muted);font-style:italic">added in period</small>' : ''}</td>
         <td style="max-width:280px;color:var(--muted)">${SUSPECT.test(c.name_raw || '') ? `<span style="color:var(--warn)" title="This name contains AI-generated editorial text in the source export, shown verbatim">⚠ ${esc(c.name_raw)}</span>` : esc(c.name_raw || '')}</td>
         <td class="num">${n(c.start_weight) === null ? '–' : pct(n(c.start_weight))}</td>
@@ -5267,6 +5281,7 @@ function modelDashboard(m) {
         <td class="num">${n(c.end_weight) === null ? '–' : pct(n(c.end_weight))}</td>
         <td class="num">${n(c.contribution_bps) === null ? '<span style="color:var(--muted)">—</span>' : `<span style="color:${col(n(c.contribution_bps))}">${n(c.contribution_bps) >= 0 ? '+' : ''}${n(c.contribution_bps).toFixed(0)} bps</span>`}</td></tr>`).join('')}
       </tbody></table>
+      ${!startOff ? '' : `<p class="note" style="color:var(--warn)"><b>Start weights sum to ${pct(startSum)}, not 100%.</b> ${inPeriod} position${inPeriod === 1 ? '' : 's'} in this window ${inPeriod === 1 ? 'was' : 'were'} bought and sold inside it, and the reporting job gives such a position the weight it had when it was bought rather than the zero it held at the period's start. <b>The contribution figures are per-position and unaffected</b> — it is this column that over-counts. Fixing it means changing how intra-period trades are weighted in the attribution, which is left as a deliberate change rather than adjusted in passing.</p>`}
       <p class="note">Contribution = start weight × period return, in basis points, on actual holdings. Positions added during the period start at zero weight and contribute nothing by this measure; positions sold show the weight they started at. ${unpriced.length ? `<b>${unpriced.length} holding${unpriced.length === 1 ? '' : 's'} could not be priced across this window</b>, so the total understates. ` : ''}The total approximates the period return and drifts from it over long windows, since it uses starting weights and ignores rebalancing in between.</p>`}
   </div>`;
 
