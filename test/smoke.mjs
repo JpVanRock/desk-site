@@ -2316,6 +2316,75 @@ if (!argRoute) {
   }
 
   // -------------------------------------------------------------------------
+  // 20. The prescription. The output of the whole system, and the guards are about what may NOT
+  //     drive it.
+  //
+  //     THE FRAGILITY GUARD. The index failed its lead test, so it must not size anything. If a
+  //     later change wires it into the target while the index is still failing, nothing on the page
+  //     would look different -- which is exactly why this is a test rather than a comment.
+  //
+  //     THE DIRECTION GUARD. The entire point is that the beta floor RISES. A prescription whose
+  //     floor sat below the rule it replaces would have reimplemented the behaviour it exists to
+  //     remove, and the first version did something close to it by scaling the old per-model bands
+  //     instead of replacing them.
+  // -------------------------------------------------------------------------
+  currentRoute = 'prescription';
+  await go('#stan');
+  {
+    const rxPage = app();
+    const rows = await rest('latest_brake_prescription', 'model,equity_weight,k,sleeve_key,composition,sleeve_target,sleeve_floor,sleeve_ceiling,beta_floor,beta_ceiling,beta_actual,old_floor,old_ceiling,light,monetise_at,monetise_share,held_now,gap,no_trade_band,action,fragility,fragility_state');
+    need(rows.length >= 5, `[prescription] only ${rows.length} mandates prescribed`);
+    need(/The prescription/.test(rxPage), '[prescription] the card is not on the page');
+
+    let pb = [];
+    const sleeveKeys = new Set(rows.map(r => r.sleeve_key));
+    need(sleeveKeys.size === 1, `[prescription] ${sleeveKeys.size} different sleeves prescribed across the book`);
+    for (const r of rows) {
+      if (r.sleeve_target !== null && (+r.sleeve_target < 0 || +r.sleeve_target > 0.6)) pb.push(`${r.model}: sleeve target ${r.sleeve_target}`);
+      if (r.sleeve_ceiling !== null && +r.sleeve_target > +r.sleeve_ceiling + 1e-9) pb.push(`${r.model}: target above its own measured ceiling`);
+      // k is derived from the mandate's own equity weight and nothing else.
+      if (r.equity_weight !== null && Math.abs(+r.k - +r.equity_weight / 0.70) > 1e-3) pb.push(`${r.model}: k is not its own equity weight over 70`);
+      // THE DIRECTION GUARD.
+      if (r.beta_floor !== null && r.old_floor !== null && +r.beta_floor < +r.old_floor - 1e-9)
+        pb.push(`${r.model}: the new beta floor ${r.beta_floor} is below the old ${r.old_floor}, which is the behaviour this replaces`);
+      if (+r.beta_ceiling <= +r.beta_floor) pb.push(`${r.model}: an inverted beta band`);
+      if (+r.beta_floor > 1.0 + 1e-9) pb.push(`${r.model}: a beta floor above 1.0 levers past the benchmark`);
+      // The action must follow the gap and the band.
+      if (r.gap !== null && Math.abs(+r.gap - (+r.sleeve_target - +r.held_now)) > 1e-6) pb.push(`${r.model}: the gap is not target minus held`);
+      if (r.action === 'hold' && r.gap !== null && Math.abs(+r.gap) >= +r.no_trade_band) pb.push(`${r.model}: told to hold on a gap of ${r.gap}`);
+      if (r.action === 'add' && !(+r.gap > 0)) pb.push(`${r.model}: told to add on a gap of ${r.gap}`);
+      if (r.action === 'trim' && !(+r.gap < 0)) pb.push(`${r.model}: told to trim on a gap of ${r.gap}`);
+      if (r.monetise_at !== null && !(+r.monetise_at > 0)) pb.push(`${r.model}: a monetisation trigger of ${r.monetise_at}`);
+      if (r.monetise_share !== null && (+r.monetise_share <= 0 || +r.monetise_share > 1)) pb.push(`${r.model}: a monetisation share of ${r.monetise_share}`);
+    }
+    // THE FRAGILITY GUARD: the index failed its lead test, so the target must not move with it.
+    const lead = await rest('latest_stress_results', 'family,scenario,subject,value');
+    const fwd = lead.filter(x => x.family === 'fragility_lead' && x.scenario === 'forward_63d');
+    const calm = fwd.find(x => x.subject === 'accelerate'), def = fwd.find(x => x.subject === 'defensive');
+    if (calm && def && +def.value >= +calm.value) {
+      // Every mandate sees the same fragility reading, so if it were an input the targets would
+      // have to be explicable without it -- the check is that the target is exactly k x reference,
+      // with only the documented floor and ceiling able to move it.
+      const ref = rows.map(r => (r.k && +r.k > 0 && r.sleeve_floor === null && r.sleeve_ceiling === null) ? +r.sleeve_target / +r.k : null).filter(x => x !== null);
+      if (ref.length >= 2) {
+        const spread = Math.max(...ref) - Math.min(...ref);
+        need(spread < 1e-3, `[prescription] the reference weight implied by each mandate varies by ${(spread * 100).toFixed(2)}pp — something other than k is moving the target`);
+      }
+      need(/does not size anything here/i.test(rxPage), '[prescription] the page does not state that fragility is not an input');
+      need(/static, and that is a finding/i.test(rxPage), '[prescription] the page does not explain why the target is static');
+    }
+    need(/Raise the brake, not the cash/i.test(rxPage), '[prescription] the page does not state the thesis it implements');
+    need(/chosen rather than derived/i.test(rxPage), '[prescription] the page does not name which numbers were chosen');
+    need(/research output for approval/i.test(rxPage), '[prescription] the card does not say it is not an instruction');
+
+    pb = [...new Set(pb)];
+    for (const b of pb) errors.push(`[prescription] ${b}`);
+    need(pb.length === 0, `[prescription] ${pb.length} problem(s) above`);
+    const adds = rows.filter(r => r.action === 'add');
+    say(` ok  prescription           -> ${rows.length} mandates on ${[...sleeveKeys][0]}, ${adds.length} under target, band ${(+rows[0].beta_floor).toFixed(2)}–${(+rows[0].beta_ceiling).toFixed(2)} against ${(+rows[0].old_floor).toFixed(2)}–${(+rows[0].old_ceiling).toFixed(2)}`);
+  }
+
+  // -------------------------------------------------------------------------
   // 14. Kate, from The Alchemy of Finance: the equilibrium gate, the successful-test count, the
   //     asymmetry, the credit panel and the named flaw.
   //

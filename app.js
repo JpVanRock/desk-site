@@ -103,7 +103,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, frag, fragEps, stressTests, sleeves] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, rx, frag, fragEps, stressTests, sleeves] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -208,6 +208,7 @@ async function load() {
     // Which brake is worth owning, measured rather than modelled.
     qAllSoft(() => sb.from('latest_insurance_value').select('as_of,instrument,label,sort_order,window_key,window_from,window_to,n_days,n_stress,drawdowns_seen,crash_1pct,crash_5pct,worst_day_offset,carry_daily,carry_annual,free_carry,payoff_per_carry,carry_days_repaid,offset_per_1pct,corr_calm,corr_stress,corr_shift,episodes,episodes_helped,worst_episode,verdict,headline,detail').order('sort_order', { ascending: true }), 'insurance value'),
     qSoft(sb.from('latest_insurance_pricing').select('as_of,vix,vix_3m,realised_21d,vol_premium,vol_premium_pctile,term_ratio,term_state,term_pctile,verdict,headline,detail'), 'insurance pricing'),
+    qAllSoft(() => sb.from('latest_brake_prescription').select('as_of,strategy_id,model,sort_order,equity_weight,k,sleeve_key,sleeve_label,composition,sleeve_target,sleeve_floor,sleeve_ceiling,target_basis,beta_floor,beta_ceiling,beta_actual,old_floor,old_ceiling,light,monetise_at,monetise_share,monetise_basis,held_now,gap,no_trade_band,action,fragility,fragility_state,headline,detail').order('sort_order', { ascending: true }), 'brake prescription'),
     qSoft(sb.from('latest_fragility_index').select('as_of,mfi,mfi_mean,mfi_pctile,override_leg,state,state_days,legs,n_legs,headline'), 'fragility index'),
     qAllSoft(() => sb.from('latest_fragility_episodes').select('as_of,episode,trough,depth,mfi_at_peak,state_at_peak,first_warn,lead_days,lead_to_peak,worst_mfi,verdict,headline').order('episode', { ascending: true }), 'fragility episodes'),
     qAllSoft(() => sb.from('latest_stress_results').select('as_of,family,scenario,subject,sort_order,window_from,window_to,n_obs,value,value_kind,baseline,delta,p05,p50,p95,fit_r2,extrapolated,extrapolation,verdict,headline,detail').order('sort_order', { ascending: true }), 'stress results'),
@@ -307,7 +308,7 @@ async function load() {
     turnings: turnings || [], generations: generations || [], tapeTicker: tapeTicker || [], humility: humility || [],
     narReflex: narReflex || [], creditLegs: creditLegs || [], creditReading: creditReading || [],
     svenPrecedent: svenPrecedent || [], svenBreaks: svenBreaks || [], tapeQuiet: tapeQuiet || [],
-    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [], stressTests: stressTests || [], sleeves: sleeves || [], frag: frag || [], fragEps: fragEps || [] };
+    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [], stressTests: stressTests || [], sleeves: sleeves || [], frag: frag || [], fragEps: fragEps || [], rx: rx || [] };
 }
 
 // ---------- Views ----------
@@ -1134,6 +1135,64 @@ function stan() {
     </div>`;
   })();
 
+  // ---- The prescription ----
+  //
+  // LAYER 4, AND NARROWER THAN THE PLAN DRAFTED. The plan proposed a four-state machine moving the
+  // sleeve between 0% and 18% as the fragility index moved. Half survived the measurement:
+  //
+  //   braking instead of cutting beta survived. On a 70/30 book over 2020-2026 braking returned
+  //   9.85% against 7.69% for de-risking, and the Speed Limit scoreboard priced the old instruction
+  //   at roughly 5.2% a year of forgone return across fifty months.
+  //
+  //   modulating the sleeve by fragility state did not. The index failed its own lead test, so
+  //   sizing off it would be acting on a thermometer. The sleeve target is static and the index is
+  //   carried as context the arithmetic cannot touch.
+  //
+  // THE CARD IS THE OUTPUT OF THE WHOLE SYSTEM, which is why it sits first on the page: everything
+  // above it on this desk exists to produce these two columns.
+  const rx = (D.rx || []).slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const RX_ACTION = {
+    add:     { label: 'add',     tone: 'var(--warn)' },
+    trim:    { label: 'trim',    tone: 'var(--flat)' },
+    hold:    { label: 'at target', tone: 'var(--pos)' },
+    no_data: { label: 'no data', tone: 'var(--line)' },
+  };
+  const rxCard = !rx.length ? '' : (() => {
+    const p2 = (v, d = 1) => v === null || v === undefined ? '—' : `${(+v * 100).toFixed(d)}%`;
+    const r0 = rx[0];
+    const comp = (Array.isArray(r0.composition) ? r0.composition : []).map(c => `${c.ticker} ${(c.weight * 100).toFixed(0)}%`).join(' · ');
+    const nAdd = rx.filter(r => r.action === 'add').length;
+    const below = rx.filter(r => r.beta_actual !== null && +r.beta_actual < +r.beta_floor);
+    return `<div class="card" style="margin-bottom:14px;border:1px solid var(--accent)">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">The prescription</h2>
+        <span style="font-size:12px;color:var(--muted)">${esc(r0.as_of)} · ${esc(r0.sleeve_label || '')} · ${esc(comp)}</span></div>
+      <p class="note" style="margin:8px 0 14px"><b>Raise the brake, not the cash.</b> The old rule cut beta to as little as half the benchmark when the light turned; the scoreboard priced that instruction at roughly <b>5.2% a year</b> of forgone return across fifty months. The sleeve was measured to support <b>1.14×</b> the reference book's equity at the same drawdown, so the band is now set around the benchmark instead of away from it.</p>
+      <div style="overflow-x:auto"><table style="min-width:860px"><thead><tr>
+        <th>Model</th><th class="num">Equity</th><th class="num">k</th><th class="num">Sleeve target</th><th class="num">Held</th>
+        <th>Action</th><th class="num">Beta now</th><th class="num">New band</th><th class="num">Old band</th></tr></thead><tbody>
+        ${rx.map(r => { const A = RX_ACTION[r.action] || RX_ACTION.no_data;
+          const lowBeta = r.beta_actual !== null && +r.beta_actual < +r.beta_floor;
+          return `<tr${r.action === 'add' ? ' style="background:var(--panel2)"' : ''}>
+            <td data-tip="${esc(r.target_basis || '')}" style="cursor:default"><b>${esc(r.model)}</b></td>
+            <td class="num" style="color:var(--muted)">${p2(r.equity_weight, 0)}</td>
+            <td class="num" style="color:var(--muted)">${r.k === null ? '—' : (+r.k).toFixed(2)}</td>
+            <td class="num"><b>${p2(r.sleeve_target)}</b>${r.sleeve_ceiling !== null && Math.abs(+r.sleeve_target - +r.sleeve_ceiling) < 1e-6 ? '<sup title="Capped at this mandate\u2019s own measured ceiling, past which more brake makes drawdown worse." style="color:var(--warn)">c</sup>' : ''}${r.sleeve_floor !== null && Math.abs(+r.sleeve_target - +r.sleeve_floor) < 1e-6 ? '<sup title="Raised to the duration floor: this mandate\u2019s dominant risk is rates, and an equity-crash brake sized by equity weight arrives smallest where it is needed most." style="color:var(--warn)">f</sup>' : ''}</td>
+            <td class="num" style="color:var(--muted)">${p2(r.held_now)}</td>
+            <td><span style="color:${A.tone};font-weight:600">${esc(A.label)}</span>${r.gap === null ? '' : ` <span style="color:var(--muted);font-size:11px">${+r.gap > 0 ? '+' : ''}${(+r.gap * 100).toFixed(1)}</span>`}</td>
+            <td class="num" style="color:${lowBeta ? 'var(--neg)' : 'inherit'}">${r.beta_actual === null ? '—' : (+r.beta_actual).toFixed(2)}</td>
+            <td class="num">${(+r.beta_floor).toFixed(2)}–${(+r.beta_ceiling).toFixed(2)}</td>
+            <td class="num" style="color:var(--muted);text-decoration:line-through">${(+r.old_floor).toFixed(2)}–${(+r.old_ceiling).toFixed(2)}</td></tr>`;
+        }).join('')}
+      </tbody></table></div>
+      <p class="note" style="margin-top:12px"><b>${nAdd} of ${rx.length} mandates hold less than the prescription</b> by more than the ${p2(r0.no_trade_band)} no-trade band${below.length ? `, and <b>${below.length} run below the new beta floor</b> — ${below.map(r => `${esc(r.model)} at ${(+r.beta_actual).toFixed(2)}×`).join(', ')}` : ''}. The target is <b>k × the reference sleeve</b>, where k is the mandate's own equity weight over 70 — the proportional rule, applied as asked and then checked: the stress programme found it captures more than half the available drawdown reduction on six of eight books and under-brakes the two whose dominant risk is duration, which is why those carry a floor.</p>
+      <p class="note"><b>The reference weight is the midpoint of the preferred sleeve's own plateau</b>, not a round number: anywhere inside that range is within 10bp of its best real compounding, so the midpoint is the most robust point rather than the luckiest one. The ceiling on each row is measured from that mandate's own drawdown-against-weight curve, because over-braking is self-defeating — a volatility sleeve produced a worse drawdown at 30% than at 20%, its own bleed having become the drawdown it was bought to prevent.</p>
+      ${r0.monetise_at === null ? '' : `<p class="note"><b>Monetisation: trim ${p2(r0.monetise_share, 0)} once the brake leg is up ${p2(r0.monetise_at, 0)} from cost.</b> ${esc(r0.monetise_basis || '')}</p>`}
+      <p class="note"><b>The sleeve target is static, and that is a finding rather than a simplification.</b> The plan proposed moving it with the fragility index. The index failed its own lead test — the book returned more over the following quarter after a defensive reading than after a calm one — so sizing off it would be acting on a thermometer. Fragility reads <b>${r0.fragility === null ? '—' : (+r0.fragility).toFixed(0)} (${esc(r0.fragility_state || '')})</b> today and <b>does not size anything here</b>. It is the one column that changes if a later version of the index passes.</p>
+      <p class="note"><b>Three numbers on this card are chosen rather than derived</b> — the duration floor, the no-trade band, and which quantile of past trough gains sets the monetisation trigger. Everything else comes from each mandate's own equity weight, its own measured drawdown curve, the equity the sleeve was measured to support, or the distribution of what the brake actually gained at past troughs. <b>Status: research output for approval, not an instruction.</b></p>
+    </div>`;
+  })();
+
   // ---- Market fragility ----
   //
   // LAYER 2, AND THE ONE THAT DID NOT PASS ITS OWN TEST. The Speed Limit measures what the desk's
@@ -1534,7 +1593,7 @@ function stan() {
         <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
     }).join('')}
    </div>
-   ${cautionCard}${fragCard}${sleeveCard}${stressCard}${insCard}${tapeCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
+   ${rxCard}${cautionCard}${fragCard}${sleeveCard}${stressCard}${insCard}${tapeCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
 }
 
 // ---------- Markets: a trading desk's wall, not a spreadsheet ----------
