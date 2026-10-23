@@ -29,6 +29,26 @@ body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system
 .top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:28px;padding:16px 28px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
 .brand{display:flex;gap:16px;align-items:center}.brand b{display:block;font-size:24px;letter-spacing:.2px;line-height:1.15}.brand small{color:var(--muted);font-size:13px;letter-spacing:.9px;text-transform:uppercase}
 nav{display:flex;gap:4px;flex:1;flex-wrap:wrap}nav a{color:var(--muted);text-decoration:none;font-size:16px;padding:12px 14px;border-radius:10px}nav a:hover{color:var(--text)}nav a.on{color:var(--text);background:var(--panel2)}
+
+/* THE TAB MENU.
+   Twelve tabs do not fit a laptop header, and wrapping them pushed the page down by two rows
+   before anything had been read. Above the breakpoint the nav stays exactly as it was; below it
+   the links collapse behind a button that NAMES THE CURRENT TAB rather than showing a bare
+   hamburger -- on a narrow screen the first question is "where am I", and an icon answers the
+   second question while leaving the first one open. */
+#menu{display:none;align-items:center;gap:6px;font-size:15px;white-space:nowrap}
+@media (max-width:1180px){
+  #menu{display:inline-flex}
+  nav{position:absolute;top:100%;left:0;right:0;z-index:40;display:none;flex-direction:column;gap:2px;
+      background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px;margin-top:6px;
+      box-shadow:0 18px 40px rgba(0,0,0,.35);max-height:70vh;overflow:auto}
+  nav.open{display:flex}
+  nav a{font-size:17px;padding:13px 14px}
+  header.top{position:relative;flex-wrap:nowrap}
+}
+/* A dropdown that animates is a dropdown that is in the way on the second use. */
+@media (prefers-reduced-motion:no-preference){nav.open{animation:navdrop .12s ease-out}}
+@keyframes navdrop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 .tools{display:flex;gap:10px;align-items:center}
 button#theme{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:10px;width:42px;height:42px;font-size:17px;cursor:pointer}
 .badge{font:600 12px/1 ui-monospace,Menlo,monospace;letter-spacing:.8px;padding:8px 11px;border-radius:6px;border:1px solid var(--line);color:var(--muted)}

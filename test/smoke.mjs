@@ -1045,6 +1045,40 @@ if (!argRoute) {
     const order = [...nav.matchAll(/<a href="#([a-z]+)">/g)].map(m => m[1]);
     const want = ['markets', 'sisyphus', 'stan', 'annie', 'adam', 'neil', 'sven', 'kate', 'gail', 'sandbox', 'signals', 'admin'];
     say(` ok  nav order              -> ${order.join(' · ')}`);
+
+  // ---- the tab menu ----
+  //
+  // CHECKED AGAINST THE SOURCE, NOT A LIVE DOM. This harness models #app and #drawer and nothing
+  // else -- document.querySelectorAll returns an empty list by design -- so header chrome is
+  // verified the way the nav order above is: by reading the files. That is a real limit and worth
+  // stating rather than papering over with a stub that would pass whatever it was given.
+  //
+  // The guards are the ones a collapsed menu usually fails: the links must still be IN the
+  // document rather than removed (hidden by CSS, so the page stays navigable if the stylesheet
+  // does not load), the button must name where you are rather than show a bare icon, and the open
+  // state must be closable from every direction it can be opened from.
+  {
+    const html = readFileSync(join(SITE, 'index.html'), 'utf8');
+    const css = readFileSync(join(SITE, 'style.css'), 'utf8');
+    const js = readFileSync(join(SITE, 'app.js'), 'utf8');
+    need(/<button id="menu"/.test(html), '[menu] there is no menu button in the header');
+    need(/aria-controls="nav"/.test(html), '[menu] the button does not say what it controls');
+    need(/aria-expanded="false"/.test(html), '[menu] the button does not start collapsed');
+    need(/id="menu-label"/.test(html), '[menu] the button has no label element to name the current tab');
+    need((html.match(/<a href="#[a-z]+">/g) || []).length === 12, '[menu] the nav no longer carries all twelve links in the document');
+    // CSS: the button is hidden by default and the nav collapses only below the breakpoint, so a
+    // wide screen is untouched.
+    need(/#menu\{display:none/.test(css), '[menu] the button is not hidden on wide screens');
+    need(/@media \(max-width:\d+px\)\{[\s\S]{0,400}#menu\{display:inline-flex/.test(css), '[menu] the button never appears at any width');
+    need(/nav\.open\{display:flex\}/.test(css), '[menu] there is no open state for the collapsed nav');
+    // JS: closable from all four directions, and aria follows.
+    need(/function setMenu\(open\)/.test(js), '[menu] there is no setMenu');
+    need(/aria-expanded', open \? 'true' : 'false'/.test(js), '[menu] aria-expanded does not follow the open state');
+    need(/setMenu\(false\);[\s\S]{0,200}menu-label/.test(js), '[menu] navigating does not close the menu or relabel the button');
+    need(/e\.key === 'Escape'[\s\S]{0,40}setMenu\(false\)/.test(js), '[menu] Escape does not close the menu');
+    need(/!e\.target\.closest\('#nav'\)[\s\S]{0,120}setMenu\(false\)/.test(js), '[menu] clicking away does not close the menu');
+    say(` ok  tab menu               -> button + 12 links kept in the document, hidden only below the breakpoint, closes on navigate, Escape and click-away`);
+  }
     need(want.length === order.length && want.every((w, i) => order[i] === w), `[nav] expected ${want.join(' · ')}, found ${order.join(' · ')}`);
   }
 
@@ -2266,7 +2300,7 @@ if (!argRoute) {
     const fg = app();
     const idx = (await rest('latest_fragility_index', 'as_of,mfi,mfi_mean,mfi_pctile,override_leg,state,state_days,legs,n_legs'))[0];
     need(Boolean(idx), '[fragility] no index reading');
-    need(/Market fragility/.test(fg), '[fragility] the card is not on the page');
+    need(/Market Fragility Index/.test(fg), "[fragility] the card is not on the page");
     let fb = [];
     if (+idx.mfi < 0 || +idx.mfi > 100) fb.push(`the index reads ${idx.mfi}`);
     if (idx.mfi_pctile !== null && (+idx.mfi_pctile < 0 || +idx.mfi_pctile > 1)) fb.push(`the index percentile is ${idx.mfi_pctile}`);
@@ -2313,6 +2347,24 @@ if (!argRoute) {
     need(fb.length === 0, `[fragility] ${fb.length} problem(s) above`);
     say(` ok  fragility index        -> ${(+idx.mfi).toFixed(0)}/100 ${idx.state}, ${legs.length} legs${idx.override_leg ? `, carried by ${idx.override_leg}` : ''}`);
     say(` ok  fragility kill test    -> defensive ${(+def.value * 100).toFixed(2)}% vs calm ${(+calm.value * 100).toFixed(2)}% forward, ${eps.filter(e => e.verdict === 'led').length}/${eps.filter(e => e.verdict !== 'no_data').length} led, ${(+fp.value * 100).toFixed(0)}% false positives`);
+
+    // ---- and on the Markets page, where it must not become a timing signal ----
+    //
+    // A compact copy of a failed indicator is the most dangerous thing that can be put on a page
+    // people read for market state. The caveat has to travel with the number, so the panel is
+    // required to carry both the failure and a route to the full grading.
+    await go('#markets');
+    const mk = app();
+    need(/Market Fragility Index/.test(mk), '[fragility] the MFI is not on the Markets page');
+    need(new RegExp(`>${(+idx.mfi).toFixed(0)}<`).test(mk) || mk.includes(`${(+idx.mfi).toFixed(0)}<span`),
+      '[fragility] the Markets panel does not show the current reading');
+    for (const l of legs) need(mk.includes(l.label), `[fragility] the Markets panel omits the ${l.label} leg`);
+    if (+def.value >= +calm.value) {
+      need(/thermometer, not a forecast/i.test(mk), '[fragility] the Markets panel shows the index without saying it failed its lead test');
+      need(/must not be used to time risk/i.test(mk), '[fragility] the Markets panel omits the conclusion that follows from the failure');
+      need(/data-go="#stan"/.test(mk), '[fragility] the Markets panel does not route to the full grading');
+    }
+    say(` ok  fragility on markets   -> panel renders with its caveat and a route to the grading`);
   }
 
   // -------------------------------------------------------------------------

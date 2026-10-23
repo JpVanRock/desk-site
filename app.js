@@ -103,7 +103,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, rx, frag, fragEps, stressTests, sleeves] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, rx, fragHist, frag, fragEps, stressTests, sleeves] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -209,6 +209,7 @@ async function load() {
     qAllSoft(() => sb.from('latest_insurance_value').select('as_of,instrument,label,sort_order,window_key,window_from,window_to,n_days,n_stress,drawdowns_seen,crash_1pct,crash_5pct,worst_day_offset,carry_daily,carry_annual,free_carry,payoff_per_carry,carry_days_repaid,offset_per_1pct,corr_calm,corr_stress,corr_shift,episodes,episodes_helped,worst_episode,verdict,headline,detail').order('sort_order', { ascending: true }), 'insurance value'),
     qSoft(sb.from('latest_insurance_pricing').select('as_of,vix,vix_3m,realised_21d,vol_premium,vol_premium_pctile,term_ratio,term_state,term_pctile,verdict,headline,detail'), 'insurance pricing'),
     qAllSoft(() => sb.from('latest_brake_prescription').select('as_of,strategy_id,model,sort_order,equity_weight,k,sleeve_key,sleeve_label,composition,sleeve_target,sleeve_floor,sleeve_ceiling,target_basis,beta_floor,beta_ceiling,beta_actual,old_floor,old_ceiling,light,monetise_at,monetise_share,monetise_basis,held_now,gap,no_trade_band,action,fragility,fragility_state,headline,detail').order('sort_order', { ascending: true }), 'brake prescription'),
+    qAllSoft(() => sb.from('fragility_index').select('as_of,mfi,state').order('as_of', { ascending: false }).limit(504), 'fragility history'),
     qSoft(sb.from('latest_fragility_index').select('as_of,mfi,mfi_mean,mfi_pctile,override_leg,state,state_days,legs,n_legs,headline'), 'fragility index'),
     qAllSoft(() => sb.from('latest_fragility_episodes').select('as_of,episode,trough,depth,mfi_at_peak,state_at_peak,first_warn,lead_days,lead_to_peak,worst_mfi,verdict,headline').order('episode', { ascending: true }), 'fragility episodes'),
     qAllSoft(() => sb.from('latest_stress_results').select('as_of,family,scenario,subject,sort_order,window_from,window_to,n_obs,value,value_kind,baseline,delta,p05,p50,p95,fit_r2,extrapolated,extrapolation,verdict,headline,detail').order('sort_order', { ascending: true }), 'stress results'),
@@ -308,7 +309,7 @@ async function load() {
     turnings: turnings || [], generations: generations || [], tapeTicker: tapeTicker || [], humility: humility || [],
     narReflex: narReflex || [], creditLegs: creditLegs || [], creditReading: creditReading || [],
     svenPrecedent: svenPrecedent || [], svenBreaks: svenBreaks || [], tapeQuiet: tapeQuiet || [],
-    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [], stressTests: stressTests || [], sleeves: sleeves || [], frag: frag || [], fragEps: fragEps || [], rx: rx || [] };
+    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [], stressTests: stressTests || [], sleeves: sleeves || [], frag: frag || [], fragEps: fragEps || [], rx: rx || [], fragHist: fragHist || [] };
 }
 
 // ---------- Views ----------
@@ -345,6 +346,12 @@ function route() {
   // these are among the likeliest hashes to be sitting in a note.
   if (page === 'briefs' || page === 'inbox') { location.replace('#gail/' + page); return; }
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
+  // The collapsed menu names the tab it is standing in for, and closes itself on every navigation
+  // -- including a hash change the user made some other way, which is why it lives here and not
+  // only in the click handler.
+  setMenu(false);
+  { const on = document.querySelector('#nav a.on'), lbl = $('#menu-label');
+    if (lbl) lbl.textContent = on ? on.textContent : 'Menu'; }
   closeDrawer();
   // Keyed lookup, so this order is cosmetic rather than load-bearing — but it is kept in step
   // with the nav in index.html so the two read the same way.
@@ -1771,6 +1778,48 @@ function markets() {
   };
   const vrow = (label, v, suffix = '', title = '') => `<div class="prow"><span class="pname"${title ? ` title="${esc(title)}"` : ''}>${esc(label)}</span>
     <span class="ptkr"></span><span class="pval">${v === null ? '<span style="color:var(--muted)">–</span>' : v + suffix}</span><span class="pchg"></span></div>`;
+  // The MFI, on the page where market state is read rather than on the page where it is graded.
+  //
+  // COMPACT, BUT NOT QUIETER. A reader meeting this index on the Markets page must not take it for
+  // a timing signal: it failed its own lead test, and a short version that dropped that would be
+  // the most misleading thing on the desk. So the caveat travels with the number, and the full
+  // grading is one click away on Stan's page rather than duplicated here.
+  const mfiHist = (D.fragHist || []).slice().sort((a, b) => String(a.as_of).localeCompare(String(b.as_of)));
+  const mfiNow = (D.frag || [])[0] || null;
+  const MFI_TONE = { accelerate: 'var(--pos)', recovery: 'var(--flat)', deteriorating: 'var(--warn)', defensive: 'var(--neg)' };
+  const mfiPanel = !mfiNow ? '' : (() => {
+    const tone = MFI_TONE[mfiNow.state] || 'var(--muted)';
+    const legs = Array.isArray(mfiNow.legs) ? mfiNow.legs : [];
+    // Two years of history as a filled area. The 70th and 90th percentile lines are where the
+    // states turn, so they are drawn rather than described.
+    const W = 300, Hh = 64, pad = 2;
+    const pts = mfiHist.filter(r => r.mfi !== null);
+    const X = i => pad + (i / Math.max(1, pts.length - 1)) * (W - 2 * pad);
+    const Y = v => Hh - pad - (Math.max(0, Math.min(100, +v)) / 100) * (Hh - 2 * pad);
+    const line = pts.map((r, i) => `${X(i).toFixed(1)},${Y(r.mfi).toFixed(1)}`).join(' ');
+    const area = pts.length ? `${X(0).toFixed(1)},${(Hh - pad).toFixed(1)} ${line} ${X(pts.length - 1).toFixed(1)},${(Hh - pad).toFixed(1)}` : '';
+    const chart = pts.length < 30 ? '' : `<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:${Hh}px;display:block;margin:8px 0 4px" preserveAspectRatio="none" role="img" aria-label="Market Fragility Index, two years">
+      <line x1="${pad}" y1="${Y(70).toFixed(1)}" x2="${W - pad}" y2="${Y(70).toFixed(1)}" stroke="var(--warn)" stroke-width="0.6" stroke-dasharray="3 3" opacity="0.6"/>
+      <line x1="${pad}" y1="${Y(90).toFixed(1)}" x2="${W - pad}" y2="${Y(90).toFixed(1)}" stroke="var(--neg)" stroke-width="0.6" stroke-dasharray="3 3" opacity="0.6"/>
+      <polygon points="${area}" fill="${tone}" opacity="0.14"/>
+      <polyline points="${line}" fill="none" stroke="${tone}" stroke-width="1.3"/>
+      <circle cx="${X(pts.length - 1).toFixed(1)}" cy="${Y(pts.at(-1).mfi).toFixed(1)}" r="2.2" fill="${tone}"/></svg>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-bottom:6px">
+        <span>${esc(pts[0].as_of)}</span><span>dashed: the 70th and 90th percentiles, where the states turn</span><span>${esc(pts.at(-1).as_of)}</span></div>`;
+    return panel('Market Fragility Index', `
+      <div class="prow" style="align-items:baseline">
+        <span class="pname" style="font-size:22px;font-weight:700;color:${tone}">${(+mfiNow.mfi).toFixed(0)}<span style="font-size:11px;font-weight:400;color:var(--muted)">/100</span></span>
+        <span class="ptkr" style="color:${tone};font-weight:600">${esc(mfiNow.state)}</span>
+        <span class="pval" style="font-size:11px;color:var(--muted)">${mfiNow.mfi_pctile === null ? '' : `${(+mfiNow.mfi_pctile * 100).toFixed(0)}th pct`}</span><span class="pchg"></span></div>
+      ${chart}
+      ${subhead('The five legs, against their own three years')}
+      ${legs.map(l => `<div class="prow"><span class="pname" title="${esc(l.source)}">${esc(l.label)}</span>
+        <span class="ptkr"></span>
+        <span class="pval" style="color:${+l.pctile >= 0.90 ? 'var(--neg)' : +l.pctile >= 0.70 ? 'var(--warn)' : 'var(--muted)'}">${(+l.pctile * 100).toFixed(0)}%</span><span class="pchg"></span></div>`).join('')}
+      ${!mfiNow.override_leg ? '' : `<div class="prow"><span class="pname" style="color:var(--warn)" title="One leg past its own 95th percentile overrides the equal-weighted mean rather than being averaged into it. A mean of five legs pulls to the middle by construction, and a single thing breaking must not read the same as five things mildly elevated.">carried by ${esc(mfiNow.override_leg)}</span><span class="ptkr"></span><span class="pval"></span><span class="pchg"></span></div>`}`,
+      `Five legs scored 0–100 where rising means worsening, each ranked against its own trailing three years as they stood on that date. <b>It is a thermometer, not a forecast:</b> graded against its own kill criterion a defensive reading preceded BETTER returns over the following quarter than a calm one, so it must not be used to time risk on and off. The full grading, the episode record and the false-positive rate are on <span class="click" data-go="#stan" style="cursor:pointer;text-decoration:underline">Stan's page</span>.`);
+  })();
+
   const riskPanel = panel('Risk and volatility', `
     ${subhead('Implied volatility')}
     ${mrow('CBOE VIX', 'VIXCLS', v => v.toFixed(2), v => v === null ? 'var(--muted)' : v >= 25 ? 'var(--neg)' : v <= 14 ? 'var(--pos)' : 'var(--text)')}
@@ -2007,6 +2056,7 @@ function markets() {
   <div class="mkgrid">
     <div class="mkcol">
       ${usEquityPanel}
+      ${mfiPanel}
       ${riskPanel}
       ${grp('US equity sectors', [['XLE', 'Energy'], ['XLU', 'Utilities'], ['XLP', 'Consumer staples'], ['XLB', 'Materials'], ['XLF', 'Financials'], ['XLRE', 'Real estate'], ['XLI', 'Industrials'], ['XLV', 'Health care'], ['XLY', 'Consumer discretionary'], ['XLC', 'Communications'], ['XLK', 'Technology']])}
     </div>
@@ -7262,6 +7312,32 @@ document.addEventListener('input', e => {
   saNote = t.value;
 });
 // Leaving a weight field redraws, so the pies and the total catch up.
+// ---------------------------------------------------------------------------
+// The tab menu. Twelve tabs do not fit a laptop header and wrapping them pushed the page down by
+// two rows before anything had been read, so below the breakpoint they collapse behind a button.
+//
+// It is a button rather than a checkbox hack because it has to be closable from four directions --
+// choosing a tab, clicking away, pressing Escape, and any navigation the user made some other way
+// -- and aria-expanded has to follow all four or a screen reader is told the menu is open after it
+// has shut.
+// ---------------------------------------------------------------------------
+function setMenu(open) {
+  const nav = $('#nav'), btn = $('#menu');
+  if (!nav || !btn) return;
+  nav.classList.toggle('open', open);
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+document.addEventListener('click', e => {
+  const btn = e.target.closest('#menu');
+  // preventDefault is optional-chained because the button is a <button> with no default to
+  // prevent, and because a synthetic event dispatched without one should not take the handler down.
+  if (btn) { e.preventDefault?.(); setMenu(!$('#nav').classList.contains('open')); return; }
+  // Clicking a tab navigates, and the hashchange handler closes the menu. Clicking anywhere else
+  // outside it closes without navigating.
+  if (!e.target.closest('#nav') && $('#nav') && $('#nav').classList.contains('open')) setMenu(false);
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') setMenu(false); });
+
 document.addEventListener('change', e => {
   const t = e.target.closest('[data-sawt]'); if (!t) return;
   saRedraw();
