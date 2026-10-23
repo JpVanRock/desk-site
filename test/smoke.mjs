@@ -2115,6 +2115,70 @@ if (!argRoute) {
   }
 
   // -------------------------------------------------------------------------
+  // 17. The sleeve mix. Two guards carry this section.
+  //
+  //     THE SIGN CONVENTION. Drawdowns are negative, and the iso-drawdown solver compares them.
+  //     Written the wrong way round every guard fires on the ordinary case and the whole table
+  //     comes back empty with correct arithmetic underneath it, which is exactly what happened.
+  //     So: at zero sleeve the solver must return the baseline's own equity share, and no sleeve
+  //     may be reported at a drawdown materially deeper than the baseline it is matched to.
+  //
+  //     COMPARABILITY. The candidates do not share a window and the windows differ by more than
+  //     the sleeves do. Only `uplift` may be ranked; if the page ever sorts on raw real CAGR it is
+  //     comparing periods and calling it a comparison of sleeves.
+  // -------------------------------------------------------------------------
+  currentRoute = 'sleeve-mix';
+  await go('#stan');
+  {
+    const sv2 = app();
+    const rows = await rest('latest_sleeve_candidates', 'sleeve_key,label,composition,window_from,n_days,episodes_covered,sleeve_carry,funding_ratio,iso_weight,iso_equity,iso_real_cagr,iso_max_dd,baseline_dd,baseline_real_cagr,uplift,curve,plateau_from,plateau_to,episodes,episodes_helped,loo_rank,loo_chosen,verdict');
+    need(rows.length >= 5, `[sleeve] only ${rows.length} candidates — the table exists to choose between them`);
+    need(/Which sleeve, and how much\?/.test(sv2), '[sleeve] the card is not on the page');
+
+    let sb3 = [];
+    const baseline = rows.find(r => r.sleeve_key === 'cash');
+    for (const r of rows) {
+      const comp = Array.isArray(r.composition) ? r.composition : [];
+      if (Math.abs(comp.reduce((a, c) => a + +c.weight, 0) - 1) > 1e-6) sb3.push(`${r.sleeve_key}: composition does not sum to 1`);
+      if (r.iso_equity !== null && (+r.iso_equity < 0.3 || +r.iso_equity > 1)) sb3.push(`${r.sleeve_key}: iso equity ${r.iso_equity} is not a share`);
+      // The solver must have matched the drawdown it claims to match.
+      if (r.iso_max_dd !== null && +r.iso_max_dd < +r.baseline_dd - 5e-3)
+        sb3.push(`${r.sleeve_key}: reported at a ${(r.iso_max_dd * 100).toFixed(1)}% drawdown against a baseline of ${(r.baseline_dd * 100).toFixed(1)}%`);
+      if (+r.baseline_dd >= 0) sb3.push(`${r.sleeve_key}: a baseline drawdown of ${r.baseline_dd} is not a drawdown — the sign convention has flipped`);
+      if (r.uplift !== null && Math.abs(+r.uplift - (+r.iso_real_cagr - +r.baseline_real_cagr)) > 1e-4)
+        sb3.push(`${r.sleeve_key}: uplift is not the iso return minus its own baseline`);
+      // Zero sleeve must mean zero gas and zero uplift, or the solver is not solving the equation.
+      if (+r.iso_weight === 0) {
+        if (Math.abs(+r.iso_equity - 0.70) > 5e-3) sb3.push(`${r.sleeve_key}: zero sleeve yet ${(r.iso_equity * 100).toFixed(1)}% equity — the solver disagrees with its own baseline`);
+        if (Math.abs(+r.uplift) > 1e-4) sb3.push(`${r.sleeve_key}: zero sleeve yet an uplift of ${r.uplift}`);
+      }
+      if (r.verdict === 'preferred') {
+        if (!(+r.uplift >= 0.02)) sb3.push(`${r.sleeve_key}: preferred on an uplift of ${r.uplift}`);
+        if (r.episodes_covered < 2) sb3.push(`${r.sleeve_key}: preferred on ${r.episodes_covered} drawdown(s)`);
+      }
+      if (r.episodes_covered < 2 && r.verdict !== 'untested') sb3.push(`${r.sleeve_key}: judged "${r.verdict}" on ${r.episodes_covered} drawdown(s)`);
+      if (r.plateau_from !== null && +r.plateau_from > +r.plateau_to) sb3.push(`${r.sleeve_key}: an inverted plateau`);
+      // The curve must be monotone in nothing, but it must be a curve.
+      const curve = Array.isArray(r.curve) ? r.curve : [];
+      if (curve.length < 5) sb3.push(`${r.sleeve_key}: a weight curve of ${curve.length} points is not a surface`);
+      for (const c of curve) if (c.equity !== null && (+c.equity < 0 || +c.equity > 1)) sb3.push(`${r.sleeve_key}: a curve point with equity ${c.equity}`);
+    }
+    // Cash must buy nothing. If T-bills ever read as buying gas, the solver is broken.
+    if (baseline) need(Math.abs(+baseline.uplift) < 1e-4, `[sleeve] T-bills report an uplift of ${baseline.uplift} — holding cash cannot buy gas at equal drawdown`);
+    need(/Added.{0,80}only column comparable across rows/is.test(sv2), '[sleeve] the page does not warn that raw real CAGR is not comparable');
+    need(/plateau, not peak/i.test(sv2), '[sleeve] the page does not explain why a plateau is reported instead of a best weight');
+    need(/one drawdown is an anecdote/i.test(sv2), '[sleeve] the page does not say why a thin record is marked untested');
+
+    sb3 = [...new Set(sb3)];
+    for (const b of sb3) errors.push(`[sleeve] ${b}`);
+    need(sb3.length === 0, `[sleeve] ${sb3.length} problem(s) above`);
+    const pref = rows.filter(r => r.verdict === 'preferred').sort((a, b) => +b.uplift - +a.uplift);
+    say(` ok  sleeve mix             -> ${rows.length} candidates, ${pref.length} preferred${pref.length ? `, best ${pref[0].label} +${(+pref[0].uplift * 100).toFixed(2)}pp at ${(+pref[0].iso_equity * 100).toFixed(0)}% equity` : ''}`);
+    const cur = rows.find(r => r.sleeve_key === 'current');
+    if (cur) say(` ok  sleeve as held        -> ${(+cur.iso_equity * 100).toFixed(0)}% equity supported, uplift ${(+cur.uplift * 100).toFixed(2)}pp, ${cur.episodes_covered} drawdown(s), ${cur.verdict}`);
+  }
+
+  // -------------------------------------------------------------------------
   // 14. Kate, from The Alchemy of Finance: the equilibrium gate, the successful-test count, the
   //     asymmetry, the credit panel and the named flaw.
   //

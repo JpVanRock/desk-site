@@ -103,7 +103,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, sleeves] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -208,6 +208,7 @@ async function load() {
     // Which brake is worth owning, measured rather than modelled.
     qAllSoft(() => sb.from('latest_insurance_value').select('as_of,instrument,label,sort_order,window_key,window_from,window_to,n_days,n_stress,drawdowns_seen,crash_1pct,crash_5pct,worst_day_offset,carry_daily,carry_annual,free_carry,payoff_per_carry,carry_days_repaid,offset_per_1pct,corr_calm,corr_stress,corr_shift,episodes,episodes_helped,worst_episode,verdict,headline,detail').order('sort_order', { ascending: true }), 'insurance value'),
     qSoft(sb.from('latest_insurance_pricing').select('as_of,vix,vix_3m,realised_21d,vol_premium,vol_premium_pctile,term_ratio,term_state,term_pctile,verdict,headline,detail'), 'insurance pricing'),
+    qAllSoft(() => sb.from('latest_sleeve_candidates').select('as_of,sleeve_key,label,sort_order,rationale,composition,window_from,window_to,n_days,episodes_covered,sleeve_carry,sleeve_crash,funding_ratio,iso_weight,iso_equity,iso_real_cagr,iso_max_dd,iso_days_under,baseline_dd,baseline_real_cagr,uplift,curve,best_weight,plateau_from,plateau_to,episodes,episodes_helped,loo_rank,loo_chosen,verdict,headline,detail').order('sort_order', { ascending: true }), 'sleeve candidates'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -303,7 +304,7 @@ async function load() {
     turnings: turnings || [], generations: generations || [], tapeTicker: tapeTicker || [], humility: humility || [],
     narReflex: narReflex || [], creditLegs: creditLegs || [], creditReading: creditReading || [],
     svenPrecedent: svenPrecedent || [], svenBreaks: svenBreaks || [], tapeQuiet: tapeQuiet || [],
-    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [] };
+    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [], sleeves: sleeves || [] };
 }
 
 // ---------- Views ----------
@@ -1074,6 +1075,62 @@ function stan() {
     </div>`;
   })();
 
+  // ---- Which sleeve, and how much ----
+  //
+  // THERE IS NO OPTIMISER BEHIND THIS TABLE, deliberately. Searching weights against realised
+  // drawdown would report the single most overfit point on the surface, fitted to a handful of
+  // episodes, and it would move every time another drawdown is added. Each candidate here exists
+  // to test one claim instead, and the comparison is arranged so the weight choice cannot flatter
+  // anything: every sleeve is scaled until the book's worst drawdown is back to the unbraked
+  // baseline's, and then compared on real compounding at equal realised risk.
+  //
+  // THE DIAL IS EQUITY, WHICH IS THE WHOLE THESIS. A working brake lowers drawdown at every
+  // weight, so "scale until drawdown matches" has no answer above zero. Turning it the other way
+  // asks the question the owner actually asks: how much more gas does this brake let the book
+  // carry before the drawdown comes back?
+  const sleeves = (D.sleeves || []).slice().sort((a, b) => (+b.uplift ?? -9) - (+a.uplift ?? -9));
+  const SLV_LOOK = {
+    preferred: { label: 'preferred', tone: 'var(--pos)',   short: 'Adds at least two points of real compounding a year at the same drawdown, across three or more drawdowns of record.' },
+    viable:    { label: 'viable',    tone: 'var(--flat)',  short: 'Adds real compounding at the same drawdown, but less than two points a year.' },
+    costly:    { label: 'costly',    tone: 'var(--warn)',  short: 'Buys gas, but the gas does not compound into much after what the sleeve costs to hold.' },
+    rejected:  { label: 'rejected',  tone: 'var(--neg)',   short: 'Supports no more equity than the unbraked book at the same drawdown. An expensive way to hold what you already hold.' },
+    untested:  { label: 'untested',  tone: 'var(--line)',  short: 'Fewer than two drawdowns of record on this exact combination. One drawdown is an anecdote whatever it says.' },
+  };
+  const sleeveCard = !sleeves.length ? '' : (() => {
+    const p2 = (v, d = 2) => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : '\u2212'}${Math.abs(+v * 100).toFixed(d)}%`;
+    const held = sleeves.find(s => s.sleeve_key === 'current') || null;
+    const top = sleeves.find(s => s.verdict === 'preferred') || null;
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Which sleeve, and how much?</h2>
+        <span style="font-size:12px;color:var(--muted)">${esc(sleeves[0].as_of)} · ${sleeves.length} candidates · iso-drawdown</span></div>
+      <p class="note" style="margin:8px 0 12px">Each sleeve is scaled until the book's worst drawdown is back to the unbraked baseline's, and the equity share is raised to spend the protection. <b>At equal realised risk, how much more does it compound after inflation?</b> Sharpe is deliberately absent: it treats upside and downside variance alike and underweights the return the client actually spends.</p>
+      <div style="overflow-x:auto"><table style="min-width:900px"><thead><tr>
+        <th>Candidate</th><th class="num">Added</th><th class="num">Equity</th><th class="num">Sleeve</th>
+        <th class="num">Plateau</th><th class="num">Funding</th><th class="num">Drawdowns</th><th>Verdict</th></tr></thead><tbody>
+        ${sleeves.map(r => {
+          const L = SLV_LOOK[r.verdict] || SLV_LOOK.untested;
+          const comp = (Array.isArray(r.composition) ? r.composition : []).map(c => `${c.ticker} ${(c.weight * 100).toFixed(0)}`).join(' / ');
+          const eps = Array.isArray(r.episodes) ? r.episodes : [];
+          const tip = `${r.rationale}\n\n${r.detail || ''}`;
+          return `<tr${r.sleeve_key === 'current' ? ' style="background:var(--panel2)"' : ''}>
+            <td data-tip="${esc(tip)}" style="cursor:default"><b>${esc(r.label)}</b>${r.sleeve_key === 'current' ? ' <span class="chip" style="font-size:9px">held</span>' : ''}<br><span style="font-size:11px;color:var(--muted)">${esc(comp)}</span></td>
+            <td class="num"><b style="color:${+r.uplift > 0 ? 'var(--pos)' : 'var(--muted)'};font-size:15px">${p2(r.uplift)}</b></td>
+            <td class="num" style="color:${+r.iso_equity > 0.7 ? 'var(--pos)' : 'var(--muted)'}">${r.iso_equity === null ? '—' : (+r.iso_equity * 100).toFixed(1) + '%'}</td>
+            <td class="num">${r.iso_weight === null ? '—' : (+r.iso_weight * 100).toFixed(1) + '%'}</td>
+            <td class="num" style="font-size:11px;color:var(--muted)">${r.plateau_from === null ? '—' : `${(+r.plateau_from * 100).toFixed(0)}–${(+r.plateau_to * 100).toFixed(0)}%`}</td>
+            <td class="num" title="The positively-carrying legs' earnings over the bleeding legs' cost. Above 1.0 the sleeve pays for itself.">${r.funding_ratio === null ? '<span style="color:var(--muted)">n/a</span>' : `<span style="color:${+r.funding_ratio >= 1 ? 'var(--pos)' : 'var(--neg)'}">${(+r.funding_ratio).toFixed(2)}</span>`}</td>
+            <td class="num" style="color:${r.episodes_covered < 3 ? 'var(--warn)' : 'var(--muted)'}">${r.episodes_covered}${eps.length ? ` <span style="font-size:10px">(${r.episodes_helped} helped)</span>` : ''}</td>
+            <td title="${esc(L.short)}"><span style="color:${L.tone};font-weight:600">${esc(L.label)}</span></td></tr>`;
+        }).join('')}
+      </tbody></table></div>
+      <p class="note" style="margin-top:12px"><b>Added</b> is the only column comparable across rows. Raw real CAGR is not: CAOS was listed in 2023 and QMHIX in 2013, so the held sleeve is measurable over one drawdown and a managed-futures sleeve over five — and the unbraked book itself returned ${held ? p2(held.baseline_real_cagr, 1) : '—'} real over the first window against ${top ? p2(top.baseline_real_cagr, 1) : '—'} over the second. Ranking the raw figure compares periods and calls it a comparison of sleeves.</p>
+      <p class="note"><b>Equity is the answer to the brake question.</b> The baseline runs 70%. A sleeve that supports more than that bought gas at no extra drawdown; one that supports exactly 70% bought nothing.${top ? ` ${esc(top.label)} supports <b>${(+top.iso_equity * 100).toFixed(0)}%</b>.` : ''}${held ? ` <b>The sleeve as held supports ${(+held.iso_equity * 100).toFixed(0)}%</b> — its own best weight is ${(+held.iso_weight * 100).toFixed(0)}%, which on the one drawdown it has lived through means it is not yet earning its place.` : ''}</p>
+      <p class="note"><b>Plateau, not peak.</b> The range where real compounding is within 10bp of this sleeve's best. Where it is wide the exact weight is not a decision and quoting one would be false precision; where it is narrow the weight matters. Reporting the plateau is what keeps the answer stable when the next drawdown is added — an argmax would move every time.</p>
+      <p class="note"><b>Drawdowns</b> counts the reference book's 10%-plus falls inside each sleeve's own shared history, with how many the braked book came through better than the unbraked one. <b>A candidate with fewer than two is marked untested whatever its numbers say</b>, because one drawdown is an anecdote. That is the honest verdict on the sleeve currently held, and it is a fact about its constituents' listing dates rather than about its design.</p>
+    </div>`;
+  })();
+
   // ---- Model Surveillance ----
   // A performance cell: green when ahead, red when behind, with the comparison named in the
   // tooltip so a colour never has to be guessed at.
@@ -1307,7 +1364,7 @@ function stan() {
         <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
     }).join('')}
    </div>
-   ${cautionCard}${insCard}${tapeCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
+   ${cautionCard}${sleeveCard}${insCard}${tapeCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
 }
 
 // ---------- Markets: a trading desk's wall, not a spreadsheet ----------
