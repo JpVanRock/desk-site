@@ -1166,6 +1166,58 @@ if (!argRoute) {
   }
 
   // -------------------------------------------------------------------------
+  // 9c2. The ticker tape: does the tape agree?
+  //      It sits between the Speed Limit and Model Surveillance because that is the argument it
+  //      settles -- the light is a judgment, the tape is arithmetic. The guards are that every
+  //      correlation is a correlation, that the agreement verdict follows the two signs it is
+  //      drawn from, and that the loop renders each item twice so the scroll is seamless.
+  // -------------------------------------------------------------------------
+  currentRoute = 'tape';
+  await go('#stan');
+  {
+    const tp = app();
+    need(/Does the tape agree\?/.test(tp), '[tape] the ticker is missing from Stan\'s page');
+    need(/class="tapetrack"/.test(tp), '[tape] the scrolling track did not render');
+    // Between the Speed Limit and Model Surveillance, which is where the argument belongs.
+    need(tp.indexOf('Speed Limit') < tp.indexOf('Does the tape agree'), '[tape] the ticker is above the Speed Limit');
+    need(tp.indexOf('Does the tape agree') < tp.indexOf('Model Surveillance'), '[tape] the ticker is below Model Surveillance');
+
+    const tk = await rest('latest_tape_ticker', 'measure,horizon,label,value,value_kind,secondary,verdict,return_days,lookback_days,n_obs');
+    need(tk.length === 16, `[tape] ${tk.length} ticker rows, expected 16 (4 measures x 4 horizons)`);
+    const measures = [...new Set(tk.map(x => x.measure))].sort();
+    need(measures.join(',') === 'agreement,brakes,correlation,dollar', `[tape] measures are ${measures.join(',')}`);
+    const horizons = [...new Set(tk.map(x => x.horizon))].sort();
+    need(horizons.join(',') === '1d,1m,1w,2d', `[tape] horizons are ${horizons.join(',')}`);
+    let tb = [];
+    for (const r of tk) {
+      if (r.value_kind === 'correlation' && r.value !== null && (+r.value < -1.0001 || +r.value > 1.0001))
+        tb.push(`${r.label} correlation ${r.value} is outside -1..1`);
+      if (r.measure === 'brakes' && r.secondary !== null && (+r.secondary < -1.0001 || +r.secondary > 1.0001))
+        tb.push(`${r.label} book correlation ${r.secondary} is outside -1..1`);
+      // A correlation without an interval and a window is not a number.
+      if (r.value_kind === 'correlation' && r.value !== null && (!r.return_days || !r.lookback_days))
+        tb.push(`${r.label} reports a correlation without its interval or lookback`);
+      // The agreement verdict must follow the two signs it is drawn from.
+      if (r.measure === 'agreement' && r.verdict === 'agree' && r.value !== null && +r.secondary !== 0
+          && Math.sign(+r.value) !== +r.secondary) tb.push(`${r.label} says agree while the signs differ`);
+      if (r.measure === 'agreement' && r.verdict === 'disagree' && r.value !== null && +r.secondary !== 0
+          && Math.sign(+r.value) === +r.secondary) tb.push(`${r.label} says disagree while the signs match`);
+    }
+    tb = [...new Set(tb)];
+    for (const b of tb) errors.push(`[tape] ${b}`);
+    // Each item must appear twice, or the scroll jumps when it loops.
+    const first = tk.find(x => x.measure === 'agreement' && x.horizon === '1d');
+    if (first) {
+      const hits = (tp.match(new RegExp(first.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+      need(hits >= 2, `[tape] "${first.label}" appears ${hits} time(s); the track needs each item twice to loop seamlessly`);
+    }
+    // The brakes must be shown with their correlation to the book they offset.
+    need(/vs book/.test(tp), '[tape] the brakes are shown without their correlation to the risk book');
+    const brakes = tk.filter(x => x.measure === 'brakes' && x.secondary !== null);
+    say(` ok  tape ticker            -> ${tk.length} rows, brakes vs book ${brakes.map(b => (+b.secondary).toFixed(2)).join(' / ')}, ${tb.length} problems`);
+  }
+
+  // -------------------------------------------------------------------------
   // 9d. Stan: what the risk figures cannot say.
   //     The point of this card is to state the limits of every other number on the page, so the
   //     guards are about honesty rather than arithmetic: a window must never be shown as worse

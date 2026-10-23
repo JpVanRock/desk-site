@@ -102,7 +102,7 @@ async function load() {
   // — it just renders the wrong table's rows. That happened: five queries added before the
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
-  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, humility] = await Promise.all([
+  const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility] = await Promise.all([
     q(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order')),
     q(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null)),
     q(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note')),
@@ -192,6 +192,7 @@ async function load() {
     qAllSoft(() => sb.from('current_macro_readings').select('series_id,fred_code,name,value,obs_date,unit'), 'macro now'),
     qAllSoft(() => sb.from('saeculum_turnings').select('seq,turning,name,mood,start_year,end_year,uncertain,description').order('seq', { ascending: true }), 'turnings'),
     qAllSoft(() => sb.from('generations').select('name,birth_from,birth_to,sample,sort_order').order('sort_order', { ascending: true }), 'generations'),
+    qAllSoft(() => sb.from('latest_tape_ticker').select('as_of,measure,horizon,sort_order,label,value,value_kind,secondary,verdict,detail,return_days,lookback_days,n_obs').order('sort_order', { ascending: true }), 'tape ticker'),
     qAllSoft(() => sb.from('latest_risk_humility').select('as_of,scope,strategy_id,window_days,window_worst,history_days,history_worst,history_worst_date,coverage,calm_streak,calm_streak_pctile,vol_pctile,drawdown_now,near_high_share,avg_pair_corr,complacency,complacency_legs,sim_paths,sim_p05,sim_p50,sim_p95,sim_dd_median,sim_dd_p95,sim_worse_share,beta_up,beta_down,convexity_gap,hit_rate,avg_win,avg_loss,skew,n_live,n_departed,headline'), 'risk humility'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
@@ -285,7 +286,7 @@ async function load() {
     narAttention: narAttention || [], narratives: narratives || [],
     decisionQuality: decisionQuality || [], quadHistory: quadHistory || [],
     netLiq: netLiq || [], gli: gli || [], macroNow: macroNow || [],
-    turnings: turnings || [], generations: generations || [], humility: humility || [] };
+    turnings: turnings || [], generations: generations || [], tapeTicker: tapeTicker || [], humility: humility || [] };
 }
 
 // ---------- Views ----------
@@ -863,6 +864,60 @@ function stan() {
     return `<span title="${esc(b.note || '')}">${lightDot(b.light, 9)} <span style="color:${LIGHT_COLOR[b.light]}">${n(b.actual_beta) === null ? '–' : n(b.actual_beta).toFixed(2) + '×'}</span></span>`;
   };
 
+  // ---- The ticker tape: does the tape agree? ----
+  //
+  // Sits between the Speed Limit and Model Surveillance because that is the argument it settles.
+  // The Speed Limit above is a JUDGMENT, assembled from what the desk's sources have said. The
+  // tape is ARITHMETIC. When the two disagree, one of them is wrong, and the disagreement is
+  // worth more than either reading alone.
+  //
+  // The items are rendered twice into one track so the scroll loops seamlessly -- the animation
+  // moves exactly one copy's width. Everything a reader needs to interpret a figure is in its
+  // title attribute, because a number that scrolls past without its interval and lookback is a
+  // decoration rather than a measurement.
+  const tape = (D.tapeTicker || []).slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const tapeCard = !tape.length ? '' : (() => {
+    const tpc = v => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : ''}${(+v * 100).toFixed(2)}%`;
+    const VERDICT = {
+      agree:      ['agrees',     'var(--pos)'],
+      disagree:   ['DISAGREES',  'var(--neg)'],
+      mixed:      ['no call',    'var(--muted)'],
+      calm:       ['calm',       'var(--pos)'],
+      tightening: ['tightening', 'var(--flat)'],
+      tight:      ['TIGHT',      'var(--neg)'],
+    };
+    const item = r => {
+      const kind = r.value_kind;
+      const v = r.value === null || r.value === undefined ? null : +r.value;
+      // A correlation is not a return: it is shown on its own scale, and high is the warning.
+      const shown = v === null ? '—' : kind === 'correlation' ? v.toFixed(2) : tpc(v);
+      const tone = v === null ? 'var(--muted)'
+        : kind === 'correlation' ? (v >= 0.8 ? 'var(--neg)' : v >= 0.6 ? 'var(--flat)' : 'var(--pos)')
+        : v >= 0 ? 'var(--pos)' : 'var(--neg)';
+      const vd = r.verdict && VERDICT[r.verdict] ? VERDICT[r.verdict] : null;
+      const sec = r.measure === 'brakes' && r.secondary !== null && r.secondary !== undefined
+        ? `<span class="tapetag" style="color:${+r.secondary < -0.2 ? 'var(--pos)' : +r.secondary > 0.2 ? 'var(--neg)' : 'var(--flat)'}">vs book ${(+r.secondary).toFixed(2)}</span>` : '';
+      return `<span class="tapeitem" title="${esc(r.detail || '')}">
+        <span class="tapelabel">${esc(r.label)}</span>
+        <span class="tapeval" style="color:${tone}">${shown}</span>
+        ${vd ? `<span class="tapetag" style="color:${vd[1]};border-color:${vd[1]}44">${esc(vd[0])}</span>` : ''}
+        ${sec}</span>`;
+    };
+    const strip = tape.map(item).join('');
+    const stamp = tape[0] && tape[0].as_of ? new Date(tape[0].as_of) : null;
+    const ageMin = stamp ? Math.round((Date.now() - stamp.getTime()) / 60000) : null;
+    const anyDisagree = tape.some(r => r.verdict === 'disagree');
+    const anyTight = tape.some(r => r.verdict === 'tight');
+    return `<div style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:6px">
+        <div style="font-size:13px;font-weight:700">Does the tape agree?${anyDisagree ? ' <span style="color:var(--neg)">— not on every horizon</span>' : ''}${anyTight ? ' <span style="color:var(--neg)">— correlations are tight</span>' : ''}</div>
+        <div style="font-size:11.5px;color:var(--muted)">${stamp ? `as of ${esc(stamp.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}` : ''}${ageMin !== null && ageMin > 150 ? ` · <b style="color:var(--warn)">${ageMin < 1440 ? Math.round(ageMin / 60) + ' hours' : Math.round(ageMin / 1440) + ' days'} old</b>` : ''} · hourly while the US market is open</div>
+      </div>
+      <div class="tape"><div class="tapetrack">${strip}${strip}</div></div>
+      <p class="note" style="margin:0">The Speed Limit above is a <b>judgment</b> assembled from what the desk's sources have said; this is <b>arithmetic</b>. Where they disagree, one of them is wrong. <b>Correlation</b> is the average absolute pairwise correlation across US stocks, developed international, emerging markets, aggregate bonds, gold and silver — it is watching for the convergence on 1 where a portfolio that looks diversified is one position wearing six names. <b>Brakes</b> is 20% VIXM, 20% CAOS, 60% KMLM, shown with its correlation to a 50/10/10/30 risk book: brakes are what let the desk carry risk at all, and a correlation drifting toward zero means they have stopped being brakes. Each horizon sets the <b>return interval</b> being correlated, with the lookback that supplies the sample — hover any item for both. CAOS begins in March 2023, so the longer brake horizons rest on few observations.</p>
+    </div>`;
+  })();
+
   // ---- Model Surveillance ----
   // A performance cell: green when ahead, red when behind, with the comparison named in the
   // tooltip so a colour never has to be guessed at.
@@ -1096,7 +1151,7 @@ function stan() {
         <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
     }).join('')}
    </div>
-   ${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
+   ${tapeCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
 }
 
 // ---------- Markets: a trading desk's wall, not a spreadsheet ----------
