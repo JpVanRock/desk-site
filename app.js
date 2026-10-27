@@ -411,7 +411,7 @@ function route() {
   closeDrawer();
   // Keyed lookup, so this order is cosmetic rather than load-bearing — but it is kept in step
   // with the nav in index.html so the two read the same way.
-  const pages = { markets, sisyphus, stan, annie, adam, neil, sven, kate, gail, sandbox, signals, admin };
+  const pages = { markets, sisyphus, stan, research, annie, adam, neil, sven, kate, gail, sandbox, signals, admin };
   // A HOLLOW DASHBOARD MUST NOT LOOK LIKE A REAL ONE.
   //
   // Making the core tables soft stopped one busy minute in the database from blanking the whole
@@ -944,7 +944,18 @@ function positionScatter() {
 // allocation table it replaced: where each model's risk actually sits, which positions carry more
 // of it than their weight, and how each one scores against the desk's own stress scenarios.
 // Everything here is already computed by the nightly jobs — nothing is derived in the browser.
-function stan() {
+// Stan's page takes a mode. 'dashboard' is the default and carries only what a reader can act on
+// today; 'research' carries the measurement behind it -- the cost-of-caution scoreboard, the sleeve
+// candidates, the stress programme and the insurance episodes. Those four are backtests and
+// historical episode studies: worth keeping, worth auditing, and not decisions. Mixing them into
+// the dashboard made a nine-card page where the two cards that need acting on sat fourth and sixth.
+//
+// A MODE RATHER THAN AN EXTRACTION. Every card here is built from the same locals -- D, the
+// formatters, the per-model joins -- and lifting four of them to module scope would mean threading
+// all of that through as arguments for no behavioural gain. The cards are built either way and the
+// template picks; that costs a few milliseconds of string building and keeps one source of truth.
+function research() { return stan('research'); }
+function stan(mode = 'dashboard') {
   const n = v => v === null || v === undefined ? null : +v;
   const pc = (v, d = 1) => v === null ? '<span style="color:var(--muted)">–</span>'
     : `<span style="color:${v >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(v >= 0 ? '+' : '') + (v * 100).toFixed(d)}%</span>`;
@@ -1248,16 +1259,66 @@ function stan() {
     hold:    { label: 'at target', tone: 'var(--pos)' },
     no_data: { label: 'no data', tone: 'var(--line)' },
   };
+  // THE REGIME, read off the Speed Limit and the MFI together.
+  //
+  // The two answer different questions and neither is sufficient alone. The Speed Limit is the
+  // desk's own maintained stance -- how much gas it is willing to apply. The MFI is arithmetic over
+  // price -- how fragile the market is underneath. A green light over a deteriorating tape is not
+  // the same instruction as a green light over a calm one, and before this the page showed the two
+  // side by side and left the reader to combine them.
+  //
+  // IT INTRODUCES NO NEW FITTED NUMBER, deliberately. The brake target still comes from the
+  // sleeve's own measured plateau times the mandate's equity share; the regime does not scale it.
+  // What the regime changes is how urgent a gap is -- being 10 points under the prescription is a
+  // housekeeping item in a calm tape and a live exposure in a fragile one. Adding a regime
+  // multiplier would have been a free parameter bought with nothing, which is the overtraining the
+  // desk's own rule warns about.
+  const regime = (() => {
+    const light = (D.speedLimit || [])[0]?.light || rx[0]?.light || null;
+    const f = (D.frag || [])[0] || null;
+    if (!light && !f) return null;
+    const stressed = f && (f.state === 'deteriorating' || f.state === 'defensive');
+    const gas = light === 'green' ? 'willing' : light === 'yellow' ? 'measured' : light === 'red' ? 'unwilling' : null;
+    const name = !light || !f ? 'Partial read'
+      : stressed && light === 'green' ? 'Brake while invested'
+      : stressed && light === 'yellow' ? 'Brake harder'
+      : stressed ? 'Maximum brake'
+      : light === 'green' ? 'Press on'
+      : light === 'yellow' ? 'Measured'
+      : 'Caution';
+    const tone = !light || !f ? 'var(--muted)'
+      : stressed && light !== 'red' ? 'var(--warn)' : stressed ? 'var(--neg)'
+      : light === 'green' ? 'var(--pos)' : 'var(--flat)';
+    const says = !light || !f
+      ? 'One of the two readings is missing, so the regime is not called.'
+      : stressed
+        ? `Fragility is ${f.mfi === null ? '—' : (+f.mfi).toFixed(0)} and ${esc(f.state)} while the Speed Limit is ${esc(light)}. The market is the fragile half of this pair, so a mandate sitting under its brake target is carrying that fragility unhedged rather than simply being untidy.`
+        : `Fragility is ${f.mfi === null ? '—' : (+f.mfi).toFixed(0)} and ${esc(f.state)} with the Speed Limit ${esc(light)}. Nothing in the tape is asking for more brake than the standing prescription; a gap here is housekeeping, not exposure.`;
+    return { name, tone, light, f, gas, stressed, says };
+  })();
+
   const rxCard = !rx.length ? '' : (() => {
     const p2 = (v, d = 1) => v === null || v === undefined ? '—' : `${(+v * 100).toFixed(d)}%`;
     const r0 = rx[0];
+    const inLine = rx.filter(r => r.action === 'hold').length;
     const comp = (Array.isArray(r0.composition) ? r0.composition : []).map(c => `${c.ticker} ${(c.weight * 100).toFixed(0)}%`).join(' · ');
     const nAdd = rx.filter(r => r.action === 'add').length;
     const below = rx.filter(r => r.beta_actual !== null && +r.beta_actual < +r.beta_floor);
     return `<div class="card" style="margin-bottom:14px;border:1px solid var(--accent)">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
-        <h2 style="margin:0">The prescription</h2>
+        <h2 style="margin:0">Regime and alignment</h2>
         <span style="font-size:12px;color:var(--muted)">${esc(r0.as_of)} · ${esc(r0.sleeve_label || '')} · ${esc(comp)}</span></div>
+      ${!regime ? '' : `<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:stretch;margin-top:10px">
+        <div style="flex:1 1 260px;border:1px solid var(--line);border-left:3px solid ${regime.tone};border-radius:6px;padding:10px 12px">
+          <div class="eyebrow" style="color:${regime.tone}">Regime · ${esc(regime.name)}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px;font-variant-numeric:tabular-nums">
+            Speed Limit <b style="color:var(--fg)">${esc(regime.light || '—')}</b> · MFI <b style="color:var(--fg)">${regime.f && regime.f.mfi !== null ? (+regime.f.mfi).toFixed(0) : '—'}</b> ${regime.f ? esc(regime.f.state) : ''}</div>
+          <div style="font-size:12px;margin-top:6px;line-height:1.45">${regime.says}</div></div>
+        <div style="flex:0 0 150px;border:1px solid var(--line);border-radius:6px;padding:10px 12px">
+          <div class="eyebrow">Alignment</div>
+          <div style="font-size:22px;font-variant-numeric:tabular-nums;line-height:1.2;color:${inLine === rx.length ? 'var(--pos)' : nAdd ? 'var(--warn)' : 'var(--fg)'}">${inLine}<span style="font-size:13px;color:var(--muted)"> of ${rx.length}</span></div>
+          <div style="font-size:11px;color:var(--muted)">mandates inside their band${nAdd ? ` · ${nAdd} under` : ''}</div></div>
+      </div>`}
       <p class="note" style="margin:8px 0 14px"><b>Raise the brake, not the cash.</b> The old rule cut beta to as little as half the benchmark when the light turned; the scoreboard priced that instruction at roughly <b>5.2% a year</b> of forgone return across fifty months. The sleeve was measured to support <b>1.14×</b> the reference book's equity at the same drawdown, so the band is now set around the benchmark instead of away from it.</p>
       <div style="overflow-x:auto"><table style="min-width:860px"><thead><tr>
         <th>Model</th><th class="num">Equity</th><th class="num">k</th><th class="num">Sleeve target</th><th class="num">Held</th>
@@ -1720,8 +1781,12 @@ function stan() {
     <p class="note" style="margin:0"><b>${hum.n_departed} of ${hum.n_live} tracked securities have stopped printing</b>, and that number is a <b>floor on what is missing, not a count of it</b>. Every peer median, blend fit and classification on this site is computed across names that still exist; the universe was assembled from survivors, so the funds that closed before this desk ever looked cannot appear in any figure here and never will. "We see the wealth being generated, never the processor, and never the losers."</p>
   </div>`;
 
+  if (mode === 'research') return `<span class="eyebrow">Risk</span><h1>Research</h1>
+   <p class="sub">The measurement behind the brake, kept off the dashboard because none of it is a decision for today. These are backtests and historical episode studies: the cost the old caution rule actually carried, the sleeve candidates and how they were chosen, the stress programme including the tests the brake failed, and what each instrument paid at past troughs. <b>Every window here is a past one</b> — read it to understand why the prescription says what it says, not to decide what to do this morning.</p>
+   ${cautionCard}${sleeveCard}${stressCard}${insCard}${docsCard}`;
+
   return `<span class="eyebrow">Risk</span><h1>Stan</h1>
-   <p class="sub">Where the risk sits across the eight models, what is flagged, and what the risk figures cannot say.</p>
+   <p class="sub">Where the risk sits across the eight models, what is flagged, and what the risk figures cannot say. The backtests and episode studies behind the brake live on <a href="#research">Research</a>.</p>
    <div class="kpis" style="grid-template-columns:repeat(5,1fr)">
     <div class="card kpi click" data-go="#stan/speed-limit" style="cursor:pointer" title="Open the master Speed Limit and how each model sits against it">
       <span class="eyebrow">Speed Limit</span>
@@ -1736,7 +1801,7 @@ function stan() {
         <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
     }).join('')}
    </div>
-   ${tapeCard}${riskTable}${ladderCard}${rxCard}${cautionCard}${fragCard}${sleeveCard}${stressCard}${insCard}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
+   ${tapeCard}${riskTable}${ladderCard}${rxCard}${fragCard}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
 }
 
 // ---------- Markets: a trading desk's wall, not a spreadsheet ----------

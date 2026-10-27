@@ -1052,7 +1052,9 @@ if (!argRoute) {
   {
     const nav = readFileSync(join(SITE, 'index.html'), 'utf8');
     const order = [...nav.matchAll(/<a href="#([a-z]+)">/g)].map(m => m[1]);
-    const want = ['markets', 'sisyphus', 'stan', 'annie', 'adam', 'neil', 'sven', 'kate', 'gail', 'sandbox', 'signals', 'admin'];
+    // research sits next to stan: it holds the backtests and episode studies that used to crowd
+    // Stan's dashboard, and the order matters because the nav doubles as the mobile menu.
+    const want = ['markets', 'sisyphus', 'stan', 'research', 'annie', 'adam', 'neil', 'sven', 'kate', 'gail', 'sandbox', 'signals', 'admin'];
     say(` ok  nav order              -> ${order.join(' · ')}`);
 
   // ---- the tab menu ----
@@ -1074,7 +1076,7 @@ if (!argRoute) {
     need(/aria-controls="nav"/.test(html), '[menu] the button does not say what it controls');
     need(/aria-expanded="false"/.test(html), '[menu] the button does not start collapsed');
     need(/id="menu-label"/.test(html), '[menu] the button has no label element to name the current tab');
-    need((html.match(/<a href="#[a-z]+">/g) || []).length === 12, '[menu] the nav no longer carries all twelve links in the document');
+    need((html.match(/<a href="#[a-z]+">/g) || []).length === 13, '[menu] the nav no longer carries all thirteen links in the document');
     // CSS: the button is hidden by default and the nav collapses only below the breakpoint, so a
     // wide screen is untouched.
     need(/#menu\{display:none/.test(css), '[menu] the button is not hidden on wide screens');
@@ -2050,7 +2052,11 @@ if (!argRoute) {
     need(bd.length > 0, '[scoreboard] nothing computed');
     const firm = bd.filter(r => r.scope === 'posture' && !r.strategy_id).sort((a, b) => String(a.period).localeCompare(String(b.period)));
     need(firm.length > 12, `[scoreboard] only ${firm.length} firm months — the record should span years`);
-    need(/What has caution cost\?/.test(stKpi), '[scoreboard] the card is not on Stan\'s page');
+    // The scoreboard moved to Research with the other backtests: it prices a rule the desk has
+    // already replaced, which is worth auditing and is not a decision for this morning.
+    await go('#research');
+    need(/What has caution cost\?/.test(app()), '[scoreboard] the card is not on the Research page');
+    await go('#stan');
     for (const r of bd.filter(x => x.scope === 'posture')) {
       if (/-00$/.test(r.period)) sb2.push(`${r.period}: an annual row is being counted as a month`);
       if (r.beta_drag !== null && Math.abs((+r.beta_drag + +r.residual) - +r.excess) > 1e-4)
@@ -2104,7 +2110,8 @@ if (!argRoute) {
   //     gives the spike back on the way up. That is only true for someone who never monetises.
   // -------------------------------------------------------------------------
   currentRoute = 'insurance';
-  await go('#stan');
+  // Moved to the Research tab: this is a backtest, not a decision for today.
+  await go('#research');
   {
     const iv = app();
     const rows = await rest('latest_insurance_value', 'instrument,label,window_key,n_days,n_stress,drawdowns_seen,crash_1pct,carry_annual,free_carry,payoff_per_carry,corr_calm,corr_stress,corr_shift,episodes,episodes_helped,verdict');
@@ -2174,7 +2181,8 @@ if (!argRoute) {
   //     comparing periods and calling it a comparison of sleeves.
   // -------------------------------------------------------------------------
   currentRoute = 'sleeve-mix';
-  await go('#stan');
+  // Moved to the Research tab: this is a backtest, not a decision for today.
+  await go('#research');
   {
     const sv2 = app();
     const rows = await rest('latest_sleeve_candidates', 'sleeve_key,label,composition,window_from,n_days,episodes_covered,sleeve_carry,funding_ratio,iso_weight,iso_equity,iso_real_cagr,iso_max_dd,baseline_dd,baseline_real_cagr,uplift,curve,plateau_from,plateau_to,episodes,episodes_helped,loo_rank,loo_chosen,verdict');
@@ -2242,7 +2250,8 @@ if (!argRoute) {
   //     artefact. Rows that still sit at the boundary must read untestable.
   // -------------------------------------------------------------------------
   currentRoute = 'stress';
-  await go('#stan');
+  // Moved to the Research tab: this is a backtest, not a decision for today.
+  await go('#research');
   {
     const sp = app();
     const rows = await rest('latest_stress_results', 'family,scenario,subject,value,value_kind,baseline,delta,p05,p50,p95,fit_r2,extrapolated,extrapolation,verdict,headline');
@@ -2401,7 +2410,11 @@ if (!argRoute) {
     const rxPage = app();
     const rows = await rest('latest_brake_prescription', 'model,equity_weight,k,sleeve_key,composition,sleeve_target,sleeve_floor,sleeve_ceiling,beta_floor,beta_ceiling,beta_actual,old_floor,old_ceiling,light,monetise_at,monetise_share,held_now,gap,no_trade_band,action,fragility,fragility_state');
     need(rows.length >= 5, `[prescription] only ${rows.length} mandates prescribed`);
-    need(/The prescription/.test(rxPage), '[prescription] the card is not on the page');
+    // The card was renamed when the regime strip was folded into it: the prescription and the
+    // alignment it implies are one card now, not a prescription beside two separate readings.
+    need(/Regime and alignment/.test(rxPage), '[prescription] the card is not on the page');
+    need(/Regime · /.test(rxPage), '[prescription] the regime is not named on the card');
+    need(/mandates inside their band/.test(rxPage), '[prescription] the alignment count is not on the card');
 
     let pb = [];
     const sleeveKeys = new Set(rows.map(r => r.sleeve_key));
