@@ -146,7 +146,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext] = await Promise.all([
     qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
     qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
     qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note'), 'securities'),
@@ -259,6 +259,11 @@ async function load() {
     qAllSoft(() => sb.from('latest_fragility_episodes').select('as_of,episode,trough,depth,mfi_at_peak,state_at_peak,first_warn,lead_days,lead_to_peak,worst_mfi,verdict,headline').order('episode', { ascending: true }), 'fragility episodes'),
     qAllSoft(() => sb.from('latest_stress_results').select('as_of,family,scenario,subject,sort_order,window_from,window_to,n_obs,value,value_kind,baseline,delta,p05,p50,p95,fit_r2,extrapolated,extrapolation,verdict,headline,detail').order('sort_order', { ascending: true }), 'stress results'),
     qAllSoft(() => sb.from('latest_sleeve_candidates').select('as_of,sleeve_key,label,sort_order,rationale,composition,window_from,window_to,n_days,episodes_covered,sleeve_carry,sleeve_crash,funding_ratio,iso_weight,iso_equity,iso_real_cagr,iso_max_dd,iso_days_under,baseline_dd,baseline_real_cagr,uplift,curve,best_weight,plateau_from,plateau_to,episodes,episodes_helped,loo_rank,loo_chosen,verdict,headline,detail').order('sort_order', { ascending: true }), 'sleeve candidates'),
+    qAllSoft(() => sb.from('flows_calendar_window').select('as_of,window_key,label,family,entry_offset,exit_offset,days_held,n_obs,hit_rate,mean_ret,t_stat,base_hit,base_mean,edge_hit,edge_mean,is_hit,is_n,oos_hit,oos_n,is_primary,n_scanned,sample_start,sample_end').order('edge_hit', { ascending: false }), 'flows windows'),
+    qAllSoft(() => sb.from('flows_calendar_month').select('as_of,month_num,n_obs,hit_rate,mean_ret,recent_hit,recent_n,recent_since').order('month_num', { ascending: true }), 'flows months'),
+    qAllSoft(() => sb.from('flows_calendar_monitor').select('as_of,metric,reading,baseline,t_stat,status,headline,detail').order('metric', { ascending: true }), 'flows monitor'),
+    qAllSoft(() => sb.from('flows_calendar_history').select('as_of,value_date,roll_hit,roll_mean,conc_in,conc_out').order('value_date', { ascending: true }), 'flows history'),
+    qAllSoft(() => sb.from('flows_calendar_upcoming').select('as_of,seq,window_key,entry_date,exit_date,days_held,month_num,hist_hit,hist_mean,recent_hit').order('seq', { ascending: true }), 'flows upcoming'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -354,7 +359,11 @@ async function load() {
     turnings: turnings || [], generations: generations || [], tapeTicker: tapeTicker || [], humility: humility || [],
     narReflex: narReflex || [], creditLegs: creditLegs || [], creditReading: creditReading || [],
     svenPrecedent: svenPrecedent || [], svenBreaks: svenBreaks || [], tapeQuiet: tapeQuiet || [],
-    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [], stressTests: stressTests || [], sleeves: sleeves || [], frag: frag || [], fragEps: fragEps || [], rx: rx || [], fragHist: fragHist || [], gauges: gauges || [], ladder: ladder || [] };
+    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [], stressTests: stressTests || [], sleeves: sleeves || [], frag: frag || [], fragEps: fragEps || [], rx: rx || [], fragHist: fragHist || [], gauges: gauges || [], ladder: ladder || [],
+    // newest() on all five: each run writes a fresh as_of, and loading them raw would stack this
+    // run's window library on top of last run's and double every count on the page.
+    flowWins: newest(flowWins || []), flowMonths: newest(flowMonths || []), flowMonitor: newest(flowMonitor || []),
+    flowHist: newest(flowHist || []), flowNext: newest(flowNext || []) };
 }
 
 // ---------- Views ----------
@@ -1454,7 +1463,7 @@ function stan() {
       <p class="note" style="margin:8px 0 14px">How far each model sits below its own high, and <b>what it would take to climb back</b>. The two are not the same size: down 20% needs up 25%, down 33% needs up 50%, down 50% needs up 100%. A drawdown figure alone invites the reader to assume otherwise.</p>
       <div style="overflow-x:auto"><table style="min-width:820px"><thead><tr>
         <th>Model</th><th class="num">Drawdown</th><th class="num">Needs</th><th class="num">High set</th><th class="num">Days</th>
-        <th>Three holdings furthest below their own 52-week high</th></tr></thead><tbody>
+        <th>Three holdings that cost this model most, peak to now</th></tr></thead><tbody>
         ${ladder.map(r => {
           const pos = Array.isArray(r.positions) ? r.positions : [];
           return `<tr${+r.gain_to_recover >= worst - 1e-9 ? ' style="background:var(--panel2)"' : ''}>
@@ -1464,14 +1473,22 @@ function stan() {
             <td class="num" style="font-size:11px;color:var(--muted)">${esc(r.high_date)}</td>
             <td class="num" style="color:var(--muted)">${r.days_since_high}</td>
             <td>${!pos.length ? '<span style="color:var(--muted)">none measurable</span>'
-              : pos.map(x => `<span title="${esc(`${x.name || x.ticker}\n${(x.weight * 100).toFixed(1)}% of the model\nClose ${x.close} against a 52-week high of ${x.high52w}${x.high_date ? ` set ${x.high_date}` : ''}`)}" style="display:inline-block;margin-right:12px;white-space:nowrap">
-                  <b>${esc(x.ticker)}</b> <span style="color:var(--neg)">+${(x.gain_needed * 100).toFixed(1)}%</span>
-                  <span style="color:var(--muted);font-size:10px">${(x.weight * 100).toFixed(1)}%</span></span>`).join('')}
+              : pos.map(x => {
+                  const costed = x.dd_contrib !== null && x.dd_contrib !== undefined;
+                  const tip = `${x.name || x.ticker}\n${(x.weight * 100).toFixed(1)}% of the model today`
+                    + (costed ? `\nCost this model ${(x.dd_contrib * 100).toFixed(2)}% from its peak, at the weights actually held on each day` : '')
+                    + (x.recovery_contrib !== null && x.recovery_contrib !== undefined ? `\nBack at its ${x.price_at_model_peak} peak-day price it adds ${(x.recovery_contrib * 100).toFixed(2)}% at today's weight` : '')
+                    + `\nThe security itself is ${(x.gain_needed * 100).toFixed(1)}% below its own 52-week high of ${x.high52w}${x.high_date ? ` set ${x.high_date}` : ''}`;
+                  return `<span title="${esc(tip)}" style="display:inline-block;margin-right:12px;white-space:nowrap">
+                  <b>${esc(x.ticker)}</b> <span style="color:var(--neg)">${costed ? `${(x.dd_contrib * 100).toFixed(2)}%` : `+${(x.gain_needed * 100).toFixed(1)}%`}</span>
+                  <span style="color:var(--muted);font-size:10px">${(x.weight * 100).toFixed(1)}%</span></span>`;
+                }).join('')}
               ${r.n_unmeasured ? `<span style="color:var(--muted);font-size:10px" title="${esc((r.unmeasured || []).join(', '))}">· ${r.n_unmeasured} not measurable</span>` : ''}</td></tr>`;
         }).join('')}
       </tbody></table></div>
-      <p class="note" style="margin-top:12px"><b>The holdings are measured on closing prices, not adjusted ones</b>, because the question is what it would take to recapture a price a holder actually watched — a dividend-adjusted series never printed those levels. Each is the gain from today's close back to the highest close of the last 52 weeks; hover for the two prices and the date the high was set.</p>
-      <p class="note"><b>These are highs since the record begins, not all-time highs.</b> The value series is reconstructed from target weights and starts in ${esc(String(ladder[0].series_from).slice(0, 4))}, so a model may have stood higher before it. Days the series could not price the whole book are excluded from the peak — a partly priced day is a different portfolio's value, and letting one set the high would invent a peak the book never reached and then measure every day against it.</p>
+      <p class="note" style="margin-top:12px"><b>The holdings are ranked by what they cost <i>this model</i>, not by how far the security itself has fallen</b> — the weight in force on each day times that day's return, from the model's peak to now. The two give different answers and the difference is the point: a position trimmed on the way down cost the model less than its own chart shows, and one added into the fall cost more. Hover any holding for its own 52-week gap, which is still a true fact about the security and still worth seeing.</p>
+      <p class="note"><b>The three shown will not sum to the drawdown.</b> Daily weighted returns add arithmetically while a drawdown compounds, and the book also rebalances, holds cash and pays away at trades. Each row's tooltip carries the residual rather than rounding it out of sight.</p>
+      <p class="note"><b>These are highs since the record begins, not all-time highs.</b> The value series is reconstructed from the holdings actually recorded at each date — not from today's weights projected backwards — and starts in ${esc(String(ladder[0].series_from).slice(0, 4))}, so a model may have stood higher before it. Days the series could not price the whole book are excluded from the peak — a partly priced day is a different portfolio's value, and letting one set the high would invent a peak the book never reached and then measure every day against it.</p>
     </div>`;
   })();
 
@@ -1958,6 +1975,128 @@ function markets() {
     </div>`;
   })();
 
+  // The Flows Calendar.
+  //
+  // WHAT THE READER MUST NOT TAKE FROM IT. A table of historically strong dates invites exactly
+  // one reading -- buy these days -- and the measurement on this desk says the opposite about the
+  // headline window right now. So the monitor sits ABOVE the calendar rather than under it, and
+  // the decayed months are coloured as plainly as the strong ones. A seasonality grid that only
+  // knows how to look encouraging is a sales document.
+  //
+  // EVERY HIT RATE IS QUOTED AGAINST ITS BASELINE. SPY rises on most multi-day stretches, so a
+  // 63% hit rate sounds like an edge and is worth 4 points once the unconditional 59% is netted
+  // off. The bare number is never shown alone anywhere in this section.
+  const flowsSection = (() => {
+    const wins = D.flowWins || [], mons = D.flowMonths || [], mon = D.flowMonitor || [];
+    const hist = D.flowHist || [], next = D.flowNext || [];
+    if (!wins.length && !mons.length && !mon.length) return '';
+    const prim = wins.find(w => w.is_primary) || null;
+    const MN = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const pc = v => v === null || v === undefined ? '—' : `${(+v * 100).toFixed(0)}%`;
+    const pc1 = v => v === null || v === undefined ? '—' : `${(+v * 100).toFixed(1)}%`;
+    const sg = v => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : '−'}${Math.abs(+v * 100).toFixed(1)}`;
+    const TONE = { firing: 'var(--neg)', watch: 'var(--warn)', normal: 'var(--pos)', insufficient: 'var(--muted)' };
+    const LBL = { firing: 'FIRING', watch: 'WATCH', normal: 'STEADY', insufficient: 'NO READ' };
+
+    // --- the early warning, first ------------------------------------------------
+    const monCards = !mon.length ? '' : `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px;margin-top:12px">
+      ${mon.map(m => {
+        const tone = TONE[m.status] || 'var(--muted)';
+        const sig = m.t_stat === null || m.t_stat === undefined ? null : Math.abs(+m.t_stat) >= 2;
+        return `<div style="border:1px solid var(--line);border-left:3px solid ${tone};border-radius:6px;padding:10px 12px">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">
+            <span class="eyebrow" style="color:${tone}">${LBL[m.status] || '—'} · ${esc(m.metric)}</span>
+            ${m.t_stat === null || m.t_stat === undefined ? '' : `<span style="font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums" title="${sig ? 'Clears conventional significance.' : 'Below conventional significance (|t| &lt; 2). Shown as a watch item, not a finding.'}">t ${(+m.t_stat >= 0 ? '+' : '−')}${Math.abs(+m.t_stat).toFixed(2)}${sig ? '' : ' · not significant'}</span>`}</div>
+          <div style="font-size:13px;margin-top:6px;line-height:1.45">${esc(m.headline)}</div>
+          ${!m.detail ? '' : `<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.45">${esc(m.detail)}</div>`}</div>`;
+      }).join('')}</div>`;
+
+    // --- the decay, drawn --------------------------------------------------------
+    const pts = hist.filter(r => r.roll_hit !== null && r.roll_hit !== undefined);
+    const base = prim ? +prim.base_hit : null;
+    const W = 640, Hh = 90, pad = 3;
+    const X = i => pad + (i / Math.max(1, pts.length - 1)) * (W - 2 * pad);
+    const lo = 0.3, hi = 0.85;
+    const Y = v => Hh - pad - ((Math.max(lo, Math.min(hi, +v)) - lo) / (hi - lo)) * (Hh - 2 * pad);
+    const line = pts.map((r, i) => `${X(i).toFixed(1)},${Y(r.roll_hit).toFixed(1)}`).join(' ');
+    const chart = pts.length < 24 ? '' : `<div style="margin-top:14px">
+      <div class="eyebrow" style="margin-bottom:4px">Rolling 36-month hit rate of the ${prim ? esc(prim.days_held + '') : '6'}-day turn-of-month window</div>
+      <svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:${Hh}px;display:block" preserveAspectRatio="none" role="img" aria-label="Rolling hit rate of the turn-of-month window against its unconditional baseline">
+        ${base === null ? '' : `<line x1="${pad}" y1="${Y(base).toFixed(1)}" x2="${W - pad}" y2="${Y(base).toFixed(1)}" stroke="var(--muted)" stroke-width="0.8" stroke-dasharray="4 3"/>`}
+        <polyline points="${line}" fill="none" stroke="var(--fg)" stroke-width="1.3"/>
+      </svg>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:2px">
+        <span>${esc(String(pts[0].value_date).slice(0, 7))}</span>
+        <span>dashed line = ${base === null ? 'baseline' : pc1(base) + ' unconditional baseline for the same holding period'}</span>
+        <span>${esc(String(pts[pts.length - 1].value_date).slice(0, 7))}</span></div></div>`;
+
+    // --- the calendar itself -----------------------------------------------------
+    const cal = !mons.length ? '' : `<div style="margin-top:16px">
+      <div class="eyebrow" style="margin-bottom:6px">Month by month · the same six-day window, every year since ${prim ? esc(String(prim.sample_start).slice(0, 4)) : '1993'}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:4px">
+      ${mons.map(m => {
+        const h = +m.hit_rate, r = m.recent_hit === null || m.recent_hit === undefined ? null : +m.recent_hit;
+        const tone = h >= 0.65 ? 'var(--pos)' : h <= 0.55 ? 'var(--neg)' : 'var(--flat)';
+        const faded = r !== null && r < h - 0.15;
+        return `<div style="border:1px solid var(--line);border-top:3px solid ${tone};border-radius:5px;padding:7px 8px" title="${esc(MN[m.month_num])}: ${m.n_obs} occurrences, mean ${sg(m.mean_ret)}%${r === null ? '' : `. Last ${new Date().getUTCFullYear() - m.recent_since} years: ${pc(r)} on ${m.recent_n} occurrences.`}">
+          <div style="font-size:11px;color:var(--muted)">${esc(MN[m.month_num].slice(0, 3))}</div>
+          <div style="font-size:17px;font-variant-numeric:tabular-nums;color:${tone};line-height:1.2">${pc(h)}</div>
+          <div style="font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums">mean ${sg(m.mean_ret)}%</div>
+          ${r === null ? '' : `<div style="font-size:10px;font-variant-numeric:tabular-nums;color:${faded ? 'var(--neg)' : 'var(--muted)'}" title="${faded ? 'The last ten years are materially weaker than the full history.' : ''}">10y ${pc(r)}${faded ? ' ▼' : ''}</div>`}</div>`;
+      }).join('')}</div></div>`;
+
+    // --- what is coming ----------------------------------------------------------
+    const today = new Date().toISOString().slice(0, 10);
+    const up = !next.length ? '' : `<div style="margin-top:16px">
+      <div class="eyebrow" style="margin-bottom:6px">Next windows</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:4px">
+      ${next.map(u => {
+        const live = String(u.entry_date) <= today && today <= String(u.exit_date);
+        const r = u.recent_hit === null || u.recent_hit === undefined ? null : +u.recent_hit;
+        const weak = r !== null && r < 0.5;
+        return `<div style="border:1px solid ${live ? 'var(--fg)' : 'var(--line)'};border-radius:5px;padding:7px 9px;${live ? 'box-shadow:0 0 0 1px var(--fg) inset' : ''}">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">${esc(MN[u.month_num])} turn${live ? ' · open now' : ''}</div>
+          <div style="font-size:12px;font-variant-numeric:tabular-nums;margin-top:2px">${esc(String(u.entry_date).slice(5))} → ${esc(String(u.exit_date).slice(5))}</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:3px;font-variant-numeric:tabular-nums">hist ${pc(u.hist_hit)}${r === null ? '' : ` · 10y <span style="color:${weak ? 'var(--neg)' : 'var(--muted)'}">${pc(r)}</span>`}</div></div>`;
+      }).join('')}</div></div>`;
+
+    // --- the window library ------------------------------------------------------
+    const lib = !wins.length ? '' : (() => {
+      const shown = [...wins].sort((a, b) => (+b.edge_hit) - (+a.edge_hit)).slice(0, 10);
+      const withPrim = prim && !shown.some(w => w.is_primary) ? [...shown, prim] : shown;
+      return `<div style="margin-top:16px;overflow-x:auto">
+        <div class="eyebrow" style="margin-bottom:6px">Window library · best ten by edge over baseline, of ${prim ? prim.n_scanned : wins.length} scanned</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums">
+          <thead><tr style="text-align:right;color:var(--muted);font-size:11px">
+            <th style="text-align:left;padding:3px 6px">window</th><th style="padding:3px 6px">days</th><th style="padding:3px 6px">N</th>
+            <th style="padding:3px 6px">hit</th><th style="padding:3px 6px">baseline</th><th style="padding:3px 6px">edge</th>
+            <th style="padding:3px 6px">mean</th><th style="padding:3px 6px">t</th>
+            <th style="padding:3px 6px" title="1993-2011">in-sample</th><th style="padding:3px 6px" title="2012 onward">out-of-sample</th></tr></thead>
+          <tbody>${withPrim.map(w => {
+            const decay = w.is_hit !== null && w.oos_hit !== null && +w.oos_hit < +w.is_hit - 0.03;
+            return `<tr style="text-align:right;border-top:1px solid var(--line)${w.is_primary ? ';background:var(--line-soft,rgba(128,128,128,.07))' : ''}">
+              <td style="text-align:left;padding:3px 6px">${esc(w.label)}${w.is_primary ? ' <span style="color:var(--muted);font-size:10px">· primary</span>' : ''}</td>
+              <td style="padding:3px 6px">${w.days_held}</td><td style="padding:3px 6px;color:var(--muted)">${w.n_obs}</td>
+              <td style="padding:3px 6px">${pc1(w.hit_rate)}</td><td style="padding:3px 6px;color:var(--muted)">${pc1(w.base_hit)}</td>
+              <td style="padding:3px 6px;color:${+w.edge_hit > 0 ? 'var(--pos)' : 'var(--neg)'}">${sg(w.edge_hit)}pp</td>
+              <td style="padding:3px 6px">${sg(w.mean_ret)}%</td><td style="padding:3px 6px;color:var(--muted)">${(+w.t_stat).toFixed(2)}</td>
+              <td style="padding:3px 6px;color:var(--muted)">${pc1(w.is_hit)}</td>
+              <td style="padding:3px 6px;color:${decay ? 'var(--neg)' : 'var(--muted)'}" title="${decay ? 'Weaker out-of-sample than in-sample.' : ''}">${pc1(w.oos_hit)}${decay ? ' ▼' : ''}</td></tr>`;
+          }).join('')}</tbody></table></div>`;
+    })();
+
+    const asOf = (mon[0] || wins[0] || mons[0] || {}).as_of;
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Flows Calendar</h2>
+        <span style="font-size:12px;color:var(--muted)">${prim ? esc(`${prim.days_held} sessions a month · ${prim.days_held * 12} market days a year`) : 'window library'} · SPY ${prim ? esc(String(prim.sample_start)) : ''} to ${prim ? esc(String(prim.sample_end)) : ''}${asOf ? ` · built ${esc(String(asOf))}` : ''}</span></div>
+      ${monCards}${chart}${cal}${up}${lib}
+      <p class="note" style="margin-top:14px"><b>The brief referenced Sherman Research's calendar-effects work and the 72–75 market days behind it. Sherman does not publish which days those are</b> — the indicator page describes the effect and sells the signal — so nothing here reproduces their series. Every figure is computed on this desk from adjusted SPY closes. What the day count does fix is the shape: 72–75 days over twelve months is about six a month, and six a month is the last four trading days plus the first two of the next, the classic turn-of-month window. <b>6 × 12 = 72.</b> That window was chosen on the day count before any result was looked at.</p>
+      <p class="note"><b>Every hit rate here is quoted against its own unconditional baseline</b>, because SPY rises on most multi-day stretches and the bare number flatters every window in the table. ${prim ? `The primary window hits ${pc1(prim.hit_rate)} against a baseline of ${pc1(prim.base_hit)} for simply holding ${prim.days_held} days — an edge of ${sg(prim.edge_hit)} points, not ${pc(prim.hit_rate)}.` : ''} <b>The sample is also split</b> at 2012 so a window that only worked on the history it was measured against is visible as one, and <b>${prim ? prim.n_scanned : 'every'} windows were scanned</b>, which is the number to discount the best row by.</p>
+      <p class="note"><b>There is no flow data on this desk.</b> No vendor, no observed subscriptions or redemptions — the word "flows" here describes something inferred from price. The inference is that if passive buying is what makes the month-turn pay, then the window decaying is evidence that bid is weakening. <b>The concentration reading is differenced against the same spread outside the window</b>, because cap-weighted has beaten equal-weighted nearly everywhere since 2023 and an in-window figure quoted alone would be that era-wide trend wearing a costume. Where a reading does not clear significance the card says so on its face.</p>
+    </div>`;
+  })();
+
   // The MFI, on the page where market state is read rather than on the page where it is graded.
   //
   // COMPACT, BUT NOT QUIETER. A reader meeting this index on the Markets page must not take it for
@@ -2259,6 +2398,7 @@ function markets() {
     </div>
   </div>
   ${yieldSection}
+  ${flowsSection}
   ${table}`;
 }
 
