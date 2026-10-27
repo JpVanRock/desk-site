@@ -1455,11 +1455,14 @@ if (!argRoute) {
       need(/No intraday bars yet|Not enough intraday bars/.test(day), '[markets] the one-day window with no bars does not explain itself');
     }
     await click('[data-perf]', { perf: '1M' });
-    // The volatility panel sits under the performance chart and follows its window.
+    // The volatility panel sits under the performance chart. It used to follow that chart's
+    // window; it now carries its own buttons and only starts there. Matched on the heading text
+    // rather than on exact markup -- the previous assertion pinned the whole div and broke the
+    // day an enlarge affordance was added beside the title, which is not a failure worth having.
     await click('[data-perf]', { perf: 'YTD' });
     for (let i = 0; i < 40 && /Loading volatility history/.test(app()); i++) await sleep(250);
     const vol = app();
-    need(/<div class="phead">Volatility<\/div>/.test(vol), '[markets] the volatility panel is missing');
+    need(/class="phead"[^>]*>\s*Volatility/.test(vol), '[markets] the volatility panel is missing');
     need(!/Loading volatility history/.test(vol), '[markets] the volatility panel never finished loading');
     const volLines = ['VIX', 'OVX · oil', 'GVZ · gold', 'VXN · Nasdaq'].filter(l => vol.includes(l));
     need(volLines.length === 4, `[markets] only ${volLines.length} of 4 volatility indices are drawn`);
@@ -2762,6 +2765,68 @@ currentRoute = 'flows';
     need(fb.length === 0, `[flows] ${fb.length} problem(s) above`);
     say(` ok  flows calendar         -> ${W.length} windows of ${W[0]?.n_scanned} scanned, ${MO.map(m => `${m.metric}:${m.status}`).join(' ')}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// [watchlist] Three sleeves, and every security in exactly one.
+//
+//   THE FALLBACK MUST NOT SWALLOW REAL CLASSES. Unclassified falls to Alternatives, which is
+//   correct for a 60/40 blend and was wrong for AGG -- the US aggregate bond index was filing
+//   itself under Alternatives purely because nothing had set a class on a benchmark proxy. If a
+//   recognisable bond or equity proxy ever loses its class again, this catches it.
+// -------------------------------------------------------------------------
+currentRoute = 'watchlist';
+await go('#markets');
+{
+  const wp = app();
+  const secs = await rest('securities', 'ticker,name,asset_class_id');
+  const cls = await rest('asset_classes', 'id,slug');
+  const slugOf = Object.fromEntries(cls.map(c => [c.id, c.slug]));
+  let wb = [];
+  need(/>Watchlist</.test(wp), '[watchlist] the section is not titled Watchlist');
+  need(!/Every tracked security/.test(wp), '[watchlist] the old heading is still on the page');
+  for (const t of ['Equities', 'Fixed Income', 'Alternatives'])
+    need(new RegExp(`data-watchtab[^>]*>\\s*${t}`).test(wp), `[watchlist] no ${t} tab`);
+  need(/data-watchadd/.test(wp), '[watchlist] no add-ticker form');
+  need(/\+ Add/.test(wp), '[watchlist] no +Add button');
+
+  // The named proxies must sit where a reader expects them, not in the fallback.
+  const WANT = { AGG: 'bonds', SPY: 'equities', BIL: 'cash' };
+  for (const [tk, want] of Object.entries(WANT)) {
+    const sec = secs.find(x => x.ticker === tk);
+    if (!sec) continue;
+    const got = slugOf[sec.asset_class_id] || null;
+    if (got !== want) wb.push(`${tk} is classified "${got}" and would show under ${got ? got : 'Alternatives (unclassified)'}, not ${want}`);
+  }
+  const uncl = secs.filter(x => !x.asset_class_id);
+  // Anything unclassified should be genuinely multi-asset. A single-sleeve fund here is a miss.
+  for (const u of uncl)
+    if (!/lifestrategy|target|blend|allocation|\d{2}\/\d{2}/i.test(u.name))
+      wb.push(`${u.ticker} (${u.name}) is unclassified and will fall to Alternatives, but does not look multi-asset`);
+
+  wb = [...new Set(wb)];
+  for (const b of wb) errors.push(`[watchlist] ${b}`);
+  need(wb.length === 0, `[watchlist] ${wb.length} problem(s) above`);
+  say(` ok  watchlist              -> ${secs.length} securities, ${uncl.length} unclassified -> Alternatives`);
+}
+
+// ---------------------------------------------------------------------------
+// [charts] Both market charts enlarge, and volatility has a window of its own.
+//
+//   The volatility card used to inherit the performance window silently. If its own buttons ever
+//   disappear it will inherit again and nothing on the page will say so.
+// -------------------------------------------------------------------------
+currentRoute = 'charts';
+await go('#markets');
+{
+  const cp = app();
+  need(/data-bigchart="perf"/.test(cp), '[charts] the performance card does not open enlarged');
+  need(/data-bigchart="vol"/.test(cp), '[charts] the volatility card does not open enlarged');
+  const volBtns = (cp.match(/data-vol="[^"]+"/g) || []).length;
+  const perfBtns = (cp.match(/data-perf="[^"]+"/g) || []).length;
+  need(volBtns > 0, '[charts] the volatility card has no timeframe buttons of its own');
+  need(volBtns === perfBtns, `[charts] volatility offers ${volBtns} timeframes against performance's ${perfBtns}`);
+  say(` ok  market charts          -> both enlarge, ${volBtns} timeframes on each`);
 }
 
 // ---------------------------------------------------------------------------

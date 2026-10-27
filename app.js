@@ -838,6 +838,15 @@ let scatterPeriod = 'YTD';
 let breakdownLens = 'sector';
 // Which column the monthly grid is showing. Module scope for the same reason as breakdownLens.
 let monthlyTab = 'portfolio';
+// Watchlist tab, and the state of an in-flight add. Module scope because the markets page is
+// re-rendered wholesale on every interaction and a local would reset the tab on each keystroke.
+let watchTab = 'equities';
+// The volatility card had no window of its own and silently followed the performance chart. It
+// now carries the same buttons, so the two can be read on different windows -- which is the point
+// of asking what six months of vol looks like against a year of price.
+let volPeriod = null;                  // null = follow the performance window
+let bigChart = null;                   // 'perf' | 'vol' -- which chart is open enlarged
+let watchAdd = { busy: false, msg: null, tone: null };
 const SCATTER_PERIODS = ['YTD', '1Y', '3Y', '5Y'];
 
 function positionScatter() {
@@ -2162,6 +2171,9 @@ function markets() {
     `<b>MOVE is not here.</b> It is ICE BofA's index and no connected source publishes it, so rather than approximate it under its own name the panel shows <b>realised</b> Treasury volatility from the desk's own closes. Implied and realised are different quantities. The euro FX volatility index was left out too: FRED discontinued it in March 2025, and a stale number on a risk panel is worse than a missing one. Each FRED line carries its own observation date, because they do not all update daily.`);
 
   // ---- normalised performance ----
+  // Captured so the enlarged view redraws the identical chart rather than a second implementation
+  // of it -- two copies of this SVG would drift apart and only one of them would ever be checked.
+  let perfInner = '', volInner = '';
   const perfCard = (() => {
     const inner = (() => {
       const bar = `<div class="perfbar">${PERF_WINDOWS.map(([k]) => `<button class="pill${k === perfPeriod ? ' on' : ''}" data-perf="${k}">${k}</button>`).join('')}</div>`;
@@ -2237,7 +2249,8 @@ function markets() {
         </svg>
         ${footer || `<p class="note">Total return from adjusted closes, rebased to zero at the first session of the window — dividends included, which is why these do not match an index level quoted on price alone. ${perfPeriod === 'YTD' ? 'Year to date runs from the last close of last year.' : ''}${perfPeriod === '1W' ? 'A week of daily closes is five points, which is what a week honestly is at this resolution.' : ''}</p>`}`;
     })();
-    return `<div class="card panel"><div class="phead">Normalised performance</div>${inner}</div>`;
+    perfInner = inner;
+    return `<div class="card panel" data-bigchart="perf" style="cursor:zoom-in" title="Click to enlarge"><div class="phead" style="display:flex;align-items:center;justify-content:space-between;gap:8px">Normalised performance <span style="color:var(--muted);font-size:11px;font-weight:400">⤢ enlarge</span></div>${inner}</div>`;
   })();
 
   // ---- volatility, on the same window as the chart above it ----
@@ -2248,11 +2261,12 @@ function markets() {
       if (!volSeries) return `<div class="empty">Loading volatility history…</div>`;
       // The window follows the performance chart, so the two read as one story. One day is not
       // offered: these are daily FRED series and a single session is one point per line.
-      const want = PERF_WINDOWS.find(w => w[0] === perfPeriod) || PERF_WINDOWS.find(w => w[0] === 'YTD');
+      const volWin = volPeriod || perfPeriod;
+      const want = PERF_WINDOWS.find(w => w[0] === volWin) || PERF_WINDOWS.find(w => w[0] === 'YTD');
       const base = volSeries.VIXCLS || [];
       if (!base.length) return '<div class="empty">No volatility history loaded.</div>';
       const endD = base.at(-1).d;
-      const startD = perfPeriod === '1D' ? base[Math.max(0, base.length - 11)].d
+      const startD = volWin === '1D' ? base[Math.max(0, base.length - 11)].d
         : want[1] === null ? `${+endD.slice(0, 4) - 1}-12-31`
         : base[Math.max(0, base.length - 1 - want[1])].d;
       const lines = VOL_SERIES.map(([code, label, tone]) => {
@@ -2285,7 +2299,8 @@ function markets() {
         .sort((a, b) => Y(a.v) - Y(b.v));
       let lastY = -99;
       for (const e of ends) { let y = Y(e.v); if (y - lastY < 13) y = lastY + 13; e.y = y; lastY = y; }
-      return `<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto" role="img" aria-label="Implied volatility indices over the same window as the performance chart">
+      const vbar = `<div class="perfbar">${PERF_WINDOWS.map(([k]) => `<button class="pill${k === volWin ? ' on' : ''}" data-vol="${k}">${k}</button>`).join('')}</div>`;
+      return `${vbar}<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto" role="img" aria-label="Implied volatility indices">
           ${ticks}
           ${lines.map(l => `<path d="${path(l.pts)}" fill="none" stroke="${l.tone}" stroke-width="1.7"/>`).join('')}
           ${realised.length ? `<path d="${path(realised)}" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.9"/>` : ''}
@@ -2293,10 +2308,11 @@ function markets() {
           <text x="${pad.l}" y="${Hh - 6}" font-size="10" fill="var(--muted)">${esc(dates[0])}</text>
           <text x="${(W - pad.r).toFixed(1)}" y="${Hh - 6}" font-size="10" text-anchor="end" fill="var(--muted)">${esc(dates.at(-1))}</text>
         </svg>
-        <p class="note"><b>Levels, not rebased.</b> A VIX of 16 means something on its own where an index level does not, so these are drawn as they are — normalising them would throw away the only thing they say. The window follows the chart above${perfPeriod === '1D' ? ', except for one day: these are daily series and a single session is one point per line, so the last two weeks are shown instead' : ''}.
+        <p class="note"><b>Levels, not rebased.</b> A VIX of 16 means something on its own where an index level does not, so these are drawn as they are — normalising them would throw away the only thing they say. This card now carries <b>its own window</b> and starts on whatever the chart above is showing until you move it${volWin === '1D' ? '. One day is the exception: these are daily series and a single session would be one point per line, so the last two weeks are drawn instead' : ''}.
         <b>MOVE is not here.</b> It is ICE BofA's index and no connected source publishes it, so rather than draw a line under its name the dashed grey is <b>realised</b> volatility of TLT over 30 sessions, annualised — a different quantity from an implied index, which is why it is dashed and why it is labelled realised.</p>`;
     })();
-    return `<div class="card panel"><div class="phead">Volatility</div>${inner}</div>`;
+    volInner = inner;
+    return `<div class="card panel" data-bigchart="vol" style="cursor:zoom-in" title="Click to enlarge"><div class="phead" style="display:flex;align-items:center;justify-content:space-between;gap:8px">Volatility <span style="color:var(--muted);font-size:11px;font-weight:400">⤢ enlarge</span></div>${inner}</div>`;
   })();
 
   // ---- the curve ----
@@ -2356,9 +2372,48 @@ function markets() {
         ${breadthRow('1 month', 21)}${breadthRow('3 months', 63)}${breadthRow('Year to date', 'ytd')}`),
     !perfSeries ? '' : 'The breadth lines are the cap-weighted S&P total return minus the equal-weighted one over the same days — two real returns subtracted, nothing modelled. <b>Narrow</b> means the largest names are carrying the index while the average member lags; <b>broad</b> means the advance is shared. A list of index levels cannot show the difference, and the two markets behave differently.');
 
-  const table = `<div class="card" style="margin-top:14px"><div class="phead">Every tracked security</div>
+  // ---- Watchlist ----
+  //
+  // THREE BUCKETS OVER SIX CLASSES. The desk keeps six asset classes; the watchlist shows three,
+  // because the question a reader brings to this table is which of the three sleeves a name sits
+  // in, not whether gold is filed apart from broad commodities. Cash joins bonds under Fixed
+  // Income -- it is the same liquidity role and a tab of its own would hold two tickers.
+  //
+  // UNCLASSIFIED FALLS TO ALTERNATIVES, which is right for the four LifeStrategy blends that are
+  // genuinely multi-asset and was wrong for AGG, SPY and BIL -- those three were unclassified only
+  // because nothing had ever set a class on a benchmark proxy, and the fallback would have filed
+  // the US aggregate bond index under Alternatives. They now carry one.
+  const WATCH_BUCKETS = [
+    ['equities', 'Equities', new Set(['equities'])],
+    ['fixed_income', 'Fixed Income', new Set(['bonds', 'cash'])],
+    ['alternatives', 'Alternatives', new Set(['commodities_real_assets', 'gold', 'alternatives'])],
+  ];
+  const bucketOf = cls => (WATCH_BUCKETS.find(([, , set]) => set.has(cls)) || WATCH_BUCKETS[2])[0];
+  const counts = Object.fromEntries(WATCH_BUCKETS.map(([k]) => [k, 0]));
+  for (const r of rows) counts[bucketOf(r.cls)]++;
+  if (!WATCH_BUCKETS.some(([k]) => k === watchTab)) watchTab = 'equities';
+  const shown = rows.filter(r => bucketOf(r.cls) === watchTab);
+
+  const table = `<div class="card" style="margin-top:14px">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+    <div class="phead" style="margin:0">Watchlist</div>
+    <form data-watchadd style="display:flex;align-items:center;gap:6px;margin:0">
+      <input name="ticker" placeholder="Add ticker" autocomplete="off" spellcheck="false" maxlength="12"
+        style="width:116px;padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel2);color:var(--fg);font-size:12px;text-transform:uppercase"
+        ${watchAdd.busy ? 'disabled' : ''}>
+      <button type="submit" ${watchAdd.busy ? 'disabled' : ''}
+        style="padding:5px 11px;border:1px solid var(--line);border-radius:5px;background:var(--panel2);color:var(--fg);font-size:12px;cursor:pointer;white-space:nowrap">
+        ${watchAdd.busy ? 'Adding…' : '+ Add'}</button>
+    </form>
+  </div>
+  ${!watchAdd.msg ? '' : `<div style="font-size:11px;margin-top:6px;color:${watchAdd.tone === 'bad' ? 'var(--neg)' : 'var(--pos)'}">${esc(watchAdd.msg)}</div>`}
+  <div style="display:flex;gap:4px;margin:10px 0 2px;flex-wrap:wrap">
+    ${WATCH_BUCKETS.map(([k, label]) => `<button data-watchtab="${k}" style="padding:5px 12px;border:1px solid ${watchTab === k ? 'var(--fg)' : 'var(--line)'};border-radius:5px;background:${watchTab === k ? 'var(--panel2)' : 'transparent'};color:${watchTab === k ? 'var(--fg)' : 'var(--muted)'};font-size:12px;cursor:pointer">
+      ${label} <span style="color:var(--muted);font-size:11px">${counts[k]}</span></button>`).join('')}
+  </div>
   <div style="overflow-x:auto"><table><thead><tr><th>Ticker</th><th>Class</th><th class="num">Close</th><th class="num">1-day</th><th class="num">RSI14</th><th>Trend</th><th class="num">vs SMA50</th><th class="num">vs SMA200</th><th class="num">RS vs class(63d)</th></tr></thead><tbody>
-  ${rows.map(r => { const t = r.tech; const vs = (c, sma) => sma ? `<span style="color:${c > sma ? 'var(--pos)' : 'var(--neg)'}">${c > sma ? '+' : ''}${(((c - sma) / sma) * 100).toFixed(1)}%</span>` : '–';
+  ${!shown.length ? '<tr><td colspan="9" style="color:var(--muted);padding:10px">Nothing in this sleeve.</td></tr>' : ''}
+  ${shown.map(r => { const t = r.tech; const vs = (c, sma) => sma ? `<span style="color:${c > sma ? 'var(--pos)' : 'var(--neg)'}">${c > sma ? '+' : ''}${(((c - sma) / sma) * 100).toFixed(1)}%</span>` : '–';
     const rs = t?.rs_vs_class_63; const rsStr = rs === null || rs === undefined ? '–' : `<span style="color:${rs >= 0 ? 'var(--pos)' : 'var(--neg)'}">${rs >= 0 ? '+' : ''}${(rs * 100).toFixed(1)}%</span>`;
     return `<tr class="click" data-go="#markets/${esc(r.id)}"><td><b>${esc(r.ticker)}</b><br><small style="color:var(--muted)">${esc(r.name)}</small></td><td>${esc(D.classNames[r.cls] || r.cls)}</td>
      <td class="num">${r.price ? '$' + Number(r.price.close).toFixed(2) : '<span style="color:var(--muted)">no price</span>'}</td>
@@ -2368,7 +2423,9 @@ function markets() {
      <td class="num">${t ? vs(t.close ?? r.price?.close, t.sma50) : '–'}</td>
      <td class="num">${t ? vs(t.close ?? r.price?.close, t.sma200) : '–'}</td>
      <td class="num">${rsStr}</td></tr>`; }).join('')}
-  </tbody></table></div><p class="note">RSI14 uses Wilder's smoothing; below 30 (green) is oversold, above 70 (red) is overbought by the standard convention, not a signal to act on alone. Trend: bullish = close &gt; SMA50 &gt; SMA200, bearish = the reverse, else neutral. RS vs class = 63-day return minus the median of same-asset-class peers. SMA200 and RS need ~10 months of history — newer listings show "–". This is price action and trend, not a rating: the desk decided the underlying trend-anchored rating hasn't earned a role in decisions yet (see ROADMAP.md / the Admin tab). Parameters: desk-workspace/stan/technicals-parameters.md.</p></div>`;
+  </tbody></table></div>
+  <p class="note"><b>Three sleeves over the desk's six asset classes.</b> Cash sits with bonds under Fixed Income — the same liquidity role, and a tab of its own would hold two tickers. Commodities, real assets and gold sit under Alternatives, along with anything carrying no class: today that is the four LifeStrategy funds, which are 20/80 through 80/20 blends that no single class describes. <b>A new ticker is added unclassified</b>, so it appears under Alternatives until a class is set, and it carries no price until the nightly job loads its history.</p>
+  <p class="note">RSI14 uses Wilder's smoothing; below 30 (green) is oversold, above 70 (red) is overbought by the standard convention, not a signal to act on alone. Trend: bullish = close &gt; SMA50 &gt; SMA200, bearish = the reverse, else neutral. RS vs class = 63-day return minus the median of same-asset-class peers. SMA200 and RS need ~10 months of history — newer listings show "–". This is price action and trend, not a rating: the desk decided the underlying trend-anchored rating hasn't earned a role in decisions yet (see ROADMAP.md / the Admin tab). Parameters: desk-workspace/stan/technicals-parameters.md.</p></div>`;
 
   if (!perfSeries && !perfLoading) setTimeout(loadPerfSeries, 0);
 
@@ -2412,9 +2469,27 @@ function markets() {
     </div>`;
   })();
 
+  // The enlarged chart. It redraws the SAME markup the card holds -- the SVGs already carry a
+  // viewBox and scale to their container, so there is nothing to re-plot, and a second plotting
+  // path would be a second thing to keep correct. The window buttons come along with it, which
+  // is the point: enlarging a chart you then cannot re-scope is a screenshot.
+  const bigOverlay = !bigChart ? '' : (() => {
+    const title = bigChart === 'vol' ? 'Volatility' : 'Normalised performance';
+    const body = bigChart === 'vol' ? volInner : perfInner;
+    if (!body) return '';
+    return `<div data-bigclose style="position:fixed;inset:0;background:rgba(0,0,0,.74);z-index:950;display:flex;align-items:center;justify-content:center;padding:20px">
+      <div data-bigbody style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;width:min(1680px,97vw);max-height:94vh;overflow:auto;box-shadow:0 18px 60px rgba(0,0,0,.5)">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px">
+          <div class="phead" style="margin:0">${title}</div>
+          <button data-bigclose style="padding:4px 12px;border:1px solid var(--line);border-radius:5px;background:var(--panel2);color:var(--fg);font-size:12px;cursor:pointer">Close ✕</button>
+        </div>
+        ${body}
+      </div></div>`;
+  })();
+
   return `<span class="eyebrow">Allocation model</span><h1>Markets</h1>
-  <p class="sub">The shape of the day — indices, volatility, the curve, sectors and the world — then every tracked security underneath. Prices from the daily job as of ${esc(D.run ? D.run.latest_price_date || '—' : '—')}; ${withPrice} of ${rows.length} carry a close. Click anything for its chart.</p>
-  ${eventStrip}
+  <p class="sub">The shape of the day — indices, volatility, the curve, sectors and the world — then the watchlist underneath. Prices from the daily job as of ${esc(D.run ? D.run.latest_price_date || '—' : '—')}; ${withPrice} of ${rows.length} carry a close. Click anything for its chart.</p>
+  ${eventStrip}${bigOverlay}
   <div class="mkgrid">
     <div class="mkcol">
       ${usEquityPanel}
@@ -7403,6 +7478,83 @@ document.addEventListener('click', e => {
   if (!t || t.disabled) return;
   scatterPeriod = t.dataset.scatter;
   $('#app').innerHTML = stan();
+});
+// The volatility card's own window buttons.
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-vol]');
+  if (!t) return;
+  e.stopPropagation();                       // the card around it opens the enlarged view
+  volPeriod = t.dataset.vol;
+  if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
+});
+// Enlarging either chart, and closing it again.
+//
+// The period buttons inside a card must not also open the overlay, and the buttons inside the
+// OVERLAY must keep working -- so the open handler ignores clicks that landed on a control, and
+// the close handler fires only on the backdrop or the close button, never on the chart itself.
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-bigclose]')) { bigChart = null; if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets(); return; }
+  if (e.target.closest('[data-bigbody]')) return;
+  const t = e.target.closest('[data-bigchart]');
+  if (!t) return;
+  if (e.target.closest('button, a, input, select, [data-perf], [data-vol]')) return;
+  bigChart = t.dataset.bigchart;
+  if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape' || !bigChart) return;
+  bigChart = null;
+  if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
+});
+// Watchlist sleeve tabs.
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-watchtab]');
+  if (!t) return;
+  watchTab = t.dataset.watchtab;
+  watchAdd = { busy: false, msg: null, tone: null };
+  if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
+});
+// Adding a ticker to the watchlist.
+//
+// WHAT THIS DOES AND DOES NOT DO. It inserts a row in securities and nothing else. The nightly
+// price loader reads the whole securities table, so the history arrives on the next run and the
+// name shows "no price" until then -- which the note under the table says, because a new row
+// sitting blank for a day otherwise looks broken.
+//
+// NO CLASS IS GUESSED. The row goes in unclassified and therefore appears under Alternatives.
+// Inferring "it ends in X so it must be a bond fund" would put a wrong class on a real security
+// and nothing downstream would question it; an honest Alternatives placement is correctable in
+// one step and visibly provisional.
+document.addEventListener('submit', async e => {
+  const f = e.target.closest('[data-watchadd]');
+  if (!f) return;
+  e.preventDefault();
+  if (watchAdd.busy) return;
+  const raw = (new FormData(f).get('ticker') || '').toString().trim().toUpperCase();
+  const rerender = () => { if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets(); };
+  if (!raw) return;
+  if (!/^[A-Z0-9.\-]{1,12}$/.test(raw)) {
+    watchAdd = { busy: false, msg: `"${raw}" is not a ticker symbol.`, tone: 'bad' };
+    return rerender();
+  }
+  watchAdd = { busy: true, msg: null, tone: null };
+  rerender();
+  try {
+    const { data: dupe } = await sb.from('securities').select('ticker').eq('ticker', raw).maybeSingle();
+    if (dupe) {
+      watchAdd = { busy: false, msg: `${raw} is already on the watchlist.`, tone: 'bad' };
+    } else {
+      const { error } = await sb.from('securities').insert({ ticker: raw, name: raw, role: 'watchlist' });
+      if (error) throw new Error(error.message);
+      // Reload so the new row appears without a full page refresh.
+      D = await load();
+      watchAdd = { busy: false, msg: `${raw} added. It carries no price until tonight's job loads its history, and no asset class until one is set — so it sits under Alternatives for now.`, tone: 'ok' };
+      watchTab = 'alternatives';
+    }
+  } catch (err) {
+    watchAdd = { busy: false, msg: `Could not add ${raw}: ${err.message}`, tone: 'bad' };
+  }
+  rerender();
 });
 // Portfolio / Benchmark / Vs. Benchmark tabs on the monthly returns grid.
 document.addEventListener('click', e => {
