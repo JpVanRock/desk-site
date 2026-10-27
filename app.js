@@ -411,7 +411,7 @@ function route() {
   closeDrawer();
   // Keyed lookup, so this order is cosmetic rather than load-bearing — but it is kept in step
   // with the nav in index.html so the two read the same way.
-  const pages = { markets, sisyphus, stan, research, annie, adam, neil, sven, kate, gail, sandbox, signals, admin };
+  const pages = { markets, sisyphus, stan, brakes, annie, adam, neil, sven, kate, gail, sandbox, signals, admin };
   // A HOLLOW DASHBOARD MUST NOT LOOK LIKE A REAL ONE.
   //
   // Making the core tables soft stopped one busy minute in the database from blanking the whole
@@ -945,7 +945,7 @@ function positionScatter() {
 // of it than their weight, and how each one scores against the desk's own stress scenarios.
 // Everything here is already computed by the nightly jobs — nothing is derived in the browser.
 // Stan's page takes a mode. 'dashboard' is the default and carries only what a reader can act on
-// today; 'research' carries the measurement behind it -- the cost-of-caution scoreboard, the sleeve
+// today; 'brakes' carries the measurement behind it -- the cost-of-caution scoreboard, the sleeve
 // candidates, the stress programme and the insurance episodes. Those four are backtests and
 // historical episode studies: worth keeping, worth auditing, and not decisions. Mixing them into
 // the dashboard made a nine-card page where the two cards that need acting on sat fourth and sixth.
@@ -954,7 +954,7 @@ function positionScatter() {
 // formatters, the per-model joins -- and lifting four of them to module scope would mean threading
 // all of that through as arguments for no behavioural gain. The cards are built either way and the
 // template picks; that costs a few milliseconds of string building and keeps one source of truth.
-function research() { return stan('research'); }
+function brakes() { return stan('brakes'); }
 function stan(mode = 'dashboard') {
   const n = v => v === null || v === undefined ? null : +v;
   const pc = (v, d = 1) => v === null ? '<span style="color:var(--muted)">–</span>'
@@ -1322,17 +1322,40 @@ function stan(mode = 'dashboard') {
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
         <h2 style="margin:0">Regime and alignment</h2>
         <span style="font-size:12px;color:var(--muted)">${esc(r0.as_of)} · ${esc(r0.sleeve_label || '')} · ${esc(comp)}</span></div>
-      ${!regime ? '' : `<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:stretch;margin-top:10px">
-        <div style="flex:1 1 260px;border:1px solid var(--line);border-left:3px solid ${regime.tone};border-radius:6px;padding:10px 12px">
+      ${!regime ? '' : (() => {
+        // TWO CROSS-CHECKS, which are the two questions this page exists to answer: are the brakes
+        // on too hard or not hard enough, and is the book carrying too much equity or too little.
+        // They are separate and can disagree -- a mandate can be under-braked AND under-invested,
+        // which is the combination that costs the most and the one the old caution rule produced.
+        const nTrim = rx.filter(r => r.action === 'trim').length;
+        const brakeTone = nAdd > nTrim ? 'var(--warn)' : nTrim > nAdd ? 'var(--flat)' : 'var(--pos)';
+        const brakeWord = nAdd > nTrim ? `${nAdd} under-braked` : nTrim > nAdd ? `${nTrim} over-braked` : 'in line';
+        // Equity: beta against the prescribed band. Beta rather than the equity line itself,
+        // because a 60% book of low-beta equity is not carrying 60% of the market's risk.
+        const withBeta = rx.filter(r => r.beta_actual !== null && r.beta_floor !== null && r.beta_ceiling !== null);
+        const under = withBeta.filter(r => +r.beta_actual < +r.beta_floor);
+        const over = withBeta.filter(r => +r.beta_actual > +r.beta_ceiling);
+        const inBand = withBeta.length - under.length - over.length;
+        const eqTone = under.length > over.length ? 'var(--warn)' : over.length ? 'var(--neg)' : 'var(--pos)';
+        const eqWord = !withBeta.length ? 'no beta measured'
+          : under.length > over.length ? `${under.length} under-invested`
+          : over.length ? `${over.length} over-invested` : 'in band';
+        const tile = (label, big, sub, tone, tip) => `<div style="flex:1 1 170px;border:1px solid var(--line);border-left:3px solid ${tone};border-radius:6px;padding:10px 12px" title="${esc(tip)}">
+          <div class="eyebrow">${label}</div>
+          <div style="font-size:21px;font-variant-numeric:tabular-nums;line-height:1.25;color:${tone}">${big}</div>
+          <div style="font-size:11px;color:var(--muted);line-height:1.35">${sub}</div></div>`;
+        return `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:stretch;margin-top:10px">
+        <div style="flex:2 1 300px;border:1px solid var(--line);border-left:3px solid ${regime.tone};border-radius:6px;padding:10px 12px">
           <div class="eyebrow" style="color:${regime.tone}">Regime · ${esc(regime.name)}</div>
           <div style="font-size:12px;color:var(--muted);margin-top:4px;font-variant-numeric:tabular-nums">
             Speed Limit <b style="color:var(--fg)">${esc(regime.light || '—')}</b> · MFI <b style="color:var(--fg)">${regime.f && regime.f.mfi !== null ? (+regime.f.mfi).toFixed(0) : '—'}</b> ${regime.f ? esc(regime.f.state) : ''}</div>
           <div style="font-size:12px;margin-top:6px;line-height:1.45">${regime.says}</div></div>
-        <div style="flex:0 0 150px;border:1px solid var(--line);border-radius:6px;padding:10px 12px">
-          <div class="eyebrow">Alignment</div>
-          <div style="font-size:22px;font-variant-numeric:tabular-nums;line-height:1.2;color:${inLine === rx.length ? 'var(--pos)' : nAdd ? 'var(--warn)' : 'var(--fg)'}">${inLine}<span style="font-size:13px;color:var(--muted)"> of ${rx.length}</span></div>
-          <div style="font-size:11px;color:var(--muted)">mandates inside their band${nAdd ? ` · ${nAdd} under` : ''}</div></div>
-      </div>`}
+        ${tile('Brakes', `${inLine}<span style="font-size:13px;color:var(--muted)"> of ${rx.length}</span>`, brakeWord,
+               brakeTone, 'Convexity and funders against the prescribed sleeve weight. Cash, short duration, market neutral and gold are brakes too, but the target was not measured on them, so they are shown separately in the table below.')}
+        ${tile('Equity', !withBeta.length ? '—' : `${inBand}<span style="font-size:13px;color:var(--muted)"> of ${withBeta.length}</span>`, eqWord,
+               eqTone, 'Each model\u2019s beta against the band the brake was measured to support. Below the floor is under-invested: the book is carrying less market risk than its protection allows, which is what the old caution rule produced and what the scoreboard priced at roughly 5.2% a year.')}
+      </div>`;
+      })()}
       <p class="note" style="margin:8px 0 14px"><b>Raise the brake, not the cash.</b> The old rule cut beta to as little as half the benchmark when the light turned; the scoreboard priced that instruction at roughly <b>5.2% a year</b> of forgone return across fifty months. The sleeve was measured to support <b>1.14×</b> the reference book's equity at the same drawdown, so the band is now set around the benchmark instead of away from it.</p>
       <div style="overflow-x:auto"><table style="min-width:860px"><thead><tr>
         <th>Model</th><th class="num">Equity</th><th class="num">k</th><th class="num">Sleeve target</th><th class="num" title="Convexity, managed futures, diversifiers and anti-beta — the instruments the target was measured on. The action follows this column.">Convexity &amp; funders</th><th class="num" title="Cash, short duration, market neutral and gold. Brakes, counted in the total, but they lower beta rather than buy risk capacity — so the target was not measured on them.">Ballast</th>
@@ -1796,12 +1819,12 @@ function stan(mode = 'dashboard') {
     <p class="note" style="margin:0"><b>${hum.n_departed} of ${hum.n_live} tracked securities have stopped printing</b>, and that number is a <b>floor on what is missing, not a count of it</b>. Every peer median, blend fit and classification on this site is computed across names that still exist; the universe was assembled from survivors, so the funds that closed before this desk ever looked cannot appear in any figure here and never will. "We see the wealth being generated, never the processor, and never the losers."</p>
   </div>`;
 
-  if (mode === 'research') return `<span class="eyebrow">Risk</span><h1>Research</h1>
-   <p class="sub">The measurement behind the brake, kept off the dashboard because none of it is a decision for today. These are backtests and historical episode studies: the cost the old caution rule actually carried, the sleeve candidates and how they were chosen, the stress programme including the tests the brake failed, and what each instrument paid at past troughs. <b>Every window here is a past one</b> — read it to understand why the prescription says what it says, not to decide what to do this morning.</p>
+  if (mode === 'brakes') return `<span class="eyebrow">Risk</span><h1>Brakes</h1>
+   <p class="sub">Everything behind the brake, kept off Stan's dashboard because none of it is a decision for today: the cost the old caution rule actually carried, the sleeve candidates and how each was chosen, the stress programme including the tests the brake failed, and what every instrument paid at past troughs. <b>Every window here is a past one</b> — read it to understand why the prescription says what it says, not to decide what to do this morning. The prescription itself, and whether the book is in line with it, is on <a href="#stan">Stan</a>.</p>
    ${cautionCard}${sleeveCard}${stressCard}${insCard}${docsCard}`;
 
   return `<span class="eyebrow">Risk</span><h1>Stan</h1>
-   <p class="sub">Where the risk sits across the eight models, what is flagged, and what the risk figures cannot say. The backtests and episode studies behind the brake live on <a href="#research">Research</a>.</p>
+   <p class="sub">Where the risk sits across the eight models, what is flagged, and what the risk figures cannot say. The backtests and episode studies behind the brake live on <a href="#brakes">Brakes</a>.</p>
    <div class="kpis" style="grid-template-columns:repeat(5,1fr)">
     <div class="card kpi click" data-go="#stan/speed-limit" style="cursor:pointer" title="Open the master Speed Limit and how each model sits against it">
       <span class="eyebrow">Speed Limit</span>
@@ -3197,7 +3220,12 @@ function newsFlowDrawer(ticker) {
   if (!r) return `<button class="close" data-go="#sven">Close</button><div class="empty">No reading for ${esc(ticker)}.</div>`;
   const rel = Array.isArray(r.releases) ? r.releases : [];
   const good = rel.filter(x => x.good), bad = rel.filter(x => !x.good);
-  const tot = rel.length;
+  // The TOTAL comes from the count column, never from the array. The stored breakdown is capped
+  // at sixty a side -- a FRED vintage republishes a series' whole history, so a seven-day window
+  // carried thousands of revisions dated back to 2005 and the write reached 47 MB. The counts are
+  // computed from the full set and stay exact; this list is a sample of it and says so.
+  const tot = r.n_releases ?? rel.length;
+  const capped = rel.length < tot;
   const list = (rows, tone, title, empty) => `<div style="flex:1;min-width:260px">
     <div class="eyebrow" style="color:${tone};margin-bottom:8px">${esc(title)} — ${rows.length}</div>
     ${!rows.length ? `<div class="empty">${esc(empty)}</div>` : rows.map(x => `<div style="padding:8px 0;border-bottom:1px solid var(--line)">
@@ -3208,7 +3236,7 @@ function newsFlowDrawer(ticker) {
   const ev = (Array.isArray(r.events) ? r.events : []).filter(e => e.failed);
   return `<button class="close" data-go="#sven">Close</button>
     <span class="eyebrow">${esc(r.asset_class || '')}</span><h1>${esc(r.ticker)} news flow</h1>
-    <p class="sub">${esc(r.label)} · ${r.window_days} days · ${tot} release${tot === 1 ? '' : 's'} bearing on this asset</p>
+    <p class="sub">${esc(r.label)} · ${r.window_days} days · ${tot} release${tot === 1 ? '' : 's'} bearing on this asset${capped ? ` · showing the ${rel.length} most recent` : ''}</p>
     ${!ev.length ? '' : `<div class="card" style="margin-bottom:14px;border-left:3px solid var(--warn)">
       <div class="eyebrow" style="margin-bottom:8px">The failure${ev.length === 1 ? '' : 's'} behind this row</div>
       ${ev.map(e => `<p class="note" style="margin:0 0 8px">${esc(e.text)}</p>`).join('')}</div>`}

@@ -1054,7 +1054,7 @@ if (!argRoute) {
     const order = [...nav.matchAll(/<a href="#([a-z]+)">/g)].map(m => m[1]);
     // research sits next to stan: it holds the backtests and episode studies that used to crowd
     // Stan's dashboard, and the order matters because the nav doubles as the mobile menu.
-    const want = ['markets', 'sisyphus', 'stan', 'research', 'annie', 'adam', 'neil', 'sven', 'kate', 'gail', 'sandbox', 'signals', 'admin'];
+    const want = ['markets', 'sisyphus', 'stan', 'brakes', 'annie', 'adam', 'neil', 'sven', 'kate', 'gail', 'sandbox', 'signals', 'admin'];
     say(` ok  nav order              -> ${order.join(' · ')}`);
 
   // ---- the tab menu ----
@@ -1177,13 +1177,26 @@ if (!argRoute) {
       const want = r.n_events <= 0 ? null : r.n_events === 1 ? 'initiate' : r.n_events === 2 ? 'confirmed' : 'strong';
       if (r.signal_strength !== want) bad.push(`${r.ticker} ${r.window_days}d has ${r.n_events} events labelled ${r.signal_strength}`);
       if (/failure$/.test(r.verdict) && !(r.n_events > 0)) bad.push(`${r.ticker} ${r.window_days}d calls ${r.verdict} with no event`);
-      // The percentage and the list it opens must be the same arithmetic.
+      // The percentage and the list it opens must be the same arithmetic -- UNLESS the list is a
+      // sample, which it now is on every row. A FRED vintage republishes a series' whole history,
+      // so a seven-day window carried thousands of revisions back to 2005 and the write reached
+      // 47 MB and took the nightly down. The counts stay computed from the full set and stay
+      // exact; the stored breakdown is capped at sixty a side. So the test is that the sample is
+      // a SUBSET of what the counts claim and never exceeds them, and that it is exact when
+      // nothing was trimmed.
       const rel = Array.isArray(r.releases) ? r.releases : [];
-      if (rel.filter(x => x.good).length !== r.n_positive || rel.filter(x => !x.good).length !== r.n_negative) {
-        bad.push(`${r.ticker} ${r.window_days}d shows ${r.n_positive}+/${r.n_negative}- but opens into ${rel.filter(x => x.good).length}+/${rel.filter(x => !x.good).length}-`);
+      const relGood = rel.filter(x => x.good).length, relBad = rel.length - relGood;
+      if (relGood > r.n_positive || relBad > r.n_negative) {
+        bad.push(`${r.ticker} ${r.window_days}d shows ${r.n_positive}+/${r.n_negative}- but opens into MORE: ${relGood}+/${relBad}-`);
       }
+      if (rel.length === r.n_releases && (relGood !== r.n_positive || relBad !== r.n_negative)) {
+        bad.push(`${r.ticker} ${r.window_days}d stores every release but the breakdown ${relGood}+/${relBad}- disagrees with ${r.n_positive}+/${r.n_negative}-`);
+      }
+      if (r.n_releases > 0 && !rel.length) bad.push(`${r.ticker} ${r.window_days}d claims ${r.n_releases} releases and stores none`);
       // Only headline releases may trigger an event.
       for (const e of (Array.isArray(r.events) ? r.events : [])) {
+        // The release a failed event cites must survive the cap, or the drawer shows a failure
+        // with nothing behind it. The job pins cited releases into the sample for this reason.
         if (e.failed && !rel.find(x => x.series === e.series && x.obs_date === e.obs_date && x.headline)) {
           bad.push(`${r.ticker} ${r.window_days}d failed on ${e.series}, which is not a headline release`);
         }
@@ -2054,8 +2067,8 @@ if (!argRoute) {
     need(firm.length > 12, `[scoreboard] only ${firm.length} firm months — the record should span years`);
     // The scoreboard moved to Research with the other backtests: it prices a rule the desk has
     // already replaced, which is worth auditing and is not a decision for this morning.
-    await go('#research');
-    need(/What has caution cost\?/.test(app()), '[scoreboard] the card is not on the Research page');
+    await go('#brakes');
+    need(/What has caution cost\?/.test(app()), '[scoreboard] the card is not on the Brakes page');
     await go('#stan');
     for (const r of bd.filter(x => x.scope === 'posture')) {
       if (/-00$/.test(r.period)) sb2.push(`${r.period}: an annual row is being counted as a month`);
@@ -2111,7 +2124,7 @@ if (!argRoute) {
   // -------------------------------------------------------------------------
   currentRoute = 'insurance';
   // Moved to the Research tab: this is a backtest, not a decision for today.
-  await go('#research');
+  await go('#brakes');
   {
     const iv = app();
     const rows = await rest('latest_insurance_value', 'instrument,label,window_key,n_days,n_stress,drawdowns_seen,crash_1pct,carry_annual,free_carry,payoff_per_carry,corr_calm,corr_stress,corr_shift,episodes,episodes_helped,verdict');
@@ -2182,7 +2195,7 @@ if (!argRoute) {
   // -------------------------------------------------------------------------
   currentRoute = 'sleeve-mix';
   // Moved to the Research tab: this is a backtest, not a decision for today.
-  await go('#research');
+  await go('#brakes');
   {
     const sv2 = app();
     const rows = await rest('latest_sleeve_candidates', 'sleeve_key,label,composition,window_from,n_days,episodes_covered,sleeve_carry,funding_ratio,iso_weight,iso_equity,iso_real_cagr,iso_max_dd,baseline_dd,baseline_real_cagr,uplift,curve,plateau_from,plateau_to,episodes,episodes_helped,loo_rank,loo_chosen,verdict');
@@ -2251,7 +2264,7 @@ if (!argRoute) {
   // -------------------------------------------------------------------------
   currentRoute = 'stress';
   // Moved to the Research tab: this is a backtest, not a decision for today.
-  await go('#research');
+  await go('#brakes');
   {
     const sp = app();
     const rows = await rest('latest_stress_results', 'family,scenario,subject,value,value_kind,baseline,delta,p05,p50,p95,fit_r2,extrapolated,extrapolation,verdict,headline');
@@ -2456,7 +2469,11 @@ if (!argRoute) {
     }
     need(/Regime and alignment/.test(rxPage), '[prescription] the card is not on the page');
     need(/Regime · /.test(rxPage), '[prescription] the regime is not named on the card');
-    need(/mandates inside their band/.test(rxPage), '[prescription] the alignment count is not on the card');
+    // Two cross-checks, not one: whether the brakes are on too hard or not hard enough, and
+    // whether the book is carrying too much equity or too little. They answer different questions
+    // and a page showing only the first lets an under-invested book look correctly positioned.
+    need(/>Brakes</.test(rxPage), '[prescription] the brake alignment tile is missing');
+    need(/>Equity</.test(rxPage), '[prescription] the equity allocation tile is missing');
     need(/Convexity &amp; funders/.test(rxPage), '[prescription] the card does not separate convexity from ballast');
     need(/>Ballast</.test(rxPage), '[prescription] the card does not show the ballast weight');
     // The split is computed in the page from a security_id -> ticker lookup. If that lookup ever
