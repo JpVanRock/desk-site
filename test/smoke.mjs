@@ -2628,6 +2628,143 @@ if (!argRoute) {
 }
 
 // ---------------------------------------------------------------------------
+// [event-risk] The week ahead.
+//
+//   THE WEEK MUST BE A WEEK. Every event has to fall inside the Monday-to-Friday span the rows
+//   themselves declare. The first version of this job computed a Thursday five weeks out, and
+//   nothing on the page would have looked wrong -- a ticker is believed precisely because nobody
+//   cross-checks the dates on it.
+//
+//   THE EARNINGS OMISSION MUST BE ON THE PAGE. The brief asked for earnings. They are not here,
+//   and a strip that silently showed fewer events would read as a quiet week rather than as
+//   partial coverage -- the expensive version of that mistake lands the week Apple reports. If
+//   the sentence ever disappears from the page, this fails.
+//
+//   NOTHING MAY CLAIM TO BE EARNINGS. The schema still permits the kind; the job no longer emits
+//   it. A row that did would be carrying data from a source this desk does not have.
+// -------------------------------------------------------------------------
+currentRoute = 'event-risk';
+await go('#markets');
+{
+  const mp = app();
+  const ev = await rest('event_risk', 'as_of,event_id,week_start,week_end,event_date,kind,importance,title,symbol,source,detail');
+  const newestAsOf = ev.map(r => r.as_of).sort().pop();
+  const cur = ev.filter(r => r.as_of === newestAsOf);
+  let eb = [];
+  need(cur.length > 0, '[event-risk] no events for the newest build');
+
+  const ws = new Set(cur.map(r => r.week_start)), we = new Set(cur.map(r => r.week_end));
+  need(ws.size === 1 && we.size === 1, `[event-risk] one build spans ${ws.size} week starts and ${we.size} ends`);
+  const [W0] = [...ws], [W1] = [...we];
+  const dnum = d => new Date(d + 'T00:00:00Z').getUTCDay();
+  need(dnum(W0) === 1, `[event-risk] the week starts on a ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dnum(W0)]}, not a Monday`);
+  need(dnum(W1) === 5, `[event-risk] the week ends on a ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dnum(W1)]}, not a Friday`);
+  need(Math.round((new Date(W1) - new Date(W0)) / 864e5) === 4, `[event-risk] ${W0} to ${W1} is not five days`);
+
+  const ids = new Set();
+  for (const r of cur) {
+    if (r.event_date < W0 || r.event_date > W1) eb.push(`${r.title} on ${r.event_date} falls outside the week ${W0}..${W1} it claims`);
+    if (dnum(r.event_date) === 0 || dnum(r.event_date) === 6) eb.push(`${r.title} is scheduled on a weekend (${r.event_date})`);
+    if (!['economic', 'central_bank'].includes(r.kind)) eb.push(`${r.title} carries kind "${r.kind}"`);
+    if (r.kind === 'earnings' || r.symbol) eb.push(`${r.title}: an earnings row, from a source this desk does not have`);
+    if (!['high', 'medium'].includes(r.importance)) eb.push(`${r.title} carries importance "${r.importance}"`);
+    if (!r.source) eb.push(`${r.title} names no source, so it cannot be audited`);
+    if (!r.title) eb.push(`a row on ${r.event_date} has no title`);
+    if (ids.has(r.event_id)) eb.push(`duplicate event_id ${r.event_id}`);
+    ids.add(r.event_id);
+  }
+  // Only the official calendars. If a scraped source ever reappears this catches it.
+  const OK = /Bureau of Labor Statistics|Bureau of Economic Analysis|Census|Federal Reserve/;
+  for (const r of cur) if (!OK.test(r.source)) eb.push(`${r.title} cites "${r.source}", which is not one of the official calendars`);
+
+  need(/Event risks/i.test(mp), '[event-risk] the strip is not on the Markets page');
+  need(/company earnings are not on this strip/i.test(mp), '[event-risk] the page does not state that earnings are omitted');
+  // Scoped to the strip's own source list, not the page: "Nasdaq 100" is an index name and
+  // appears legitimately in the market panels above.
+  const srcLine = (mp.match(/Sources: ([^<.]+)/) || [])[1] || '';
+  need(!/nasdaq/i.test(srcLine), `[event-risk] the strip cites Nasdaq as a source: "${srcLine}"`);
+
+  eb = [...new Set(eb)];
+  for (const b of eb) errors.push(`[event-risk] ${b}`);
+  need(eb.length === 0, `[event-risk] ${eb.length} problem(s) above`);
+  say(` ok  event risks            -> ${cur.length} events, ${cur.filter(r => r.importance === 'high').length} high, week ${W0}..${W1}`);
+}
+
+// ---------------------------------------------------------------------------
+// [flows] The Flows Calendar.
+//
+//   A HIT RATE WITHOUT ITS BASELINE IS A SALES FIGURE. SPY rises on most multi-day stretches, so
+//   every window in the library looks good quoted alone. edge_hit must be the difference and the
+//   page must carry the baseline, or the whole section becomes an argument for a strategy rather
+//   than a measurement of one.
+//
+//   THE HOLDING PERIOD CAP IS PART OF THE BRIEF. Nothing may exceed 14 sessions.
+//
+//   A WATCH ITEM MAY NOT BE DRESSED AS A FINDING. Any monitor row below |t| = 2 must be stated
+//   as such -- an early warning that waits for significance is not early, and one that hides the
+//   t-statistic is not honest.
+// -------------------------------------------------------------------------
+currentRoute = 'flows';
+{
+  const probe = await fetch(`${SUPABASE_URL}/rest/v1/flows_calendar_window?select=as_of&limit=1`, { headers: REST });
+  if (probe.status === 404) {
+    errors.push('[flows] flows_calendar_* tables do not exist — migration 20261106100000_flows_calendar.sql has not been applied');
+  } else {
+    await go('#markets');
+    const fp = app();
+    const wins = await rest('flows_calendar_window', 'as_of,window_key,label,days_held,n_obs,hit_rate,mean_ret,t_stat,base_hit,base_mean,edge_hit,edge_mean,is_hit,is_n,oos_hit,oos_n,is_primary,n_scanned');
+    const mons = await rest('flows_calendar_month', 'as_of,month_num,n_obs,hit_rate,mean_ret,recent_hit');
+    const mon  = await rest('flows_calendar_monitor', 'as_of,metric,reading,baseline,t_stat,status,headline,detail');
+    const nxt  = await rest('flows_calendar_upcoming', 'as_of,seq,entry_date,exit_date,days_held,month_num,hist_hit');
+    const newest = rs => { const d = rs.map(r => r.as_of).sort().pop(); return rs.filter(r => r.as_of === d); };
+    const W = newest(wins), M = newest(mons), MO = newest(mon), NX = newest(nxt);
+    let fb = [];
+    need(W.length > 0, '[flows] no windows computed');
+
+    for (const w of W) {
+      if (+w.days_held > 14) fb.push(`${w.label}: a holding period of ${w.days_held} sessions, past the 14 the brief set`);
+      if (+w.days_held < 1) fb.push(`${w.label}: a holding period of ${w.days_held}`);
+      if (+w.hit_rate < 0 || +w.hit_rate > 1) fb.push(`${w.label}: a hit rate of ${w.hit_rate}`);
+      if (Math.abs(+w.edge_hit - (+w.hit_rate - +w.base_hit)) > 1e-6)
+        fb.push(`${w.label}: edge_hit ${w.edge_hit} is not hit_rate minus base_hit`);
+      if (Math.abs(+w.edge_mean - (+w.mean_ret - +w.base_mean)) > 1e-6)
+        fb.push(`${w.label}: edge_mean is not mean_ret minus base_mean`);
+      if (w.is_n !== null && w.oos_n !== null && +w.is_n + +w.oos_n !== +w.n_obs)
+        fb.push(`${w.label}: ${w.is_n} in-sample + ${w.oos_n} out-of-sample is not ${w.n_obs} observations`);
+      if (!(+w.n_scanned >= W.length)) fb.push(`${w.label}: n_scanned ${w.n_scanned} is below the ${W.length} rows stored`);
+    }
+    const prim = W.filter(w => w.is_primary);
+    need(prim.length === 1, `[flows] ${prim.length} windows marked primary, expected exactly one`);
+    if (prim.length === 1) {
+      const p = prim[0];
+      need(+p.days_held * 12 >= 72 && +p.days_held * 12 <= 75,
+        `[flows] the primary window is ${p.days_held} sessions, ${+p.days_held * 12} days a year — outside the 72-75 the brief referenced`);
+    }
+    need(M.length === 12, `[flows] ${M.length} months of seasonality, expected 12`);
+    for (const n of NX) {
+      if (n.exit_date <= n.entry_date) fb.push(`upcoming window ${n.seq} exits ${n.exit_date} on or before it enters ${n.entry_date}`);
+    }
+    // The monitor must own its uncertainty.
+    for (const m of MO) {
+      if (m.t_stat === null) continue;
+      if (Math.abs(+m.t_stat) < 2 && m.status === 'firing')
+        fb.push(`the ${m.metric} reading is called firing on t=${(+m.t_stat).toFixed(2)}`);
+      if (Math.abs(+m.t_stat) < 2 && !/not .*significan|watch/i.test(`${m.headline} ${m.detail || ''} ${m.status}`))
+        fb.push(`the ${m.metric} reading sits at t=${(+m.t_stat).toFixed(2)} and nothing on the row says it is below significance`);
+    }
+    need(/Flows Calendar/.test(fp), '[flows] the section is not on the Markets page');
+    need(/unconditional baseline/i.test(fp), '[flows] the page does not quote the baseline a hit rate must be read against');
+    need(/Sherman does not publish/i.test(fp), '[flows] the page does not say the referenced days are not published');
+    need(/no flow data on this desk/i.test(fp), '[flows] the page does not disclose that flows are inferred from price, not observed');
+
+    fb = [...new Set(fb)];
+    for (const b of fb) errors.push(`[flows] ${b}`);
+    need(fb.length === 0, `[flows] ${fb.length} problem(s) above`);
+    say(` ok  flows calendar         -> ${W.length} windows of ${W[0]?.n_scanned} scanned, ${MO.map(m => `${m.metric}:${m.status}`).join(' ')}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log('');
 if (errors.length) { console.log(`${errors.length} PROBLEM(S):`); for (const e of errors) console.log('  ' + e); process.exit(1); }
 console.log('No problems found.');

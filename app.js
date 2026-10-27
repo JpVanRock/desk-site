@@ -146,7 +146,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk] = await Promise.all([
     qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
     qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
     qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note'), 'securities'),
@@ -264,6 +264,7 @@ async function load() {
     qAllSoft(() => sb.from('flows_calendar_monitor').select('as_of,metric,reading,baseline,t_stat,status,headline,detail').order('metric', { ascending: true }), 'flows monitor'),
     qAllSoft(() => sb.from('flows_calendar_history').select('as_of,value_date,roll_hit,roll_mean,conc_in,conc_out').order('value_date', { ascending: true }), 'flows history'),
     qAllSoft(() => sb.from('flows_calendar_upcoming').select('as_of,seq,window_key,entry_date,exit_date,days_held,month_num,hist_hit,hist_mean,recent_hit').order('seq', { ascending: true }), 'flows upcoming'),
+    qAllSoft(() => sb.from('event_risk').select('as_of,event_id,week_start,week_end,event_date,kind,importance,title,source,detail').order('event_date', { ascending: true }), 'event risk'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -363,7 +364,8 @@ async function load() {
     // newest() on all five: each run writes a fresh as_of, and loading them raw would stack this
     // run's window library on top of last run's and double every count on the page.
     flowWins: newest(flowWins || []), flowMonths: newest(flowMonths || []), flowMonitor: newest(flowMonitor || []),
-    flowHist: newest(flowHist || []), flowNext: newest(flowNext || []) };
+    flowHist: newest(flowHist || []), flowNext: newest(flowNext || []),
+    eventRisk: newest(eventRisk || []) };
 }
 
 // ---------- Views ----------
@@ -2370,8 +2372,49 @@ function markets() {
 
   if (!perfSeries && !perfLoading) setTimeout(loadPerfSeries, 0);
 
+  // ---- Event Risks: the week ahead, across the top of the page ----
+  //
+  // EARNINGS ARE MISSING AND THE STRIP SAYS SO. The brief asked for the earnings of the largest
+  // names alongside the calendar. No forward earnings calendar is reachable with this desk's
+  // credentials -- FRED publishes none, Tiingo carries fiscal period ends rather than announcement
+  // dates, and the one public feed refuses any client that does not claim to be a browser. A strip
+  // that simply showed fewer events would read as a quiet week rather than as partial coverage,
+  // which is the more expensive mistake the week Apple reports.
+  const eventStrip = (() => {
+    const ev = D.eventRisk || [];
+    if (!ev.length) return '';
+    const DW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const dnum = s_ => new Date(s_ + 'T00:00:00Z').getUTCDay();
+    const today = new Date().toISOString().slice(0, 10);
+    const w = ev[0];
+    const byDay = new Map();
+    for (const e of ev) { if (!byDay.has(e.event_date)) byDay.set(e.event_date, []); byDay.get(e.event_date).push(e); }
+    const days = [...Array(5)].map((_, i) => {
+      const d = new Date(w.week_start + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + i);
+      return d.toISOString().slice(0, 10);
+    });
+    const KIND = { central_bank: 'var(--neg)', economic: 'var(--fg)' };
+    return `<div class="card" style="margin-bottom:14px;padding:12px 14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px">
+        <span class="eyebrow">Event risks · week of ${esc(w.week_start)}</span>
+        <span style="font-size:11px;color:var(--muted)">${ev.filter(e => e.importance === 'high').length} high · built ${esc(String(w.as_of))}</span></div>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px">
+        ${days.map(d => {
+          const list = (byDay.get(d) || []);
+          const isToday = d === today;
+          return `<div style="border:1px solid ${isToday ? 'var(--fg)' : 'var(--line)'};border-radius:5px;padding:6px 8px;min-height:62px">
+            <div style="font-size:10px;color:${isToday ? 'var(--fg)' : 'var(--muted)'};text-transform:uppercase;letter-spacing:.04em">${DW[dnum(d)]} ${esc(d.slice(8))}${isToday ? ' · today' : ''}</div>
+            ${!list.length ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">—</div>'
+              : list.map(e => `<div style="font-size:11px;margin-top:4px;line-height:1.3;color:${KIND[e.kind] || 'var(--fg)'}" title="${esc(`${e.title}\n${e.source}${e.detail ? '\n' + e.detail : ''}`)}">
+                  ${e.importance === 'high' ? '<b>' : ''}${esc(e.title)}${e.importance === 'high' ? '</b>' : ''}</div>`).join('')}</div>`;
+        }).join('')}</div>
+      <p class="note" style="margin-top:10px;font-size:11px"><b>Economic releases and central-bank decisions only — company earnings are not on this strip.</b> A forward earnings calendar needs a vendor this desk does not have: FRED publishes none, and Tiingo carries fiscal period ends rather than announcement dates. Rather than show a thinner week and let it read as a quiet one, the gap is stated. Sources: ${esc([...new Set(ev.map(e => e.source))].join(', '))}. Rebuilt Sunday mornings.</p>
+    </div>`;
+  })();
+
   return `<span class="eyebrow">Allocation model</span><h1>Markets</h1>
   <p class="sub">The shape of the day — indices, volatility, the curve, sectors and the world — then every tracked security underneath. Prices from the daily job as of ${esc(D.run ? D.run.latest_price_date || '—' : '—')}; ${withPrice} of ${rows.length} carry a close. Click anything for its chart.</p>
+  ${eventStrip}
   <div class="mkgrid">
     <div class="mkcol">
       ${usEquityPanel}
