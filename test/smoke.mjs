@@ -2408,6 +2408,19 @@ if (!argRoute) {
   await go('#stan');
   {
     const rxPage = app();
+    // Sleeve-comparable brake weight per model, computed here from holdings rather than read from
+    // the prescription. The categories that count are the ones that BUY GAS -- convexity, tail
+    // funds, managed futures, diversifiers and anti-beta. Cash, short duration, market neutral and
+    // gold are brakes and are counted in held_now, but the target was not measured on them.
+    const SLEEVE_LIKE_TK = new Set(['CAOS', 'TAIL', 'KMLM', 'DBMF', 'CTA', 'QMHIX', 'QNZIX', 'QDSIX', 'BTAL']);
+    const chRows = await rest('current_holdings', 'strategy_id,weight,securities(ticker)');
+    const sleeveLikeBy = {};
+    for (const h of chRows) {
+      const tk = (h.securities || {}).ticker;
+      if (!tk || !SLEEVE_LIKE_TK.has(tk)) continue;
+      sleeveLikeBy[h.strategy_id] = (sleeveLikeBy[h.strategy_id] || 0) + +h.weight;
+    }
+    for (const r of await rest('strategies', 'id')) if (sleeveLikeBy[r.id] === undefined) sleeveLikeBy[r.id] = 0;
     const rows = await rest('latest_brake_prescription', 'model,equity_weight,k,sleeve_key,composition,sleeve_target,sleeve_floor,sleeve_ceiling,beta_floor,beta_ceiling,beta_actual,old_floor,old_ceiling,light,monetise_at,monetise_share,held_now,gap,no_trade_band,action,fragility,fragility_state');
     need(rows.length >= 5, `[prescription] only ${rows.length} mandates prescribed`);
     // The card was renamed when the regime strip was folded into it: the prescription and the
@@ -2417,17 +2430,42 @@ if (!argRoute) {
     // keeping the put-based funds. If the selection ever falls back to ranking on uplift alone it
     // will silently prescribe a weight and an equity lift derived from an instrument the desk
     // cannot hold -- real numbers attached to an unfollowable instruction.
+    // Mirrors BRAKE_UNIVERSE in jobs/compute-brake-prescription.mjs. Kept as a literal rather than
+    // imported so that widening the job's universe does not silently widen the test with it: if
+    // the two drift, this fails and someone has to look at both.
     const HOLDABLE = new Set(['BTAL', 'CAOS', 'TAIL', 'KMLM', 'DBMF', 'CTA', 'QMHIX', 'QNZIX',
-                              'QMNIX', 'QMNNX', 'CASH', 'BIL', 'USFR', 'JMST', 'SHY', 'TUA']);
+                              'QMNIX', 'QMNNX', 'BDMIX', 'QDSIX', 'CASH', 'BIL', 'USFR', 'JMST',
+                              'SHY', 'TUA', 'PHYS', 'CEF', 'GLD', 'IAUI']);
     const comp0 = Array.isArray(rows[0].composition) ? rows[0].composition : [];
     need(comp0.length > 0, '[prescription] the prescribed sleeve has no composition');
     const unholdable = comp0.map(c => c.ticker).filter(t => !HOLDABLE.has(t));
     need(unholdable.length === 0,
       `[prescription] prescribes ${unholdable.join(', ')}, which this desk cannot hold`);
     need(!/\bVXZ\b|\bVIXM\b/.test(rxPage), '[prescription] the card prescribes a VIX futures product');
+    // A PRESCRIBED SLEEVE MUST HAVE BOUGHT GAS. "Gold, unfunded" has the largest uplift and the
+    // longest record of any candidate and supports exactly the unbraked equity weight -- it makes
+    // money without creating risk capacity, which is not what a brake target sizes. It was briefly
+    // prescribed when the selection ranked on uplift alone.
+    const sl = await rest('latest_sleeve_candidates', 'sleeve_key,label,verdict,iso_equity,uplift,episodes_covered');
+    const used = sl.find(x => x.sleeve_key === rows[0].sleeve_key);
+    if (used) {
+      need(['preferred', 'viable'].includes(used.verdict),
+        `[prescription] prescribes ${used.label}, which the evidence marks ${used.verdict}`);
+      need(+used.iso_equity > 0.70 + 1e-9,
+        `[prescription] prescribes ${used.label}, which supports ${(+used.iso_equity * 100).toFixed(1)}% equity against an unbraked 70% — it buys no gas`);
+    }
     need(/Regime and alignment/.test(rxPage), '[prescription] the card is not on the page');
     need(/Regime · /.test(rxPage), '[prescription] the regime is not named on the card');
     need(/mandates inside their band/.test(rxPage), '[prescription] the alignment count is not on the card');
+    need(/Convexity &amp; funders/.test(rxPage), '[prescription] the card does not separate convexity from ballast');
+    need(/>Ballast</.test(rxPage), '[prescription] the card does not show the ballast weight');
+    // The split is computed in the page from a security_id -> ticker lookup. If that lookup ever
+    // points at a field that does not exist, every convexity cell silently renders as 0.0% and the
+    // card reads as a book with no convexity at all rather than as a broken join.
+    const anyLike = Object.values(sleeveLikeBy).some(v => v > 0);
+    need(anyLike, '[prescription] no model holds any sleeve-comparable brake — check the holdings join');
+    if (anyLike) need(!/Convexity &amp; funders[\s\S]{0,4000}?<\/tbody>/.test(rxPage) || /<b>[1-9]\d*\.\d%<\/b>/.test(rxPage),
+      '[prescription] every convexity cell renders empty while holdings say otherwise');
 
     let pb = [];
     const sleeveKeys = new Set(rows.map(r => r.sleeve_key));
@@ -2443,7 +2481,18 @@ if (!argRoute) {
       if (+r.beta_ceiling <= +r.beta_floor) pb.push(`${r.model}: an inverted beta band`);
       if (+r.beta_floor > 1.0 + 1e-9) pb.push(`${r.model}: a beta floor above 1.0 levers past the benchmark`);
       // The action must follow the gap and the band.
-      if (r.gap !== null && Math.abs(+r.gap - (+r.sleeve_target - +r.held_now)) > 1e-6) pb.push(`${r.model}: the gap is not target minus held`);
+      // THE GAP IS TARGET MINUS THE SLEEVE-COMPARABLE BRAKE, not minus everything defensive the
+      // model holds. sleeve_target is the measured plateau of a convexity sleeve; cash, short
+      // duration, market neutral and gold lower beta without buying risk capacity, so netting
+      // them against that plateau compares incommensurables -- it briefly turned every mandate
+      // from "add" to "trim" with fragility deteriorating. The split is not a column yet, so this
+      // recomputes it from holdings, which makes it an independent check rather than a restatement.
+      if (r.gap !== null && sleeveLikeBy[r.strategy_id] !== undefined
+          && Math.abs(+r.gap - (+r.sleeve_target - sleeveLikeBy[r.strategy_id])) > 1e-6)
+        pb.push(`${r.model}: the gap is not target minus the sleeve-comparable brake (${(sleeveLikeBy[r.strategy_id] * 100).toFixed(1)}%)`);
+      if (r.held_now !== null && sleeveLikeBy[r.strategy_id] !== undefined
+          && sleeveLikeBy[r.strategy_id] > +r.held_now + 1e-6)
+        pb.push(`${r.model}: the sleeve-comparable brake exceeds the total brake weight`);
       if (r.action === 'hold' && r.gap !== null && Math.abs(+r.gap) >= +r.no_trade_band) pb.push(`${r.model}: told to hold on a gap of ${r.gap}`);
       if (r.action === 'add' && !(+r.gap > 0)) pb.push(`${r.model}: told to add on a gap of ${r.gap}`);
       if (r.action === 'trim' && !(+r.gap < 0)) pb.push(`${r.model}: told to trim on a gap of ${r.gap}`);

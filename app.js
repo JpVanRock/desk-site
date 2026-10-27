@@ -1301,6 +1301,20 @@ function stan(mode = 'dashboard') {
     const p2 = (v, d = 1) => v === null || v === undefined ? '—' : `${(+v * 100).toFixed(d)}%`;
     const r0 = rx[0];
     const inLine = rx.filter(r => r.action === 'hold').length;
+    // THE BRAKE WEIGHT IS TWO NUMBERS and the column used to show one. sleeve_target is the measured
+    // plateau of a convexity sleeve; cash, short duration, market neutral and gold lower beta
+    // without buying risk capacity, so a single "Held" column summing all of it against that target
+    // read 48% against 25% and said trim, with fragility deteriorating. Computed here rather than
+    // read, because the split is not a column in the table yet.
+    const SLEEVE_LIKE_TK = new Set(['CAOS', 'TAIL', 'KMLM', 'DBMF', 'CTA', 'QMHIX', 'QNZIX', 'QDSIX', 'BTAL']);
+    const tkOf = Object.fromEntries((D.markets || []).map(x => [x.id, x.ticker]));
+    const splitBy = {};
+    for (const h of (D.currentHoldings || [])) {
+      const tk = tkOf[h.security_id];
+      if (!tk) continue;
+      const row = (splitBy[h.strategy_id] = splitBy[h.strategy_id] || { like: 0 });
+      if (SLEEVE_LIKE_TK.has(tk)) row.like += +h.weight;
+    }
     const comp = (Array.isArray(r0.composition) ? r0.composition : []).map(c => `${c.ticker} ${(c.weight * 100).toFixed(0)}%`).join(' · ');
     const nAdd = rx.filter(r => r.action === 'add').length;
     const below = rx.filter(r => r.beta_actual !== null && +r.beta_actual < +r.beta_floor);
@@ -1321,7 +1335,7 @@ function stan(mode = 'dashboard') {
       </div>`}
       <p class="note" style="margin:8px 0 14px"><b>Raise the brake, not the cash.</b> The old rule cut beta to as little as half the benchmark when the light turned; the scoreboard priced that instruction at roughly <b>5.2% a year</b> of forgone return across fifty months. The sleeve was measured to support <b>1.14×</b> the reference book's equity at the same drawdown, so the band is now set around the benchmark instead of away from it.</p>
       <div style="overflow-x:auto"><table style="min-width:860px"><thead><tr>
-        <th>Model</th><th class="num">Equity</th><th class="num">k</th><th class="num">Sleeve target</th><th class="num">Held</th>
+        <th>Model</th><th class="num">Equity</th><th class="num">k</th><th class="num">Sleeve target</th><th class="num" title="Convexity, managed futures, diversifiers and anti-beta — the instruments the target was measured on. The action follows this column.">Convexity &amp; funders</th><th class="num" title="Cash, short duration, market neutral and gold. Brakes, counted in the total, but they lower beta rather than buy risk capacity — so the target was not measured on them.">Ballast</th>
         <th>Action</th><th class="num">Beta now</th><th class="num">New band</th><th class="num">Old band</th></tr></thead><tbody>
         ${rx.map(r => { const A = RX_ACTION[r.action] || RX_ACTION.no_data;
           const lowBeta = r.beta_actual !== null && +r.beta_actual < +r.beta_floor;
@@ -1330,7 +1344,8 @@ function stan(mode = 'dashboard') {
             <td class="num" style="color:var(--muted)">${p2(r.equity_weight, 0)}</td>
             <td class="num" style="color:var(--muted)">${r.k === null ? '—' : (+r.k).toFixed(2)}</td>
             <td class="num"><b>${p2(r.sleeve_target)}</b>${r.sleeve_ceiling !== null && Math.abs(+r.sleeve_target - +r.sleeve_ceiling) < 1e-6 ? '<sup title="Capped at this mandate\u2019s own measured ceiling, past which more brake makes drawdown worse." style="color:var(--warn)">c</sup>' : ''}${r.sleeve_floor !== null && Math.abs(+r.sleeve_target - +r.sleeve_floor) < 1e-6 ? '<sup title="Raised to the duration floor: this mandate\u2019s dominant risk is rates, and an equity-crash brake sized by equity weight arrives smallest where it is needed most." style="color:var(--warn)">f</sup>' : ''}</td>
-            <td class="num" style="color:var(--muted)">${p2(r.held_now)}</td>
+            <td class="num"><b>${p2((splitBy[r.strategy_id] || {}).like)}</b></td>
+            <td class="num" style="color:var(--muted)">${p2(r.held_now === null ? null : +r.held_now - ((splitBy[r.strategy_id] || { like: 0 }).like))}</td>
             <td><span style="color:${A.tone};font-weight:600">${esc(A.label)}</span>${r.gap === null ? '' : ` <span style="color:var(--muted);font-size:11px">${+r.gap > 0 ? '+' : ''}${(+r.gap * 100).toFixed(1)}</span>`}</td>
             <td class="num" style="color:${lowBeta ? 'var(--neg)' : 'inherit'}">${r.beta_actual === null ? '—' : (+r.beta_actual).toFixed(2)}</td>
             <td class="num">${(+r.beta_floor).toFixed(2)}–${(+r.beta_ceiling).toFixed(2)}</td>
