@@ -146,7 +146,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves] = await Promise.all([
     qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
     qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
     qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note'), 'securities'),
@@ -251,6 +251,7 @@ async function load() {
     // Which brake is worth owning, measured rather than modelled.
     qAllSoft(() => sb.from('latest_insurance_value').select('as_of,instrument,label,sort_order,window_key,window_from,window_to,n_days,n_stress,drawdowns_seen,crash_1pct,crash_5pct,worst_day_offset,carry_daily,carry_annual,free_carry,payoff_per_carry,carry_days_repaid,offset_per_1pct,corr_calm,corr_stress,corr_shift,episodes,episodes_helped,worst_episode,verdict,headline,detail').order('sort_order', { ascending: true }), 'insurance value'),
     qSoft(sb.from('latest_insurance_pricing').select('as_of,vix,vix_3m,realised_21d,vol_premium,vol_premium_pctile,term_ratio,term_state,term_pctile,verdict,headline,detail'), 'insurance pricing'),
+    qAllSoft(() => sb.from('latest_recovery_ladder').select('as_of,strategy_id,model,sort_order,series_from,n_obs,high_value,high_date,current_value,value_date,drawdown,gain_to_recover,days_since_high,at_high,positions,n_positions,n_unmeasured,unmeasured,headline,note').order('sort_order', { ascending: true }), 'recovery ladder'),
     qAllSoft(() => sb.from('latest_yield_gauges').select('as_of,metric,label,grp,sort_order,series_id,obs_date,value,unit,win_from,win_to,win_years,n_obs,lo,hi,median,position,band,direction,direction_why,value_30d,obs_date_30d,chg_30d_bps,chg_30d_pct,pct_meaningful,display_unit,display_scale,headline,note').order('sort_order', { ascending: true }), 'yield gauges'),
     qAllSoft(() => sb.from('latest_brake_prescription').select('as_of,strategy_id,model,sort_order,equity_weight,k,sleeve_key,sleeve_label,composition,sleeve_target,sleeve_floor,sleeve_ceiling,target_basis,beta_floor,beta_ceiling,beta_actual,old_floor,old_ceiling,light,monetise_at,monetise_share,monetise_basis,held_now,gap,no_trade_band,action,fragility,fragility_state,headline,detail').order('sort_order', { ascending: true }), 'brake prescription'),
     qAllSoft(() => sb.from('fragility_index').select('as_of,mfi,state').order('as_of', { ascending: false }).limit(504), 'fragility history'),
@@ -353,7 +354,7 @@ async function load() {
     turnings: turnings || [], generations: generations || [], tapeTicker: tapeTicker || [], humility: humility || [],
     narReflex: narReflex || [], creditLegs: creditLegs || [], creditReading: creditReading || [],
     svenPrecedent: svenPrecedent || [], svenBreaks: svenBreaks || [], tapeQuiet: tapeQuiet || [],
-    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [], stressTests: stressTests || [], sleeves: sleeves || [], frag: frag || [], fragEps: fragEps || [], rx: rx || [], fragHist: fragHist || [], gauges: gauges || [] };
+    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [], stressTests: stressTests || [], sleeves: sleeves || [], frag: frag || [], fragEps: fragEps || [], rx: rx || [], fragHist: fragHist || [], gauges: gauges || [], ladder: ladder || [] };
 }
 
 // ---------- Views ----------
@@ -1431,6 +1432,49 @@ function stan() {
     </div>`;
   })();
 
+  // ---- The Recovery Ladder ----
+  //
+  // A 20% drawdown needs a 25% gain. A 33% drawdown needs 50%. A 50% drawdown needs 100%. That
+  // asymmetry is the measure, and it is exactly what a drawdown column does not show -- print
+  // "down 20%" on its own and a reader assumes a 20% rally undoes it.
+  //
+  // "ALL-TIME" IS AS LONG AS THE RECORD. The value series is reconstructed from target weights and
+  // begins in 2020, so these are highs since then and every row says so. A model may well have been
+  // higher before the record starts; the data cannot say.
+  const ladder = (D.ladder || []).slice().sort((a, b) => (+b.gain_to_recover) - (+a.gain_to_recover));
+  const ladderCard = !ladder.length ? '' : (() => {
+    const p2 = (v, d = 2) => v === null || v === undefined ? '—' : `${(+v * 100).toFixed(d)}%`;
+    const worst = Math.max(...ladder.map(r => +r.gain_to_recover));
+    const bar = v => { const w = worst > 0 ? Math.max(2, (+v / worst) * 100) : 0;
+      return `<div style="height:6px;background:var(--panel2);border-radius:3px;overflow:hidden;margin-top:3px"><div style="height:100%;width:${w.toFixed(1)}%;background:var(--neg);opacity:.7"></div></div>`; };
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Recovery Ladder</h2>
+        <span style="font-size:12px;color:var(--muted)">${esc(ladder[0].as_of)} · ${ladder.filter(r => r.at_high).length} of ${ladder.length} at their high</span></div>
+      <p class="note" style="margin:8px 0 14px">How far each model sits below its own high, and <b>what it would take to climb back</b>. The two are not the same size: down 20% needs up 25%, down 33% needs up 50%, down 50% needs up 100%. A drawdown figure alone invites the reader to assume otherwise.</p>
+      <div style="overflow-x:auto"><table style="min-width:820px"><thead><tr>
+        <th>Model</th><th class="num">Drawdown</th><th class="num">Needs</th><th class="num">High set</th><th class="num">Days</th>
+        <th>Three holdings furthest below their own 52-week high</th></tr></thead><tbody>
+        ${ladder.map(r => {
+          const pos = Array.isArray(r.positions) ? r.positions : [];
+          return `<tr${+r.gain_to_recover >= worst - 1e-9 ? ' style="background:var(--panel2)"' : ''}>
+            <td data-tip="${esc(r.note || '')}" style="cursor:default"><b>${esc(r.model)}</b></td>
+            <td class="num" style="color:var(--neg)">${p2(r.drawdown)}</td>
+            <td class="num"><b style="color:var(--neg)">+${p2(r.gain_to_recover).replace('-', '')}</b>${bar(r.gain_to_recover)}</td>
+            <td class="num" style="font-size:11px;color:var(--muted)">${esc(r.high_date)}</td>
+            <td class="num" style="color:var(--muted)">${r.days_since_high}</td>
+            <td>${!pos.length ? '<span style="color:var(--muted)">none measurable</span>'
+              : pos.map(x => `<span title="${esc(`${x.name || x.ticker}\n${(x.weight * 100).toFixed(1)}% of the model\nClose ${x.close} against a 52-week high of ${x.high52w}${x.high_date ? ` set ${x.high_date}` : ''}`)}" style="display:inline-block;margin-right:12px;white-space:nowrap">
+                  <b>${esc(x.ticker)}</b> <span style="color:var(--neg)">+${(x.gain_needed * 100).toFixed(1)}%</span>
+                  <span style="color:var(--muted);font-size:10px">${(x.weight * 100).toFixed(1)}%</span></span>`).join('')}
+              ${r.n_unmeasured ? `<span style="color:var(--muted);font-size:10px" title="${esc((r.unmeasured || []).join(', '))}">· ${r.n_unmeasured} not measurable</span>` : ''}</td></tr>`;
+        }).join('')}
+      </tbody></table></div>
+      <p class="note" style="margin-top:12px"><b>The holdings are measured on closing prices, not adjusted ones</b>, because the question is what it would take to recapture a price a holder actually watched — a dividend-adjusted series never printed those levels. Each is the gain from today's close back to the highest close of the last 52 weeks; hover for the two prices and the date the high was set.</p>
+      <p class="note"><b>These are highs since the record begins, not all-time highs.</b> The value series is reconstructed from target weights and starts in ${esc(String(ladder[0].series_from).slice(0, 4))}, so a model may have stood higher before it. Days the series could not price the whole book are excluded from the peak — a partly priced day is a different portfolio's value, and letting one set the high would invent a peak the book never reached and then measure every day against it.</p>
+    </div>`;
+  })();
+
   // ---- Model Surveillance ----
   // A performance cell: green when ahead, red when behind, with the comparison named in the
   // tooltip so a colour never has to be guessed at.
@@ -1664,7 +1708,7 @@ function stan() {
         <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
     }).join('')}
    </div>
-   ${tapeCard}${rxCard}${cautionCard}${fragCard}${sleeveCard}${stressCard}${insCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
+   ${tapeCard}${riskTable}${ladderCard}${rxCard}${cautionCard}${fragCard}${sleeveCard}${stressCard}${insCard}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
 }
 
 // ---------- Markets: a trading desk's wall, not a spreadsheet ----------
@@ -1901,7 +1945,7 @@ function markets() {
     const short = gauges.filter(g => +g.win_years < 4.75);
     return `<div class="card" style="margin-bottom:14px">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
-        <h2 style="margin:0">Yields</h2>
+        <h2 style="margin:0">The Bond King</h2>
         <span style="font-size:12px;color:var(--muted)">${gauges.length} measures · needle = place in the trailing five-year range · newest observation ${esc(asOf)}</span></div>
       ${groups.map(gr => `<div style="margin-top:14px">
         <div class="eyebrow" style="margin-bottom:4px">${esc(gr)}</div>
@@ -2189,7 +2233,6 @@ function markets() {
 
   return `<span class="eyebrow">Allocation model</span><h1>Markets</h1>
   <p class="sub">The shape of the day — indices, volatility, the curve, sectors and the world — then every tracked security underneath. Prices from the daily job as of ${esc(D.run ? D.run.latest_price_date || '—' : '—')}; ${withPrice} of ${rows.length} carry a close. Click anything for its chart.</p>
-  ${yieldSection}
   <div class="mkgrid">
     <div class="mkcol">
       ${usEquityPanel}
@@ -2215,6 +2258,7 @@ function markets() {
       ${grp('Commodities', [['USO', 'Crude oil'], ['DBC', 'Broad commodities'], ['GLD', 'Gold'], ['SLV', 'Silver']])}
     </div>
   </div>
+  ${yieldSection}
   ${table}`;
 }
 

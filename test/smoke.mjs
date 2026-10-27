@@ -2468,7 +2468,7 @@ if (!argRoute) {
     const yp = app();
     const gs = await rest('latest_yield_gauges', 'metric,label,grp,series_id,obs_date,value,win_years,n_obs,lo,hi,median,position,band,direction,value_30d,chg_30d_bps,chg_30d_pct,pct_meaningful,display_unit,display_scale');
     need(gs.length >= 10, `[yields] only ${gs.length} gauges computed`);
-    need(/<h2 style="margin:0">Yields<\/h2>/.test(yp), '[yields] the Yields section is not on the Markets page');
+    need(/<h2 style="margin:0">The Bond King<\/h2>/.test(yp), '[yields] The Bond King section is not on the Markets page');
 
     let yb = [];
     for (const g of gs) {
