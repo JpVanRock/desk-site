@@ -2412,6 +2412,19 @@ if (!argRoute) {
     need(rows.length >= 5, `[prescription] only ${rows.length} mandates prescribed`);
     // The card was renamed when the regime strip was folded into it: the prescription and the
     // alignment it implies are one card now, not a prescription beside two separate readings.
+    // THE PRESCRIBED SLEEVE MUST BE ONE THIS BOOK CAN BUY. Every sleeve the evidence marks
+    // 'preferred' is built on VXZ, which the owner ruled out on 2026-10-27 along with VIXM, while
+    // keeping the put-based funds. If the selection ever falls back to ranking on uplift alone it
+    // will silently prescribe a weight and an equity lift derived from an instrument the desk
+    // cannot hold -- real numbers attached to an unfollowable instruction.
+    const HOLDABLE = new Set(['BTAL', 'CAOS', 'TAIL', 'KMLM', 'DBMF', 'CTA', 'QMHIX', 'QNZIX',
+                              'QMNIX', 'QMNNX', 'CASH', 'BIL', 'USFR', 'JMST', 'SHY', 'TUA']);
+    const comp0 = Array.isArray(rows[0].composition) ? rows[0].composition : [];
+    need(comp0.length > 0, '[prescription] the prescribed sleeve has no composition');
+    const unholdable = comp0.map(c => c.ticker).filter(t => !HOLDABLE.has(t));
+    need(unholdable.length === 0,
+      `[prescription] prescribes ${unholdable.join(', ')}, which this desk cannot hold`);
+    need(!/\bVXZ\b|\bVIXM\b/.test(rxPage), '[prescription] the card prescribes a VIX futures product');
     need(/Regime and alignment/.test(rxPage), '[prescription] the card is not on the page');
     need(/Regime · /.test(rxPage), '[prescription] the regime is not named on the card');
     need(/mandates inside their band/.test(rxPage), '[prescription] the alignment count is not on the card');
