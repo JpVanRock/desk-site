@@ -146,7 +146,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist] = await Promise.all([
     qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
     qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
     qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note'), 'securities'),
@@ -265,6 +265,7 @@ async function load() {
     qAllSoft(() => sb.from('flows_calendar_history').select('as_of,value_date,roll_hit,roll_mean,conc_in,conc_out').order('value_date', { ascending: true }), 'flows history'),
     qAllSoft(() => sb.from('flows_calendar_upcoming').select('as_of,seq,window_key,entry_date,exit_date,days_held,month_num,hist_hit,hist_mean,recent_hit').order('seq', { ascending: true }), 'flows upcoming'),
     qAllSoft(() => sb.from('event_risk').select('as_of,event_id,week_start,week_end,event_date,kind,importance,title,source,detail').order('event_date', { ascending: true }), 'event risk'),
+    qAllSoft(() => sb.from('speed_limit_readings').select('as_of,category,score,light,weight,freshness,n_calls').order('as_of', { ascending: true }), 'speed limit history'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -365,7 +366,7 @@ async function load() {
     // run's window library on top of last run's and double every count on the page.
     flowWins: newest(flowWins || []), flowMonths: newest(flowMonths || []), flowMonitor: newest(flowMonitor || []),
     flowHist: newest(flowHist || []), flowNext: newest(flowNext || []),
-    eventRisk: newest(eventRisk || []) };
+    eventRisk: newest(eventRisk || []), slHist: slHist || [] };
 }
 
 // ---------- Views ----------
@@ -1332,14 +1333,23 @@ function stan(mode = 'dashboard') {
         const brakeWord = nAdd > nTrim ? `${nAdd} under-braked` : nTrim > nAdd ? `${nTrim} over-braked` : 'in line';
         // Equity: beta against the prescribed band. Beta rather than the equity line itself,
         // because a 60% book of low-beta equity is not carrying 60% of the market's risk.
-        const withBeta = rx.filter(r => r.beta_actual !== null && r.beta_floor !== null && r.beta_ceiling !== null);
+        // A BETA THE SPEED LIMIT WILL NOT RATE IS NOT GRADED HERE EITHER. Fixed Income Core has
+        // r-squared 0.30 against its benchmark, and strategy_speed_limit declines to light it on
+        // exactly that ground -- the benchmark explains too little of the model for its beta to
+        // describe a risk posture. Grading it anyway made one system's stated reason for silence
+        // into another's confident number.
+        const slBy = Object.fromEntries((D.modelSpeedLimit || []).map(x => [x.strategy_id, x]));
+        const unrated = rx.filter(r => (slBy[r.strategy_id] || {}).light === null || (slBy[r.strategy_id] || {}).light === undefined);
+        const withBeta = rx.filter(r => r.beta_actual !== null && r.beta_floor !== null && r.beta_ceiling !== null
+          && (slBy[r.strategy_id] || {}).light);
         const under = withBeta.filter(r => +r.beta_actual < +r.beta_floor);
         const over = withBeta.filter(r => +r.beta_actual > +r.beta_ceiling);
         const inBand = withBeta.length - under.length - over.length;
         const eqTone = under.length > over.length ? 'var(--warn)' : over.length ? 'var(--neg)' : 'var(--pos)';
         const eqWord = !withBeta.length ? 'no beta measured'
-          : under.length > over.length ? `${under.length} under-invested`
-          : over.length ? `${over.length} over-invested` : 'in band';
+          : (under.length > over.length ? `${under.length} under-invested`
+            : over.length ? `${over.length} over-invested` : 'in band')
+            + (unrated.length ? ` · ${unrated.length} unrated` : '');
         const tile = (label, big, sub, tone, tip) => `<div style="flex:1 1 170px;border:1px solid var(--line);border-left:3px solid ${tone};border-radius:6px;padding:10px 12px" title="${esc(tip)}">
           <div class="eyebrow">${label}</div>
           <div style="font-size:21px;font-variant-numeric:tabular-nums;line-height:1.25;color:${tone}">${big}</div>
@@ -1819,9 +1829,50 @@ function stan(mode = 'dashboard') {
     <p class="note" style="margin:0"><b>${hum.n_departed} of ${hum.n_live} tracked securities have stopped printing</b>, and that number is a <b>floor on what is missing, not a count of it</b>. Every peer median, blend fit and classification on this site is computed across names that still exist; the universe was assembled from survivors, so the funds that closed before this desk ever looked cannot appear in any figure here and never will. "We see the wealth being generated, never the processor, and never the losers."</p>
   </div>`;
 
+  // ---- the Speed Limit's own history ----
+  //
+  // THE FLAT LINE IS THE POINT. This is on Brakes rather than Stan because it is a diagnostic
+  // about the signal, not an instruction: for the first twenty recorded days the master score was
+  // -0.1303 to four decimal places, every day, and a current value shown without this history
+  // reads as a reading when it was a constant. The cause was structural -- nine standing analyst
+  // calls recorded on two days in September, all open, so the same quotient came out each morning
+  // -- and it is worth seeing rather than describing.
+  const slTrend = (() => {
+    const hist = (D.slHist || []).filter(r => r.category === 'master' && r.score !== null)
+      .slice().sort((a, b) => String(a.as_of).localeCompare(String(b.as_of)));
+    if (hist.length < 3) return '';
+    const vals = hist.map(r => +r.score);
+    const distinct = new Set(vals.map(v => v.toFixed(4))).size;
+    const lo = Math.min(-0.6, ...vals), hi = Math.max(0.6, ...vals);
+    const W = 760, Hh = 110, pad = 6;
+    const X = i => pad + (i / Math.max(1, hist.length - 1)) * (W - 2 * pad);
+    const Y = v => pad + (1 - (v - lo) / Math.max(1e-9, hi - lo)) * (Hh - 2 * pad);
+    const line = hist.map((r, i) => `${X(i).toFixed(1)},${Y(+r.score).toFixed(1)}`).join(' ');
+    const band = (D.speedLimit || [])[0];
+    const gate = band && band.score !== null && band.freshness ? 0.33 / +band.freshness : null;
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">The Speed Limit, over its whole recorded history</h2>
+        <span style="font-size:12px;color:var(--muted)">${hist.length} readings · ${esc(String(hist[0].as_of))} to ${esc(String(hist[hist.length - 1].as_of))} · <b style="color:${distinct <= 2 ? 'var(--neg)' : 'var(--fg)'}">${distinct} distinct value${distinct === 1 ? '' : 's'}</b></span></div>
+      <svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:${Hh}px;display:block;margin-top:10px" preserveAspectRatio="none" role="img" aria-label="Master Speed Limit score over its recorded history">
+        <line x1="${pad}" y1="${Y(0).toFixed(1)}" x2="${W - pad}" y2="${Y(0).toFixed(1)}" stroke="var(--line)" stroke-dasharray="3 3"/>
+        ${gate === null ? '' : `<line x1="${pad}" y1="${Y(Math.min(hi, gate)).toFixed(1)}" x2="${W - pad}" y2="${Y(Math.min(hi, gate)).toFixed(1)}" stroke="var(--pos)" stroke-width="0.7" stroke-dasharray="4 3" opacity="0.7"/>
+        <line x1="${pad}" y1="${Y(Math.max(lo, -gate)).toFixed(1)}" x2="${W - pad}" y2="${Y(Math.max(lo, -gate)).toFixed(1)}" stroke="var(--neg)" stroke-width="0.7" stroke-dasharray="4 3" opacity="0.7"/>`}
+        <polyline points="${line}" fill="none" stroke="var(--fg)" stroke-width="1.6"/>
+      </svg>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:2px">
+        <span>${esc(String(hist[0].as_of))}</span>
+        <span>${gate === null ? '' : `dashed green and red are the thresholds a green or red light needs: ±${gate.toFixed(2)} at today's freshness`}</span>
+        <span>${esc(String(hist[hist.length - 1].as_of))}</span></div>
+      <p class="note" style="margin-top:12px"><b>For its first twenty recorded days this line did not move at all</b> — the master score was −0.1303 to four decimal places on every one of them, and the light has never been anything but yellow. That was not a slow signal. It is a register of standing analyst calls, and the desk held nine of them recorded on two days in September, all open, all reviewing in December: the same numerator over the same denominator every morning. <b>A constant cannot be backtested</b>, because skill means correlating variation in a signal with variation in what follows, and there was none on either side.</p>
+      <p class="note"><b>It moves now because positioning finally has an input.</b> The framework allots positioning 10% and the category had never once been fed, so the master was a 60/20/10 blend reported as the whole framework and Predictive was really carrying 75% of it. The CFTC leg is the first thing that changes between mornings without a human writing a note. <b>Sentiment is still empty</b>, which is the other 10% abstaining.</p>
+      <p class="note"><b>The thresholds are wide on purpose and worth reading.</b> A light needs |score| above 0.33 divided by freshness, so stale evidence has to shout louder to be heard. At today's freshness that is ±${gate === null ? '—' : gate.toFixed(2)}, and nothing in this history has come close — which is the second reason the light has only ever been yellow.</p>
+    </div>`;
+  })();
+
   if (mode === 'brakes') return `<span class="eyebrow">Risk</span><h1>Brakes</h1>
    <p class="sub">Everything behind the brake, kept off Stan's dashboard because none of it is a decision for today: the cost the old caution rule actually carried, the sleeve candidates and how each was chosen, the stress programme including the tests the brake failed, and what every instrument paid at past troughs. <b>Every window here is a past one</b> — read it to understand why the prescription says what it says, not to decide what to do this morning. The prescription itself, and whether the book is in line with it, is on <a href="#stan">Stan</a>.</p>
-   ${cautionCard}${sleeveCard}${stressCard}${insCard}${docsCard}`;
+   ${slTrend}${cautionCard}${sleeveCard}${stressCard}${insCard}${docsCard}`;
 
   return `<span class="eyebrow">Risk</span><h1>Stan</h1>
    <p class="sub">Where the risk sits across the eight models, what is flagged, and what the risk figures cannot say. The backtests and episode studies behind the brake live on <a href="#brakes">Brakes</a>.</p>
