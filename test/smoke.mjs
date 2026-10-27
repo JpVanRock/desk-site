@@ -2449,6 +2449,76 @@ if (!argRoute) {
   }
 
   // -------------------------------------------------------------------------
+  // 21. The yield speedometers. Three guards, each on a way a gauge can lie.
+  //
+  //     THE NEEDLE MUST MATCH ITS OWN RANGE. A gauge whose needle is drawn from one number and
+  //     labelled with another is worse than no gauge, because it is confidently wrong and nothing
+  //     on the face says so.
+  //
+  //     THE COLOUR MUST FOLLOW THE DIRECTION THE ROW DECLARES. Green is wherever a holder is better
+  //     off, which is the HIGH end for a yield and the LOW end for an inflation breakeven. If that
+  //     ever silently flips, a rising breakeven starts reading as good news.
+  //
+  //     A PERCENTAGE OFF A NEAR-ZERO BASE MUST BE SUPPRESSED, not printed. The 10Y-2Y curve sat at
+  //     0.05 inside the year; a move to 0.31 is "+520%", which is arithmetic rather than news.
+  // -------------------------------------------------------------------------
+  currentRoute = 'yields';
+  await go('#markets');
+  {
+    const yp = app();
+    const gs = await rest('latest_yield_gauges', 'metric,label,grp,series_id,obs_date,value,win_years,n_obs,lo,hi,median,position,band,direction,value_30d,chg_30d_bps,chg_30d_pct,pct_meaningful,display_unit,display_scale');
+    need(gs.length >= 10, `[yields] only ${gs.length} gauges computed`);
+    need(/<h2 style="margin:0">Yields<\/h2>/.test(yp), '[yields] the Yields section is not on the Markets page');
+
+    let yb = [];
+    for (const g of gs) {
+      if (!(+g.lo <= +g.value && +g.value <= +g.hi)) yb.push(`${g.metric}: the level sits outside its own range`);
+      const want = +g.hi > +g.lo ? (+g.value - +g.lo) / (+g.hi - +g.lo) : 0.5;
+      if (Math.abs(+g.position - want) > 2e-3) yb.push(`${g.metric}: the needle at ${g.position} does not match its own range arithmetic (${want.toFixed(4)})`);
+      if (+g.position < 0 || +g.position > 1) yb.push(`${g.metric}: a needle at ${g.position}`);
+      if (!(+g.median >= +g.lo && +g.median <= +g.hi)) yb.push(`${g.metric}: the median sits outside its own range`);
+      // The band must follow the declared direction, not the raw position.
+      const third = g.direction === 'high_is_green' ? +g.position : 1 - +g.position;
+      const band = third >= 2 / 3 ? 'green' : third >= 1 / 3 ? 'amber' : 'red';
+      if (g.band !== band) yb.push(`${g.metric}: banded ${g.band} where its direction (${g.direction}) says ${band}`);
+      // The change must be the difference it claims, in both units.
+      if (g.chg_30d_bps !== null && g.value_30d !== null && Math.abs(+g.chg_30d_bps - (+g.value - +g.value_30d) * 100) > 0.2)
+        yb.push(`${g.metric}: the basis-point change is not the difference it reports`);
+      if (!g.pct_meaningful && g.chg_30d_pct !== null) yb.push(`${g.metric}: a percentage change on a base the job itself called unusable`);
+      if (g.pct_meaningful && g.chg_30d_pct !== null && +g.value_30d
+          && Math.abs(+g.chg_30d_pct - (+g.value / +g.value_30d - 1) * 100) > 0.05)
+        yb.push(`${g.metric}: the percentage change is not the ratio it reports`);
+      if (!g.series_id) yb.push(`${g.metric}: no source series, so the gauge cannot be audited`);
+      if (!g.obs_date) yb.push(`${g.metric}: no observation date, so its staleness is hidden`);
+      if (+g.n_obs < 60) yb.push(`${g.metric}: a range built on ${g.n_obs} observations`);
+    }
+    // The breakevens are the reason the direction field exists: if they ever read high_is_green,
+    // a rising inflation expectation starts rendering as good news.
+    for (const k of ['be_10y', 'be_5y5y']) {
+      const g = gs.find(x => x.metric === k);
+      if (g) need(g.direction === 'low_is_green', `[yields] ${k} is coloured ${g.direction} — a higher breakeven would render as good news`);
+    }
+    // Spreads must display in basis points, which is how they are quoted.
+    for (const k of ['oas_ig', 'oas_hy']) {
+      const g = gs.find(x => x.metric === k);
+      if (g) need(g.display_unit === 'bps' && +g.display_scale === 100, `[yields] ${k} displays in ${g.display_unit}, not basis points`);
+    }
+    // The page must carry what the gauge cannot show on its face.
+    need(/range position, not a percentile/i.test(yp), '[yields] the page does not distinguish a range position from a percentile');
+    need(/median is marked as a notch/i.test(yp), '[yields] the median tick is not explained');
+    need(/Green is not always the high end/i.test(yp), '[yields] the page does not explain the colour direction');
+    need(/30-day change/i.test(yp), '[yields] the 30-day change is not described');
+    const svgs = (yp.match(/aria-label="[^"]*% of its range"/g) || []).length;
+    need(svgs >= gs.length, `[yields] ${svgs} gauges drawn for ${gs.length} rows`);
+
+    yb = [...new Set(yb)];
+    for (const b of yb) errors.push(`[yields] ${b}`);
+    need(yb.length === 0, `[yields] ${yb.length} problem(s) above`);
+    const sup = gs.filter(g => !g.pct_meaningful);
+    say(` ok  yield speedometers     -> ${gs.length} gauges, ${gs.filter(g => g.band === 'green').length} green / ${gs.filter(g => g.band === 'amber').length} amber / ${gs.filter(g => g.band === 'red').length} red${sup.length ? `, ${sup.length} with the percentage suppressed` : ''}`);
+  }
+
+  // -------------------------------------------------------------------------
   // 14. Kate, from The Alchemy of Finance: the equilibrium gate, the successful-test count, the
   //     asymmetry, the credit panel and the named flaw.
   //

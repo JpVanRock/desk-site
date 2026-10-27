@@ -146,7 +146,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, rx, fragHist, frag, fragEps, stressTests, sleeves] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves] = await Promise.all([
     qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
     qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
     qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note'), 'securities'),
@@ -251,6 +251,7 @@ async function load() {
     // Which brake is worth owning, measured rather than modelled.
     qAllSoft(() => sb.from('latest_insurance_value').select('as_of,instrument,label,sort_order,window_key,window_from,window_to,n_days,n_stress,drawdowns_seen,crash_1pct,crash_5pct,worst_day_offset,carry_daily,carry_annual,free_carry,payoff_per_carry,carry_days_repaid,offset_per_1pct,corr_calm,corr_stress,corr_shift,episodes,episodes_helped,worst_episode,verdict,headline,detail').order('sort_order', { ascending: true }), 'insurance value'),
     qSoft(sb.from('latest_insurance_pricing').select('as_of,vix,vix_3m,realised_21d,vol_premium,vol_premium_pctile,term_ratio,term_state,term_pctile,verdict,headline,detail'), 'insurance pricing'),
+    qAllSoft(() => sb.from('latest_yield_gauges').select('as_of,metric,label,grp,sort_order,series_id,obs_date,value,unit,win_from,win_to,win_years,n_obs,lo,hi,median,position,band,direction,direction_why,value_30d,obs_date_30d,chg_30d_bps,chg_30d_pct,pct_meaningful,display_unit,display_scale,headline,note').order('sort_order', { ascending: true }), 'yield gauges'),
     qAllSoft(() => sb.from('latest_brake_prescription').select('as_of,strategy_id,model,sort_order,equity_weight,k,sleeve_key,sleeve_label,composition,sleeve_target,sleeve_floor,sleeve_ceiling,target_basis,beta_floor,beta_ceiling,beta_actual,old_floor,old_ceiling,light,monetise_at,monetise_share,monetise_basis,held_now,gap,no_trade_band,action,fragility,fragility_state,headline,detail').order('sort_order', { ascending: true }), 'brake prescription'),
     qAllSoft(() => sb.from('fragility_index').select('as_of,mfi,state').order('as_of', { ascending: false }).limit(504), 'fragility history'),
     qSoft(sb.from('latest_fragility_index').select('as_of,mfi,mfi_mean,mfi_pctile,override_leg,state,state_days,legs,n_legs,headline'), 'fragility index'),
@@ -352,7 +353,7 @@ async function load() {
     turnings: turnings || [], generations: generations || [], tapeTicker: tapeTicker || [], humility: humility || [],
     narReflex: narReflex || [], creditLegs: creditLegs || [], creditReading: creditReading || [],
     svenPrecedent: svenPrecedent || [], svenBreaks: svenBreaks || [], tapeQuiet: tapeQuiet || [],
-    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [], stressTests: stressTests || [], sleeves: sleeves || [], frag: frag || [], fragEps: fragEps || [], rx: rx || [], fragHist: fragHist || [] };
+    slBoard: slBoard || [], insValue: insValue || [], insPricing: insPricing || [], stressTests: stressTests || [], sleeves: sleeves || [], frag: frag || [], fragEps: fragEps || [], rx: rx || [], fragHist: fragHist || [], gauges: gauges || [] };
 }
 
 // ---------- Views ----------
@@ -957,7 +958,11 @@ function stan() {
 
   // ---- The ticker tape: does the tape agree? ----
   //
-  // Sits between the Speed Limit and Model Surveillance because that is the argument it settles.
+  // Sits directly under the Speed Limit because that is the argument it settles -- and it was moved
+  // back here on 2026-10-27 after six cards built in between had pushed it seventh down the page.
+  // The original instruction was "between the speed limit and the model surveillance section"; with
+  // that much in between, adjacency to both is impossible, and the half that matters is the Speed
+  // Limit, since agreeing or disagreeing with the light is the whole of what the tape is for.
   // The Speed Limit above is a JUDGMENT, assembled from what the desk's sources have said. The
   // tape is ARITHMETIC. When the two disagree, one of them is wrong, and the disagreement is
   // worth more than either reading alone.
@@ -1659,7 +1664,7 @@ function stan() {
         <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
     }).join('')}
    </div>
-   ${rxCard}${cautionCard}${fragCard}${sleeveCard}${stressCard}${insCard}${tapeCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
+   ${tapeCard}${rxCard}${cautionCard}${fragCard}${sleeveCard}${stressCard}${insCard}${riskTable}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
 }
 
 // ---------- Markets: a trading desk's wall, not a spreadsheet ----------
@@ -1836,6 +1841,79 @@ function markets() {
   };
   const vrow = (label, v, suffix = '', title = '') => `<div class="prow"><span class="pname"${title ? ` title="${esc(title)}"` : ''}>${esc(label)}</span>
     <span class="ptkr"></span><span class="pval">${v === null ? '<span style="color:var(--muted)">–</span>' : v + suffix}</span><span class="pchg"></span></div>`;
+  // ---- The yield speedometers ----
+  //
+  // After the PT Asset Management "Market Card" the owner supplied. Each needle sits where the
+  // current level falls inside a TRAILING FIVE YEAR RANGE -- (current - lowest) / (highest -
+  // lowest) -- with the two extremes printed under the arc ends and the colour spectrum cut into
+  // even thirds. That is the card's own construction and it is reproduced rather than improved on.
+  //
+  // IT IS A RANGE POSITION, NOT A PERCENTILE. A level can sit at 90% of the range and be entirely
+  // ordinary if the extremes are far apart and the middle is crowded, so the five-year median is
+  // marked on every arc as a tick. The card does not do that; without it a reader cannot tell a
+  // genuinely extreme level from a wide range.
+  const gauges = (D.gauges || []).slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const GAUGE_TONE = { green: 'var(--pos)', amber: 'var(--warn)', red: 'var(--neg)' };
+  function speedo(g) {
+    const sc = +g.display_scale || 1, u = g.display_unit === 'bps' ? '' : '%';
+    const fmt = v => v === null || v === undefined ? '—' : (g.display_unit === 'bps' ? (v * sc).toFixed(0) : (+v).toFixed(2)) + u;
+    const W = 150, Hh = 86, cx = W / 2, cy = 74, rOut = 60, rIn = 38;
+    // The arc runs left (0) to right (1) across the top half. Angles in radians from pi to 0.
+    const ang = t => Math.PI * (1 - Math.max(0, Math.min(1, t)));
+    const pt = (t, r) => [cx + r * Math.cos(ang(t)), cy - r * Math.sin(ang(t))];
+    const seg = (a, b, colour) => {
+      const [x1, y1] = pt(a, rOut), [x2, y2] = pt(b, rOut), [x3, y3] = pt(b, rIn), [x4, y4] = pt(a, rIn);
+      return `<path d="M${x1.toFixed(1)},${y1.toFixed(1)} A${rOut},${rOut} 0 0 1 ${x2.toFixed(1)},${y2.toFixed(1)} L${x3.toFixed(1)},${y3.toFixed(1)} A${rIn},${rIn} 0 0 0 ${x4.toFixed(1)},${y4.toFixed(1)} Z" fill="${colour}" opacity="0.88"/>`;
+    };
+    // Thirds, laid out so the green third is on the end this metric's direction calls green.
+    const lowFirst = g.direction === 'high_is_green'
+      ? ['var(--neg)', 'var(--warn)', 'var(--pos)'] : ['var(--pos)', 'var(--warn)', 'var(--neg)'];
+    const arcs = seg(0, 1 / 3, lowFirst[0]) + seg(1 / 3, 2 / 3, lowFirst[1]) + seg(2 / 3, 1, lowFirst[2]);
+    const t = Math.max(0, Math.min(1, +g.position));
+    const [nx, ny] = pt(t, rOut - 4);
+    const tone = GAUGE_TONE[g.band] || 'var(--muted)';
+    // The median tick: the thing the card leaves out and the reader needs.
+    const medT = +g.hi > +g.lo ? (+g.median - +g.lo) / (+g.hi - +g.lo) : 0.5;
+    const [m1x, m1y] = pt(medT, rIn), [m2x, m2y] = pt(medT, rOut);
+    const bps = g.chg_30d_bps === null ? null : +g.chg_30d_bps;
+    const pct = g.chg_30d_pct === null ? null : +g.chg_30d_pct;
+    const chgTone = bps === null ? 'var(--muted)' : bps > 0 ? 'var(--pos)' : bps < 0 ? 'var(--neg)' : 'var(--muted)';
+    const tip = `${g.label} · ${g.series_id}\nAs of ${g.obs_date}\n${g.note || ''}`;
+    return `<div style="text-align:center;padding:4px 2px" data-tip="${esc(tip)}">
+      <div style="font-size:11px;color:var(--muted);line-height:1.2;min-height:26px;display:flex;align-items:flex-end;justify-content:center">${esc(g.label)}</div>
+      <svg viewBox="0 0 ${W} ${Hh}" style="width:100%;max-width:150px;height:auto" role="img" aria-label="${esc(g.label)} ${fmt(g.value)}, ${(t * 100).toFixed(0)}% of its range">
+        ${arcs}
+        <line x1="${m1x.toFixed(1)}" y1="${m1y.toFixed(1)}" x2="${m2x.toFixed(1)}" y2="${m2y.toFixed(1)}" stroke="var(--bg)" stroke-width="1.6" opacity="0.85"/>
+        <line x1="${cx}" y1="${cy}" x2="${nx.toFixed(1)}" y2="${ny.toFixed(1)}" stroke="var(--text)" stroke-width="2.1" stroke-linecap="round"/>
+        <circle cx="${cx}" cy="${cy}" r="3.4" fill="var(--text)"/>
+        <text x="4" y="${Hh - 2}" font-size="9" fill="var(--muted)">${esc(fmt(g.lo))}</text>
+        <text x="${W - 4}" y="${Hh - 2}" font-size="9" fill="var(--muted)" text-anchor="end">${esc(fmt(g.hi))}</text>
+      </svg>
+      <div style="font-size:17px;font-weight:700;color:${tone};margin-top:-2px">${esc(fmt(g.value))}</div>
+      <div style="font-size:11px;color:${chgTone};font-variant-numeric:tabular-nums" title="Thirty days to ${esc(g.obs_date)}${g.pct_meaningful ? '' : '. The percentage change is suppressed: the level thirty days ago was too small a fraction of this series\u2019 own range for a ratio to mean anything.'}">
+        ${pct === null ? '<span style="color:var(--muted)">—</span>' : `${pct >= 0 ? '+' : '\u2212'}${Math.abs(pct).toFixed(1)}%`}
+        <span style="color:var(--muted)">${bps === null ? '' : `${bps >= 0 ? '+' : '\u2212'}${Math.abs(bps).toFixed(0)}bp`}</span></div>
+      <div style="font-size:9px;color:var(--muted)">30 days</div></div>`;
+  }
+  const yieldSection = !gauges.length ? '' : (() => {
+    const groups = [...new Set(gauges.map(g => g.grp))];
+    const asOf = gauges.map(g => g.obs_date).sort().pop();
+    const short = gauges.filter(g => +g.win_years < 4.75);
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Yields</h2>
+        <span style="font-size:12px;color:var(--muted)">${gauges.length} measures · needle = place in the trailing five-year range · newest observation ${esc(asOf)}</span></div>
+      ${groups.map(gr => `<div style="margin-top:14px">
+        <div class="eyebrow" style="margin-bottom:4px">${esc(gr)}</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:4px">
+          ${gauges.filter(g => g.grp === gr).map(speedo).join('')}</div></div>`).join('')}
+      <p class="note" style="margin-top:14px"><b>Each needle is the current level's place between the lowest and highest of the last five years</b>, the two numbers printed under the arc, with the colour spectrum in even thirds. That is the method of the card this is taken from. <b>It is a range position, not a percentile</b> — a level can sit at 90% of the range and still be ordinary if the extremes are far apart — so the five-year <b>median is marked as a notch</b> on every arc. The card does not show that, and without it the two cases look identical.</p>
+      <p class="note"><b>Green is not always the high end.</b> It is wherever a holder is better off: a higher yield, a wider spread, a steeper curve. <b>For the inflation breakevens it is the low end</b>, because a breakeven is not compensation — it is the inflation a nominal bond has to overcome — and this desk measures itself on real return net of it. Hover any gauge for the direction it was coloured by and the range behind it.</p>
+      <p class="note"><b>Beneath each gauge is the 30-day change</b>, in percent and in basis points. ${gauges.some(g => !g.pct_meaningful) ? 'Where the percentage is blank the level thirty days ago was too small a fraction of that series\u2019 own range for a ratio to carry information — a curve at 0.05 moving to 0.31 is "+520%", which is arithmetic rather than news. ' : ''}Basis points are shown regardless, because that is the unit these are traded in.</p>
+      ${!short.length ? '' : `<p class="note"><b>${short.length} of these ranges are shorter than five years:</b> ${short.map(g => `${esc(g.label)} (${(+g.win_years).toFixed(1)}y)`).join(', ')}. FRED serves the ICE BofA spread indices to this account on a three-year rolling licence, so those gauges compare against a narrower history and their extremes are easier to reach.</p>`}
+    </div>`;
+  })();
+
   // The MFI, on the page where market state is read rather than on the page where it is graded.
   //
   // COMPACT, BUT NOT QUIETER. A reader meeting this index on the Markets page must not take it for
@@ -2111,6 +2189,7 @@ function markets() {
 
   return `<span class="eyebrow">Allocation model</span><h1>Markets</h1>
   <p class="sub">The shape of the day — indices, volatility, the curve, sectors and the world — then every tracked security underneath. Prices from the daily job as of ${esc(D.run ? D.run.latest_price_date || '—' : '—')}; ${withPrice} of ${rows.length} carry a close. Click anything for its chart.</p>
+  ${yieldSection}
   <div class="mkgrid">
     <div class="mkcol">
       ${usEquityPanel}
