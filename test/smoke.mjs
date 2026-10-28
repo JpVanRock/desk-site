@@ -2922,6 +2922,47 @@ await go('#markets');
 }
 
 // ---------------------------------------------------------------------------
+// [ladder-detail] The position behind a Recovery Ladder chip.
+//
+//   THE TAX LINE IS THE PART THAT MUST NOT DRIFT. Lots are the desk's own reconstruction from the
+//   snapshot history, not a custodian's records, and the panel has to keep saying so — a
+//   holding-period figure presented as reported fact is the one thing on this panel someone might
+//   act on without checking.
+//
+//   IT ALSO MUST NOT CALL INFERRED TRADES FILLS. There is no execution file here; a trade is a
+//   change in weight between allocation snapshots, and the export recorded a rebalance at every
+//   period boundary where the desk traded at almost none of them.
+// -------------------------------------------------------------------------
+currentRoute = 'ladder-detail';
+await go('#stan');
+{
+  const lp = app();
+  const m = lp.match(/data-ladderpos="([^"]+)"/);
+  need(Boolean(m), '[ladder-detail] the ladder positions are not clickable');
+  if (m) {
+    const [sid, tk] = m[1].split('|');
+    // The harness matches a selector by exact string, and the handler reads '[data-ladderpos]'.
+    await click('[data-ladderpos]', { ladderpos: m[1] });
+    const d = app();
+    need(/data-ladderbody/.test(d), '[ladder-detail] clicking a position did not open the panel');
+    need(/Trade history/.test(d), '[ladder-detail] no trade history section');
+    need(/Tax lots/.test(d), '[ladder-detail] no tax lots section');
+    need(/not a tax document/i.test(d), '[ladder-detail] the panel does not say the tax treatment is an indication');
+    need(/These are not fills/i.test(d), '[ladder-detail] the panel does not say the trades are inferred rather than executed');
+    need(/dividends and distributions are already in it/i.test(d), '[ladder-detail] the panel does not state that returns include income');
+
+    // The panel must show what the database holds for that position, not an empty shell.
+    const lots = (await rest('latest_model_open_lots', 'strategy_id,ticker,is_long_term,weight'))
+      .filter(x => x.strategy_id === sid && x.ticker === tk);
+    const trs = (await rest('latest_model_trades', 'strategy_id,ticker,status'))
+      .filter(x => x.strategy_id === sid && x.ticker === tk);
+    if (lots.length) need(/long-term|short-term/.test(d), `[ladder-detail] ${tk} has ${lots.length} lots and the panel shows no treatment`);
+    if (trs.length) need(/realised|unrealised/.test(d), `[ladder-detail] ${tk} has ${trs.length} trades and the panel shows neither realised nor unrealised`);
+    say(` ok  ladder detail          -> ${tk}: ${trs.length} trade(s), ${lots.length} lot(s), ${lots.filter(x => x.is_long_term).length} long-term`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log('');
 if (errors.length) { console.log(`${errors.length} PROBLEM(S):`); for (const e of errors) console.log('  ' + e); process.exit(1); }
 console.log('No problems found.');

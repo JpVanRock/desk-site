@@ -847,6 +847,7 @@ let watchTab = 'equities';
 // of asking what six months of vol looks like against a year of price.
 let volPeriod = null;                  // null = follow the performance window
 let bigChart = null;                   // 'perf' | 'vol' -- which chart is open enlarged
+let ladderDetail = null;               // "<strategy_id>|<ticker>" -- the open position detail
 let watchAdd = { busy: false, msg: null, tone: null };
 const SCATTER_PERIODS = ['YTD', '1Y', '3Y', '5Y'];
 
@@ -1599,7 +1600,7 @@ function stan(mode = 'dashboard') {
                     + (costed ? `\nCost this model ${(x.dd_contrib * 100).toFixed(2)}% from its peak, at the weights actually held on each day` : '')
                     + (x.recovery_contrib !== null && x.recovery_contrib !== undefined ? `\nBack at its ${x.price_at_model_peak} peak-day price it adds ${(x.recovery_contrib * 100).toFixed(2)}% at today's weight` : '')
                     + `\nThe security itself is ${(x.gain_needed * 100).toFixed(1)}% below its own 52-week high of ${x.high52w}${x.high_date ? ` set ${x.high_date}` : ''}`;
-                  return `<span title="${esc(tip)}" style="display:inline-block;margin-right:12px;white-space:nowrap">
+                  return `<span data-ladderpos="${esc(r.strategy_id)}|${esc(x.ticker)}" title="${esc(tip + '\n\nClick for the trade history, tax lots and holding periods behind this.')}" style="display:inline-block;margin-right:12px;white-space:nowrap;cursor:pointer;border-bottom:1px dotted var(--muted)">
                   <b>${esc(x.ticker)}</b> <span style="color:var(--neg)">${costed ? `${(x.dd_contrib * 100).toFixed(2)}%` : `+${(x.gain_needed * 100).toFixed(1)}%`}</span>
                   <span style="color:var(--muted);font-size:10px">${(x.weight * 100).toFixed(1)}%</span></span>`;
                 }).join('')}
@@ -1874,6 +1875,118 @@ function stan(mode = 'dashboard') {
    <p class="sub">Everything behind the brake, kept off Stan's dashboard because none of it is a decision for today: the cost the old caution rule actually carried, the sleeve candidates and how each was chosen, the stress programme including the tests the brake failed, and what every instrument paid at past troughs. <b>Every window here is a past one</b> — read it to understand why the prescription says what it says, not to decide what to do this morning. The prescription itself, and whether the book is in line with it, is on <a href="#stan">Stan</a>.</p>
    ${slTrend}${cautionCard}${sleeveCard}${stressCard}${insCard}${docsCard}`;
 
+  // ---- the position detail behind a Recovery Ladder chip ----
+  //
+  // WHAT THESE TRADES ARE, AND ARE NOT. There is no execution file on this desk. The ledger infers
+  // a trade from a change in a position's weight between dated allocation snapshots, which is why
+  // a run of unchanged weights is ONE holding and not a series of rebalances -- Koyfin opened a new
+  // allocation period at every boundary and recorded each as a rebalance, and the desk did not
+  // trade at most of them. Entry and exit dates are therefore the first and last date the position
+  // carried that weight, not fills.
+  //
+  // THE RETURNS ARE TOTAL RETURNS. They are computed from ADJUSTED closes, so dividends and
+  // distributions are in them. total_return is what the security did over the window;
+  // contribution is what that was worth to the model after the weight it was actually held at,
+  // which is the figure that matters and the one a security's own chart cannot show.
+  //
+  // THE TAX LINE IS AN INDICATION, NOT A TAX DOCUMENT. Lots come from the desk's own reconstruction
+  // of the snapshot history, not from a custodian. Long-term means held more than a year on that
+  // reconstruction. Where a lot predates the record, or its basis had to be estimated, the row
+  // says so rather than quietly presenting a derived number as a reported one.
+  const ladderOverlay = (() => {
+    if (!ladderDetail) return '';
+    const [sid, tk] = String(ladderDetail).split('|');
+    const row = ladder.find(r => r.strategy_id === sid);
+    const pos = ((row || {}).positions || []).find(p => p.ticker === tk) || null;
+    const lots = (D.openLots || []).filter(l => l.strategy_id === sid && l.ticker === tk)
+      .slice().sort((a, b) => String(a.lot_date).localeCompare(String(b.lot_date)));
+    const tr = (D.trades || []).filter(t => t.strategy_id === sid && t.ticker === tk)
+      .slice().sort((a, b) => String(a.entry_date).localeCompare(String(b.entry_date)));
+    const p2 = (v, d = 2) => v === null || v === undefined ? '—' : `${(+v * 100).toFixed(d)}%`;
+    const bp = v => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : '−'}${Math.abs(+v).toFixed(0)}bp`;
+    const money = v => v === null || v === undefined ? '—' : (+v).toFixed(2);
+
+    const lt = lots.filter(l => l.is_long_term), st = lots.filter(l => !l.is_long_term);
+    const wsum = a => a.reduce((x, l) => x + +l.weight, 0);
+    const bsum = a => a.reduce((x, l) => x + +l.unrealised_bps, 0);
+    const anyEst = lots.some(l => l.basis_estimated), anyOpen = lots.some(l => l.from_opening_book);
+    const closed = tr.filter(t => t.status === 'closed'), open = tr.filter(t => t.status !== 'closed');
+
+    const lotRows = !lots.length ? '<tr><td colspan="8" style="color:var(--muted);padding:8px">No open lots recorded for this position.</td></tr>'
+      : lots.map(l => `<tr style="border-top:1px solid var(--line)">
+          <td style="padding:3px 6px">${esc(String(l.lot_date))}</td>
+          <td class="num" style="padding:3px 6px">${p2(l.weight, 1)}</td>
+          <td class="num" style="padding:3px 6px;color:var(--muted)">${money(l.cost_price)}</td>
+          <td class="num" style="padding:3px 6px;color:var(--muted)">${money(l.current_price)}</td>
+          <td class="num" style="padding:3px 6px;color:${+l.unrealised_bps >= 0 ? 'var(--pos)' : 'var(--neg)'}">${bp(l.unrealised_bps)}</td>
+          <td class="num" style="padding:3px 6px;color:var(--muted)">${l.held_days}d</td>
+          <td style="padding:3px 6px"><span style="color:${l.is_long_term ? 'var(--pos)' : 'var(--warn)'}">${l.is_long_term ? 'long-term' : 'short-term'}</span></td>
+          <td style="padding:3px 6px;font-size:10px;color:var(--muted)">${[l.basis_estimated ? 'basis estimated' : '', l.from_opening_book ? 'predates the record' : ''].filter(Boolean).join(' · ')}</td></tr>`).join('');
+
+    const trRow = t => `<tr style="border-top:1px solid var(--line)${t.status === 'closed' ? '' : ';background:var(--panel2)'}">
+      <td style="padding:3px 6px">${esc(String(t.entry_date))}</td>
+      <td style="padding:3px 6px">${t.exit_date ? esc(String(t.exit_date)) : '<span style="color:var(--muted)">held</span>'}</td>
+      <td style="padding:3px 6px"><b style="color:${t.status === 'closed' ? 'var(--muted)' : 'var(--fg)'}">${t.status === 'closed' ? 'realised' : 'unrealised'}</b></td>
+      <td class="num" style="padding:3px 6px;color:${+t.total_return >= 0 ? 'var(--pos)' : 'var(--neg)'}"><b>${p2(t.total_return)}</b></td>
+      <td class="num" style="padding:3px 6px;color:${+t.contribution_bps >= 0 ? 'var(--pos)' : 'var(--neg)'}">${bp(t.contribution_bps)}</td>
+      <td class="num" style="padding:3px 6px;color:var(--muted)">${bp(t.excess_bps)}</td>
+      <td class="num" style="padding:3px 6px;color:var(--muted)">${p2(t.entry_weight, 1)} → ${p2(t.exit_weight, 1)}</td>
+      <td class="num" style="padding:3px 6px;color:var(--muted)">${p2(t.avg_weight, 1)}</td>
+      <td style="padding:3px 6px;font-size:10px;color:var(--muted)">${[t.sizing_verdict ? esc(String(t.sizing_verdict).replace(/_/g, ' ')) : '', t.pre_existing ? 'pre-existing' : '', t.starts_in_gap ? 'starts in a snapshot gap' : ''].filter(Boolean).join(' · ')}</td></tr>`;
+
+    const name = (D.markets || []).find(m => m.ticker === tk)?.name || '';
+    return `<div data-ladderclose style="position:fixed;inset:0;background:rgba(0,0,0,.74);z-index:960;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow:auto">
+      <div data-ladderbody style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;width:min(1180px,97vw);box-shadow:0 18px 60px rgba(0,0,0,.5)">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <div><h2 style="margin:0">${esc(tk)} <span style="font-weight:400;color:var(--muted);font-size:14px">in ${esc((row || {}).model || '')}</span></h2>
+            <div style="font-size:12px;color:var(--muted);margin-top:2px">${esc(name)}</div></div>
+          <button data-ladderclose style="padding:4px 12px;border:1px solid var(--line);border-radius:5px;background:var(--panel2);color:var(--fg);font-size:12px;cursor:pointer">Close ✕</button></div>
+
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+          <div style="flex:1 1 150px;border:1px solid var(--line);border-radius:6px;padding:9px 11px">
+            <div class="eyebrow">Held now</div>
+            <div style="font-size:19px;font-variant-numeric:tabular-nums">${pos ? p2(pos.weight, 1) : '—'}</div>
+            <div style="font-size:10px;color:var(--muted)">${lots.length} lot${lots.length === 1 ? '' : 's'}</div></div>
+          <div style="flex:1 1 150px;border:1px solid var(--line);border-radius:6px;padding:9px 11px">
+            <div class="eyebrow">Unrealised</div>
+            <div style="font-size:19px;font-variant-numeric:tabular-nums;color:${bsum(lots) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${lots.length ? bp(bsum(lots)) : '—'}</div>
+            <div style="font-size:10px;color:var(--muted)">to the model, across all lots</div></div>
+          <div style="flex:1 1 170px;border:1px solid var(--line);border-left:3px solid var(--pos);border-radius:6px;padding:9px 11px">
+            <div class="eyebrow">Long-term</div>
+            <div style="font-size:19px;font-variant-numeric:tabular-nums">${lt.length ? p2(wsum(lt), 1) : '—'}</div>
+            <div style="font-size:10px;color:var(--muted)">${lt.length} lot${lt.length === 1 ? '' : 's'} · ${lt.length ? bp(bsum(lt)) : '—'} unrealised</div></div>
+          <div style="flex:1 1 170px;border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:6px;padding:9px 11px">
+            <div class="eyebrow">Short-term</div>
+            <div style="font-size:19px;font-variant-numeric:tabular-nums">${st.length ? p2(wsum(st), 1) : '—'}</div>
+            <div style="font-size:10px;color:var(--muted)">${st.length} lot${st.length === 1 ? '' : 's'} · ${st.length ? bp(bsum(st)) : '—'} unrealised</div></div>
+        </div>
+
+        <div class="eyebrow" style="margin:16px 0 4px">Trade history · ${closed.length} realised, ${open.length} still held</div>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums">
+          <thead><tr style="color:var(--muted);font-size:11px;text-align:left">
+            <th style="padding:3px 6px">In</th><th style="padding:3px 6px">Out</th><th style="padding:3px 6px">Status</th>
+            <th style="padding:3px 6px;text-align:right" title="The security's own total return over the window, from adjusted closes — dividends and distributions included.">Total return</th>
+            <th style="padding:3px 6px;text-align:right" title="What that was worth to the model at the weight it was actually held.">To the model</th>
+            <th style="padding:3px 6px;text-align:right" title="Against the model's benchmark over the same window.">vs bench</th>
+            <th style="padding:3px 6px;text-align:right">Weight in → out</th>
+            <th style="padding:3px 6px;text-align:right">Average</th><th style="padding:3px 6px">Notes</th></tr></thead>
+          <tbody>${tr.length ? tr.map(trRow).join('') : '<tr><td colspan="9" style="color:var(--muted);padding:8px">No trade record for this position.</td></tr>'}</tbody></table></div>
+
+        <div class="eyebrow" style="margin:16px 0 4px">Tax lots</div>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums">
+          <thead><tr style="color:var(--muted);font-size:11px;text-align:left">
+            <th style="padding:3px 6px">Acquired</th><th style="padding:3px 6px;text-align:right">Weight</th>
+            <th style="padding:3px 6px;text-align:right">Cost</th><th style="padding:3px 6px;text-align:right">Now</th>
+            <th style="padding:3px 6px;text-align:right">Unrealised</th><th style="padding:3px 6px;text-align:right">Held</th>
+            <th style="padding:3px 6px">Treatment</th><th style="padding:3px 6px">Notes</th></tr></thead>
+          <tbody>${lotRows}</tbody></table></div>
+
+        <p class="note" style="margin-top:14px"><b>These are not fills.</b> There is no execution file on this desk — a trade is inferred from a change in weight between dated allocation snapshots, so a run of unchanged weights is one holding rather than a series of rebalances. The export recorded a new allocation period at every boundary and the desk did not trade at most of them. <b>In</b> and <b>Out</b> are the first and last dates the position carried that weight.</p>
+        <p class="note"><b>Every return here is a total return</b>, computed from adjusted closes, so dividends and distributions are already in it. <b>Total return</b> is what the security did; <b>to the model</b> is what that was worth at the weight actually held, which is the figure that matters and the one a security's own chart cannot show — a 35% move on a 2% position is worth 70bp.</p>
+        <p class="note"><b>The tax treatment is an indication and not a tax document.</b> Lots are the desk's own reconstruction from the snapshot history, not a custodian's records; long-term means held more than a year on that reconstruction. ${anyEst ? '<b>Some basis on this position is estimated</b> and those rows say so. ' : 'No basis on this position is estimated. '}${anyOpen ? '<b>One or more lots predate the record</b>, so their acquisition date is the start of the history rather than a purchase.' : ''} Confirm against the custodian before acting on a holding-period decision.</p>
+      </div></div>`;
+  })();
+
   return `<span class="eyebrow">Risk</span><h1>Stan</h1>
    <p class="sub">Where the risk sits across the eight models, what is flagged, and what the risk figures cannot say. The backtests and episode studies behind the brake live on <a href="#brakes">Brakes</a>.</p>
    <div class="kpis" style="grid-template-columns:repeat(5,1fr)">
@@ -1890,7 +2003,7 @@ function stan(mode = 'dashboard') {
         <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
     }).join('')}
    </div>
-   ${tapeCard}${riskTable}${ladderCard}${rxCard}${fragCard}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
+   ${ladderOverlay}${tapeCard}${riskTable}${ladderCard}${rxCard}${fragCard}${flagsCard}${positionScatter()}${humilityCard}${docsCard}`;
 }
 
 // ---------- Markets: a trading desk's wall, not a spreadsheet ----------
@@ -7664,6 +7777,24 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Escape' || !bigChart) return;
   bigChart = null;
   if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
+});
+// Opening a Recovery Ladder position, and closing it again.
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-ladderclose]')) {
+    ladderDetail = null;
+    if ((location.hash || '').startsWith('#stan')) $('#app').innerHTML = stan();
+    return;
+  }
+  if (e.target.closest('[data-ladderbody]')) return;      // clicks inside the panel stay inside it
+  const t = e.target.closest('[data-ladderpos]');
+  if (!t) return;
+  ladderDetail = t.dataset.ladderpos;
+  if ((location.hash || '').startsWith('#stan')) $('#app').innerHTML = stan();
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape' || !ladderDetail) return;
+  ladderDetail = null;
+  if ((location.hash || '').startsWith('#stan')) $('#app').innerHTML = stan();
 });
 // Watchlist sleeve tabs.
 document.addEventListener('click', e => {
