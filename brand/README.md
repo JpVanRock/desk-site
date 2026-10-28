@@ -60,3 +60,35 @@ artwork is redrawn, the mark can be rebuilt sharper.
 
 **Rights:** the provenance of the underlying drawing has not been confirmed. Settle that
 before the mark goes on client-facing material.
+
+
+## Raster mark, 2026-10-28
+
+The owner supplied the artwork at 1024x1024 with a red FOAO seal, which is the higher-resolution
+original this README anticipated. It replaced the inline SVG symbol on the site.
+
+| File | Ink | Background | Use on |
+| --- | --- | --- | --- |
+| `assets/foao-mark-on-dark.png` (+ `@2x`) | `#F0EFEC`, seal `#D6524A` | transparent | dark theme |
+| `assets/foao-mark-on-light.png` (+ `@2x`) | `#111111`, seal `#9C2D2A` | transparent | light theme |
+| `assets/foao-mark-black-bg.png` | `#F0EFEC`, seal `#D6524A` | solid `#1A1A19` | sharing, print, anywhere a tile is wanted |
+| `brand/foao-mark-source-1024.png` | as supplied | as supplied | the source of record |
+
+**Why raster, and why not traced.** The drawing is brushwork with a coloured seal in it. No
+vectoriser was available, and a single-colour trace would have discarded both the seal and the
+brush texture. The site therefore themes by swapping the file rather than by `currentColor`,
+which is the fixed-ink case this README already describes.
+
+**Why transparent on the site.** Neither site surface matches the brand surfaces above: the page
+is `#0e1116` dark and `#f5f6f8` light, both cool-toned, against a warm `#1A1A19` and `#FCFCFB`. A
+baked background would show as a visible rectangle in the header.
+
+**The seal is treated separately from the ink.** A plain inversion turns the red seal cyan. The
+dark variant lifts the seal from `#9C2D2A` to `#D6524A` so it still reads as the same red against
+near-black, and inverts only the greys.
+
+**The figure reads as a negative on dark.** Inverting a hatched line drawing turns a lit form with
+dark hatching into a dark form with light hatching. That is inherent to the inversion, not a
+defect; redraw the dark variant by hand if a lit figure is wanted there.
+
+The old `sisyphus-mark.svg` stays as the record of the previous mark and is no longer inlined.

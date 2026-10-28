@@ -21,11 +21,23 @@ body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system
    The mark is portrait, 0.635:1, and stops being legible below about 48px tall: below that the
    figure closes up and only the frame and circle read. The header is sized around that floor
    rather than the mark being squeezed to fit the header. */
-.logo{color:#F0EFEC;display:block;flex:none}
-:root[data-theme="light"] .logo{color:#111111}
+/* THE MARK IS NOW A RASTER, so it is themed by swapping the FILE rather than by currentColor.
+   The drawing is brushwork with a red seal in it: there is no vectoriser on this machine, and a
+   single-colour trace would have thrown the seal and the brush texture away. The two fixed-ink
+   files are the case brand/README.md already contemplates for exactly this reason.
+   BOTH ARE TRANSPARENT, not tiles. The page surface shows through, so the mark sits correctly on
+   #0e1116 and #f5f6f8 alike -- neither of which matches the brand sheet's own warm surfaces, so a
+   baked-in background would have shown as a visible rectangle in the header. */
+.logo{display:block;flex:none;background-repeat:no-repeat;background-position:center;background-size:contain;
+  background-image:url(assets/foao-mark-on-dark.png)}
+:root[data-theme="light"] .logo{background-image:url(assets/foao-mark-on-light.png)}
+@media (-webkit-min-device-pixel-ratio:1.5),(min-resolution:144dpi){
+  .logo{background-image:url(assets/foao-mark-on-dark@2x.png)}
+  :root[data-theme="light"] .logo{background-image:url(assets/foao-mark-on-light@2x.png)}
+}
 /* The header mark is sized in auth.css, which loads after this file and wins. A rule here was
    dead weight that read as though it were in charge -- it is deliberately not replaced. */
-.logo-gate{height:88px;width:56px;margin:0 auto 4px}
+.logo-gate{height:88px;width:59px;margin:0 auto 4px}
 .top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:28px;padding:16px 28px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
 .brand{display:flex;gap:16px;align-items:center}.brand b{display:block;font-size:24px;letter-spacing:.2px;line-height:1.15}.brand small{color:var(--muted);font-size:13px;letter-spacing:.9px;text-transform:uppercase}
 nav{display:flex;gap:4px;flex:1;flex-wrap:wrap}nav a{color:var(--muted);text-decoration:none;font-size:16px;padding:12px 14px;border-radius:10px}nav a:hover{color:var(--text)}nav a.on{color:var(--text);background:var(--panel2)}
