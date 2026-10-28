@@ -421,3 +421,14 @@ select{font:inherit;font-size:12.5px;padding:5px 7px;border-radius:7px;border:1p
   .tools a.navlink{padding:10px 8px;font-size:15px}
   #signout{padding:6px 8px}
 }
+
+/* The advisory-fee switch on Model Surveillance. A real checkbox underneath, so it is keyboard
+   and screen-reader operable; the knob is drawn from the checkbox's own state. */
+.feeswitch{display:inline-flex;align-items:center;gap:9px;font-size:12.5px;color:var(--muted);cursor:pointer;user-select:none;position:relative}
+.feeswitch input{position:absolute;opacity:0;width:1px;height:1px}
+.feeswitch .feeknob{width:36px;height:20px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);position:relative;transition:background .15s}
+.feeswitch .feeknob::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--muted);transition:transform .15s,background .15s}
+.feeswitch input:checked+.feeknob{background:color-mix(in srgb,var(--accent) 35%,var(--panel2));border-color:var(--accent)}
+.feeswitch input:checked+.feeknob::after{transform:translateX(16px);background:var(--accent)}
+.feeswitch input:checked~span:last-child{color:var(--text)}
+.feeswitch input:focus-visible+.feeknob{outline:2px solid var(--accent);outline-offset:2px}

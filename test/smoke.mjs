@@ -219,6 +219,13 @@ async function change(sel, dataset, value) {
   }
   await sleep(200);
 }
+async function toggle(sel, checked) {
+  for (const f of docListeners.change || []) {
+    try { f({ target: { closest: s => (s === sel ? { dataset: {}, checked } : null), checked } }); }
+    catch (e) { errors.push(`[${currentRoute}] toggle ${sel} threw: ${e.message}`); }
+  }
+  await sleep(300);
+}
 const app = () => el('#app').innerHTML;
 const drawer = () => el('#drawer').innerHTML;
 const both = () => app() + drawer();
@@ -448,6 +455,44 @@ if (!argRoute) {
     say(` ok  monthly annual colour -> ${annuals.length} annual cells, ${wrong.length} coloured against their sign`);
     need(annuals.length > 0, '[monthly] no annual cells found');
     for (const a of wrong) errors.push(`[monthly] an annual of ${a.v}% is shown ${a.bg === 'var(--winbg)' ? 'green' : 'red'}`);
+  }
+  // EVERY box is coloured by its own sign now, months included: the owner found green behind
+  // minus signs when months were coloured against the benchmark.
+  {
+    const d = drawer().split('Monthly returns')[1] || '';
+    const cells = [...d.matchAll(/<td class="num" style="background:(var\(--\w+bg\)|transparent);[^"]*"[^>]*>(-?[\d.]+)%/g)].map(m => ({ bg: m[1], v: +m[2] }));
+    const wrong = cells.filter(c => (c.v > 0 && c.bg !== 'var(--winbg)') || (c.v < 0 && c.bg !== 'var(--losebg)') || (c.v === 0 && c.bg !== 'transparent'));
+    say(` ok  monthly colour        -> ${cells.length} cells, ${wrong.length} coloured against their sign`);
+    need(cells.length > 12, '[monthly] the grid has too few cells to check');
+    for (const c of wrong.slice(0, 5)) errors.push(`[monthly] a month of ${c.v}% is shown ${c.bg}`);
+  }
+  // The advisory fee: 0.1675% on the first day of each quarter. With the switch on, this year's
+  // annual cell must be the gross one charged once per quarter-opening month it has, and must
+  // still agree with the trailing YTD on the same card, which is charged by date independently.
+  {
+    const annualOf = h => { const m = (h.split('Monthly returns')[1] || '').match(new RegExp('<td><b>' + yr + '</b></td><td class="num"[^>]*>(-?[\\d.]+)%')); return m ? +m[1] : null; };
+    const ytdOf = h => {
+      const seg = h.split('>Trailing returns<')[1]; if (!seg) return null;
+      const cols = [...(seg.split('<thead>')[1] || '').split('</thead>')[0].matchAll(/<th class="num">([^<]+)<\/th>/g)].map(m => m[1]);
+      const i = cols.indexOf('YTD'); if (i < 0) return null;
+      const row = seg.split('</thead>')[1].split('</tr>')[0];
+      const v = [...row.matchAll(/<td class="num">([\s\S]*?)<\/td>/g)].map(m => { const t = m[1].replace(/<[^>]*>/g, '').trim().match(/^(-?[\d.]+)%$/); return t ? +t[1] : null; });
+      return v[i] ?? null;
+    };
+    const gross = annualOf(drawer());
+    need(/data-feetoggle/.test(app()), '[fee] the advisory-fee switch is not on the Model Surveillance card');
+    await toggle('[data-feetoggle]', true);
+    const net = annualOf(drawer()), netYtd = ytdOf(drawer());
+    const qMonths = [1, 4, 7, 10].filter(mo => mo <= new Date().getUTCMonth() + 1).length;
+    const want = gross === null ? null : +(((1 + gross / 100) * (1 - 0.0067 / 4) ** qMonths - 1) * 100).toFixed(2);
+    say(` ok  advisory fee          -> ${yr} annual ${gross}% gross, ${net}% net (want ${want}%), trailing YTD net ${netYtd}%`);
+    if (gross !== null) {
+      need(net !== null && Math.abs(net - want) <= 0.011, `[fee] ${yr} annual is ${net}% with the fee on, expected ${want}%`);
+      need(netYtd === null || Math.abs(netYtd - net) < 0.02, `[fee] with the fee on, trailing YTD ${netYtd}% and the ${yr} annual ${net}% disagree`);
+    }
+    need(/net of fee/.test(drawer()), '[fee] the trailing table does not say it is net of fee');
+    await toggle('[data-feetoggle]', false);
+    need(annualOf(drawer()) === gross, '[fee] switching the fee off did not restore the gross figure');
   }
   // Every window must start where its name says. A YTD that begins in a prior year is a different
   // question wearing the YTD label, which is how Fixed Income Core came to report 39.04%.

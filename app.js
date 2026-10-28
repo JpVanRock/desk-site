@@ -847,6 +847,39 @@ let scatterPeriod = 'YTD';
 let breakdownLens = 'sector';
 // Which column the monthly grid is showing. Module scope for the same reason as breakdownLens.
 let monthlyTab = 'portfolio';
+// ADVISORY FEE. Off by default, so every figure on the site is gross unless the desk asks
+// otherwise, and the switch is remembered per browser. The fee is 0.67% a year charged as four
+// equal 0.1675% deductions on the first day of each calendar quarter -- so a window is charged
+// once for every quarter start that falls inside it, which is why a one-month return carries a
+// fee in January, April, July and October and none in the other eight months. Benchmarks are
+// never charged: an index has no advisor.
+const FEE_ANNUAL = 0.0067, FEE_Q = FEE_ANNUAL / 4;
+let advisoryFee = false;
+try { advisoryFee = localStorage.getItem('advisoryFee') === '1'; } catch (e) {}
+// Quarter starts strictly after the window opens and on or before it closes: a return measured
+// from the close of `start` to the close of `end` has lived through exactly those charges.
+function feeQuartersIn(start, end) {
+  if (!start || !end || end <= start) return 0;
+  let k = 0;
+  for (let y = +start.slice(0, 4); y <= +end.slice(0, 4); y++)
+    for (const mm of ['01', '04', '07', '10']) { const d = `${y}-${mm}-01`; if (d > start && d <= end) k++; }
+  return k;
+}
+function netOfFee(ret, start, end) {
+  if (!advisoryFee || ret === null || ret === undefined) return ret === undefined ? null : ret;
+  return (1 + +ret) * (1 - FEE_Q) ** feeQuartersIn(start, end) - 1;
+}
+// An annualised figure is taken back to its cumulative return over the actual window, charged,
+// and annualised again over the same span -- never "CAGR minus 0.67", which is only roughly right
+// and wrong in exactly the windows where the quarter count is not a whole number of years.
+function netCagrOfFee(cagr, start, end) {
+  if (!advisoryFee || cagr === null || cagr === undefined || !start || !end) return cagr ?? null;
+  const yrs = (Date.parse(end) - Date.parse(start)) / (365.25 * 864e5);
+  if (!(yrs > 0)) return +cagr;
+  return ((1 + +cagr) ** yrs * (1 - FEE_Q) ** feeQuartersIn(start, end)) ** (1 / yrs) - 1;
+}
+const feeSwitch = () => `<label class="feeswitch" title="Deducts a 0.67% annual advisory fee, charged as 0.1675% on the first day of each quarter, from every model return on this page and in the model pop-up. Benchmarks are not charged.">
+  <input type="checkbox" data-feetoggle ${advisoryFee ? 'checked' : ''}><span class="feeknob" aria-hidden="true"></span><span>Advisory fee 0.67%</span></label>`;
 // Watchlist tab, and the state of an in-flight add. Module scope because the markets page is
 // re-rendered wholesale on every interaction and a local would reset the tab on each keystroke.
 let watchTab = 'equities';
@@ -1655,7 +1688,9 @@ function stan(mode = 'dashboard') {
   // The model measured in something other than dollars: (1+model)/(1+numeraire) - 1.
   const vsNumeraire = (mr, nr) => (mr === null || nr === null || nr === undefined || nr <= -1) ? null : (1 + mr) / (1 + nr) - 1;
 
-  const riskTable = `<div class="card" style="margin-bottom:14px"><h2>Model Surveillance</h2>
+  const riskTable = `<div class="card" style="margin-bottom:14px">
+   <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:12px">
+     <h2 style="margin:0">Model Surveillance</h2>${feeSwitch()}</div>
    <div style="overflow-x:auto"><table style="min-width:1040px"><thead><tr>
      <th>Model</th><th class="num">Cash</th><th>Beta vs band</th><th class="num">Beta vs bench</th>
      <th class="num">Top-3 risk</th><th class="num">YTD</th><th class="num">vs CPI</th>
@@ -1678,7 +1713,8 @@ function stan(mode = 'dashboard') {
      const measuredYtd = ps ? num(ps.model_return) : null;
      const measuredBench = ps ? num(ps.benchmark_return) : null;
      const onTarget = measuredYtd === null;
-     const mr = onTarget ? (p ? num(p.portfolio_return) : null) : measuredYtd;
+     const mrGross = onTarget ? (p ? num(p.portfolio_return) : null) : measuredYtd;
+     const mr = onTarget ? (p ? netOfFee(mrGross, p.start_date, p.end_date) : null) : netOfFee(mrGross, ps.start_date, ps.end_date);
      const br = onTarget ? (p ? num(p.peer_benchmark_return) : null) : measuredBench;
      // Gold and bitcoin over the MODEL's own window, from the same row the model return came
      // from, so the division needs no reconciling across tables. They used to come from the
@@ -1703,7 +1739,7 @@ function stan(mode = 'dashboard') {
        return +b.value / +a.value - 1;
      };
      const mCpiMeasured = p ? measuredOver(p.cpi_window_start, p.cpi_window_end) : null;
-     const mCpi = mCpiMeasured !== null ? mCpiMeasured : (p ? num(p.model_return_cpi_window) : null);
+     const mCpi = p ? netOfFee(mCpiMeasured !== null ? mCpiMeasured : num(p.model_return_cpi_window), p.cpi_window_start, p.cpi_window_end) : null;
      const cpiOnTarget = mCpiMeasured === null;
      const b = r.beta;
      const bandState = !b || !b.actual_beta ? null
@@ -1736,7 +1772,7 @@ function stan(mode = 'dashboard') {
        <td class="num">${r.measured ? `<span class="click" data-go="#stan/top3-${esc(r.m.id)}" style="cursor:pointer;text-decoration:underline dotted" title="Show the three largest risk contributors"><b>${(r.top3Risk * 100).toFixed(0)}%</b></span><br><small style="color:var(--muted)">on ${(r.top3Wt * 100).toFixed(0)}% wt</small>` : '<span style="color:var(--muted)">–</span>'}</td>
        ${perfCell(mr, onTarget
           ? 'Year-to-date on TARGET weights — this model has no dated holdings history, so there is nothing measured to use. Target weights are today\'s book held back through the window, which flatters a year the decisions had not been made in.'
-          : `Year-to-date on what the model actually held, gross of fees${ps.start_date ? `, ${ps.start_date} to ${ps.end_date}` : ''}${ps.window_starts_in_gap ? '. The window opens inside the stretch with no holdings snapshot, so the weights were carried forward unchanged into it.' : ''}`)}
+          : `Year-to-date on what the model actually held, ${advisoryFee ? 'net of the 0.67% advisory fee' : 'gross of fees'}${ps.start_date ? `, ${ps.start_date} to ${ps.end_date}` : ''}${ps.window_starts_in_gap ? '. The window opens inside the stretch with no holdings snapshot, so the weights were carried forward unchanged into it.' : ''}`)}
        ${perfCell(vsNumeraire(mCpi, cpi), cpi === null
           ? 'No CPI reading covers this window. Check that the macro feed is still running.'
           : `Model ${(mCpi * 100).toFixed(1)}%${cpiOnTarget ? ' (target weights)' : ' (measured)'} against CPI ${(cpi * 100).toFixed(1)}% over ${p.cpi_window_start} to ${p.cpi_window_end} — a SHORTER window than the YTD beside it, because CPI is monthly and published in arrears. Both legs run over the same dates.`)}
@@ -1746,7 +1782,7 @@ function stan(mode = 'dashboard') {
      </tr>`;
    }).join('')}
    </tbody></table></div>
-   <p class="note"><b>Beta vs band</b> says only whether the model sits inside, below or above the band the master Speed Limit calls for, with the band beside it — green inside, red outside. The beta itself is the next column, not this one: carrying it twice invited reading the verdict cell as a measurement. Below the band is more defensive than the lights call for rather than worse, which is why the colour marks conformity and not quality. <b>Beta vs bench</b> is the figure itself, against that model's own benchmark — read R² first, since below 0.5 the regression is not describing risk posture and the band cell shows "unrated" instead. <b>Top-3 risk</b> is the share of model volatility carried by its three largest contributors, against the weight those same three hold; click it for the names. <b>Performance is what each model actually held</b>, year to date, gross of fees — the same measured figure its own drawer shows, so the two can no longer disagree. This column used to be built on target weights for every model: today's book held fixed back through the window. That is a hypothetical, and a flattering one, because current targets are the names that worked — it ran 3 to 7 points above the measured return on seven of the eight models, with Diversified Growth overstated by 7.0 points. A model with no dated holdings history still falls back to target weights and is <span style="color:var(--warn)">marked</span> in the first column, since a hypothetical labelled as such is better than a blank. Cash is priced as BIL rather than dropped, which it used to be. <b>vs CPI</b>, <b>vs Gold</b> and <b>vs BTC</b> restate the model in that numeraire — (1+model)÷(1+numeraire)−1 — so green means the model held its value against that yardstick rather than merely rose. Gold is GLD and bitcoin is Tiingo spot, and <b>all three legs now run over the model's own window</b> — the same dates its return was measured between. They used to be taken from the performance job, whose year opens on the first trading day against the model's last trading day of the prior year; two days, but worth 2.5 points on bitcoin this year, and a ratio of two windows is not a comparison. <b>CPI is different and the cell is honest about it:</b> headline CPI is monthly and published in arrears, so the newest reading always covers a month that ended some time ago. Rather than divide a longer investment return by a shorter inflation one — which would quietly flatter every model here — the comparison runs over the months CPI has actually reported, with the model re-measured over exactly those dates. Hover the cell for the window.</p></div>`;
+   <p class="note"><b>Beta vs band</b> says only whether the model sits inside, below or above the band the master Speed Limit calls for, with the band beside it — green inside, red outside. The beta itself is the next column, not this one: carrying it twice invited reading the verdict cell as a measurement. Below the band is more defensive than the lights call for rather than worse, which is why the colour marks conformity and not quality. <b>Beta vs bench</b> is the figure itself, against that model's own benchmark — read R² first, since below 0.5 the regression is not describing risk posture and the band cell shows "unrated" instead. <b>Top-3 risk</b> is the share of model volatility carried by its three largest contributors, against the weight those same three hold; click it for the names. <b>Performance is what each model actually held</b>, year to date, ${advisoryFee ? 'net of the 0.67% advisory fee' : 'gross of fees'} — the same measured figure its own drawer shows, so the two can no longer disagree. This column used to be built on target weights for every model: today's book held fixed back through the window. That is a hypothetical, and a flattering one, because current targets are the names that worked — it ran 3 to 7 points above the measured return on seven of the eight models, with Diversified Growth overstated by 7.0 points. A model with no dated holdings history still falls back to target weights and is <span style="color:var(--warn)">marked</span> in the first column, since a hypothetical labelled as such is better than a blank. Cash is priced as BIL rather than dropped, which it used to be. <b>The advisory-fee switch</b> at the top right deducts 0.67% a year as four 0.1675% charges on the first day of each quarter, counted for every quarter start inside each window; it changes the model's returns here and in its pop-up and never the benchmark's, so <b>vs Bench</b> becomes the net margin. <b>vs CPI</b>, <b>vs Gold</b> and <b>vs BTC</b> restate the model in that numeraire — (1+model)÷(1+numeraire)−1 — so green means the model held its value against that yardstick rather than merely rose. Gold is GLD and bitcoin is Tiingo spot, and <b>all three legs now run over the model's own window</b> — the same dates its return was measured between. They used to be taken from the performance job, whose year opens on the first trading day against the model's last trading day of the prior year; two days, but worth 2.5 points on bitcoin this year, and a ratio of two windows is not a comparison. <b>CPI is different and the cell is honest about it:</b> headline CPI is monthly and published in arrears, so the newest reading always covers a month that ended some time ago. Rather than divide a longer investment return by a shorter inflation one — which would quietly flatter every model here — the comparison runs over the months CPI has actually reported, with the model re-measured over exactly those dates. Hover the cell for the window.</p></div>`;
 
   // Every position any model has flagged, gathered in one place so a name appearing in several
   // models is obvious — that is the concentration that matters at desk level, not model level.
@@ -5968,7 +6004,7 @@ function modelDashboard(m) {
 
   // ---- model statistics strip ----
   const cells = [
-    ['Total return', stat && !stat.unavailable_reason ? pc(n(stat.model_return)) : null, 'model_return'],
+    ['Total return', stat && !stat.unavailable_reason ? pc(netOfFee(n(stat.model_return), stat.start_date, stat.end_date)) : null, 'model_return'],
     ['Benchmark', stat && !stat.unavailable_reason ? pc(n(stat.benchmark_return)) : null, 'benchmark_return'],
     ['Max drawdown', stat && !stat.unavailable_reason ? pc(n(stat.max_drawdown)) : null, 'max_drawdown'],
     ['Upside capture', stat && n(stat.upside_capture) !== null ? (n(stat.upside_capture) * 100).toFixed(0) + '%' : null, 'upside_capture'],
@@ -6219,6 +6255,10 @@ function modelDashboard(m) {
       ? `<td class="num"><span style="color:var(--muted)" ${reason ? `title="${esc(reason)}"` : ''}>–</span></td>`
       : `<td class="num"><span style="color:${+v >= 0 ? 'var(--pos)' : 'var(--neg)'}">${(+v >= 0 ? '' : '') + (+v * 100).toFixed(2)}%</span></td>`;
     const head = rows.map(r => `<th class="num">${esc(LBL[r.period] || r.period)}</th>`).join('');
+    // The model's own figure, charged the advisory fee when the switch is on. CAGR columns are
+    // charged on the cumulative return and re-annualised over the same dates.
+    const netTrail = r => r.model_return === null || r.model_return === undefined ? null
+      : r.is_cagr ? netCagrOfFee(+r.model_return, r.start_date, r.end_date) : netOfFee(+r.model_return, r.start_date, r.end_date);
     // Any window reaching back past the first post-gap snapshot carries weights that were held
     // unchanged across the hole — worth saying once rather than on every cell.
     const integ = (D.snapIntegrity || []).filter(i => i.strategy_id === m.id);
@@ -6227,17 +6267,31 @@ function modelDashboard(m) {
 
     // ---- Monthly returns grid, under the trailing table on the same card ----
     //
-    // Colour is the OWNER'S rule, not the sign of the number: green where the model beat its
-    // benchmark that month, red where it did not. That is deliberately different from the
-    // reference screen, which colours by whether the month was positive — a model can lose money
-    // in a month it won, and the question this grid is here to answer is the second one. The
-    // colour therefore means the same thing on all three tabs, so switching to Benchmark still
-    // shows which months the model took.
+    // Colour is the SIGN OF THE FIGURE IN THE BOX: green where it is positive, red where it is
+    // negative, on every tab. It used to colour months by whether the model beat its benchmark,
+    // which put green behind a minus sign and red behind a plus, and the owner asked for the plain
+    // rule. Whether the model beat the index is the Vs. Benchmark tab, coloured the same way.
     const monthlyBlock = (() => {
       const all = (D.monthly || []).filter(r => r.strategy_id === m.id);
       if (!all.length) return '';
       const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'June', 'July', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       const key = { portfolio: 'model_return', benchmark: 'benchmark_return', excess: 'excess_return' }[monthlyTab];
+      // Fee per cell: a month carries one quarterly charge when it opens a quarter, and a year
+      // carries one for each quarter-opening month it has a return for.
+      const monthNet = r => {
+        if (!r || r.model_return === null || r.model_return === undefined) return null;
+        if (!advisoryFee) return +r.model_return;
+        const k = r.month > 0 ? ([1, 4, 7, 10].includes(r.month) ? 1 : 0)
+          : [1, 4, 7, 10].filter(mo => { const x = all.find(z => z.year === r.year && z.month === mo); return x && x.model_return !== null; }).length;
+        return (1 + +r.model_return) * (1 - FEE_Q) ** k - 1;
+      };
+      const valOf = r => {
+        if (!r) return null;
+        if (monthlyTab === 'portfolio') return monthNet(r);
+        if (monthlyTab === 'benchmark') return r.benchmark_return === null || r.benchmark_return === undefined ? null : +r.benchmark_return;
+        const mn = monthNet(r);
+        return mn === null || r.benchmark_return === null || r.benchmark_return === undefined ? (advisoryFee ? null : (r.excess_return ?? null)) : mn - +r.benchmark_return;
+      };
       const at = (y, mo) => all.find(r => r.year === y && r.month === mo) || null;
       // A year with nothing in it is a year of blanks, which teaches a reader nothing and pushes
       // the years that do have figures off the screen.
@@ -6246,25 +6300,23 @@ function modelDashboard(m) {
       if (!years.length) return '';
 
       const cell = (r, isAnnual) => {
-        if (!r || r[key] === null || r[key] === undefined) {
+        if (!r || valOf(r) === null) {
           const why = r?.unavailable_reason;
           return `<td class="num" style="color:var(--muted)"${why ? ` title="${esc(why)}"` : ''}>–</td>`;
         }
-        const v = +r[key];
-        // Two different rules, and the difference is deliberate. A MONTH is coloured against the
-        // benchmark, which is the owner's rule and the question the grid was built to answer: did
-        // this month beat the index. The ANNUAL cell is coloured by its own sign — did the year
-        // make money — because that is the question a year asks, and a red figure beside a
-        // positive annual return reads as a loss however the note explains it.
-        const ex = r.excess_return === null || r.excess_return === undefined ? null : +r.excess_return;
-        const basis = isAnnual ? v : ex;
-        const bg = basis === null ? 'transparent' : basis >= 0 ? 'var(--winbg)' : 'var(--losebg)';
+        const v = valOf(r);
+        const ex = r.benchmark_return === null || r.benchmark_return === undefined ? null
+          : (monthNet(r) === null ? null : monthNet(r) - +r.benchmark_return);
+        // Rounded first, so a figure that prints as 0.00% is never coloured as a loss.
+        const shown = +(v * 100).toFixed(2);
+        const bg = shown > 0 ? 'var(--winbg)' : shown < 0 ? 'var(--losebg)' : 'transparent';
         const tips = [
           r.is_partial ? 'Part of a month only — the series begins or ends inside it.' : '',
           r.in_gap ? 'Inside the stretch with no holdings snapshot: the weights were carried forward unchanged through this month.' : '',
           isAnnual
             ? `${v >= 0 ? 'Made' : 'Lost'} ${Math.abs(v * 100).toFixed(2)}% over the year${ex === null ? '' : `, ${ex >= 0 ? 'ahead of' : 'behind'} the benchmark by ${Math.abs(ex * 100).toFixed(2)}%`}.`
-            : ex === null ? 'No benchmark figure for this month, so there is no verdict to colour.' : `${ex >= 0 ? 'Ahead of' : 'Behind'} the benchmark by ${Math.abs(ex * 100).toFixed(2)}%.`,
+            : ex === null ? 'No benchmark figure for this month.' : `${ex >= 0 ? 'Ahead of' : 'Behind'} the benchmark by ${Math.abs(ex * 100).toFixed(2)}%.`,
+          advisoryFee && monthlyTab !== 'benchmark' ? 'Net of the advisory fee.' : '',
         ].filter(Boolean).join(' ');
         return `<td class="num" style="background:${bg};${isAnnual ? 'font-weight:600;' : ''}${r.is_partial ? 'font-style:italic;' : ''}" title="${esc(tips)}">${(v * 100).toFixed(2)}%${r.in_gap ? '<sup style="color:var(--warn)">·</sup>' : ''}</td>`;
       };
@@ -6282,7 +6334,7 @@ function modelDashboard(m) {
         </tr></thead><tbody>
         ${years.map(y => `<tr><td><b>${y}</b></td>${cell(at(y, 0), true)}${MON.map((_, i) => cell(at(y, i + 1), false)).join('')}</tr>`).join('')}
         </tbody></table></div>
-        <p class="note"><b>The annual column is coloured by its own sign</b> — green where the year made money, red where it lost it — because that is the question a year asks. The months beside it keep the benchmark rule: <b>green is a month the model beat ${esc(benchLabel)}; red is a month it did not</b> — not whether the month made money, which is a different question and the one a reader usually assumes. The colour means the same thing on all three tabs, so the Benchmark tab still shows which months the model took. Annual is that year's own months compounded, and a year missing any month is withheld rather than compounded over the hole.${anyPartial ? ' Italic figures are part-months, where the series begins or ends inside them.' : ''}${anyGap ? ` Months marked <sup style="color:var(--warn)">·</sup> fell inside the stretch with no holdings snapshot — the prices are real, but the weights were carried forward unchanged, so a run of green there is a book nobody rebalanced rather than a decision that worked.` : ''} Hover any cell for its margin over the benchmark.</p>`;
+        <p class="note"><b>Every box is coloured by the sign of the figure in it</b> — green positive, red negative — on all three tabs. To see which months the model beat ${esc(benchLabel)}, use the Vs. Benchmark tab, where green is a month it came out ahead.${advisoryFee ? ' <b>Model figures are net of the 0.67% advisory fee</b>: the quarterly 0.1675% charge lands in January, April, July and October.' : ''} Annual is that year's own months compounded, and a year missing any month is withheld rather than compounded over the hole.${anyPartial ? ' Italic figures are part-months, where the series begins or ends inside them.' : ''}${anyGap ? ` Months marked <sup style="color:var(--warn)">·</sup> fell inside the stretch with no holdings snapshot — the prices are real, but the weights were carried forward unchanged, so a run of green there is a book nobody rebalanced rather than a decision that worked.` : ''} Hover any cell for its margin over the benchmark.</p>`;
     })();
 
     return `<div class="card" style="margin-top:18px">
@@ -6290,14 +6342,14 @@ function modelDashboard(m) {
         <h2 style="margin:0">Trailing returns</h2>
         <span style="font-size:12px;color:var(--muted)">against ${esc(benchLabel)} · ${basis === 'holdings' ? 'from the dated holdings history' : 'from current target weights'}</span></div>
       <div style="overflow-x:auto;margin-top:10px"><table style="min-width:860px"><thead><tr><th>Period</th>${head}</tr></thead><tbody>
-        <tr><td><b>${esc(m.name.replace(/\s*\([^)]*\)/g, ''))}</b></td>${rows.map(r => cell(r.model_return, r.unavailable_reason)).join('')}</tr>
+        <tr><td><b>${esc(m.name.replace(/\s*\([^)]*\)/g, ''))}</b>${advisoryFee ? ' <small style="color:var(--muted)">net of fee</small>' : ''}</td>${rows.map(r => cell(netTrail(r), r.unavailable_reason)).join('')}</tr>
         <tr><td>${esc(benchLabel)}</td>${rows.map(r => cell(r.benchmark_return, r.unavailable_reason)).join('')}</tr>
-        <tr style="border-top:2px solid var(--line)"><td><b>Vs. Benchmark</b></td>${rows.map(r => cell(r.excess_return, r.unavailable_reason)).join('')}</tr>
+        <tr style="border-top:2px solid var(--line)"><td><b>Vs. Benchmark</b></td>${rows.map(r => cell(netTrail(r) === null || r.benchmark_return === null ? (advisoryFee ? null : r.excess_return) : netTrail(r) - +r.benchmark_return, r.unavailable_reason)).join('')}</tr>
       </tbody></table></div>
       <p class="note">${basis === 'holdings'
         ? 'Computed from the dated holdings history, so it follows what the model actually held.'
         : '<b>Computed from current target weights held fixed back through each window</b>, because this model has no dated holdings history loaded. It answers how today’s allocation would have done, not what the model did — load a history and this switches to the real thing.'}
-      Returns are gross of fees. The three annualised columns are CAGR rather than cumulative and are withheld entirely where the price history does not reach back that far, or where the window would start inside a gap in the holdings history — annualising over a span that does not match the label is wrong rather than approximate, so a dash there is deliberate. Hover a dash for the reason.${spansGap ? ` <b>Windows reaching before ${esc(gap.as_of)} include the ${gap.gap_days_before}-day stretch where the holdings were carried forward unchanged</b>, so the longer periods reflect a book that was not rebalanced through it.` : ''}</p>
+      ${advisoryFee ? 'Model returns are <b>net of the 0.67% advisory fee</b>, charged 0.1675% on the first day of each quarter inside each window; the benchmark is not charged.' : 'Returns are gross of fees.'} The three annualised columns are CAGR rather than cumulative and are withheld entirely where the price history does not reach back that far, or where the window would start inside a gap in the holdings history — annualising over a span that does not match the label is wrong rather than approximate, so a dash there is deliberate. Hover a dash for the reason.${spansGap ? ` <b>Windows reaching before ${esc(gap.as_of)} include the ${gap.gap_days_before}-day stretch where the holdings were carried forward unchanged</b>, so the longer periods reflect a book that was not rebalanced through it.` : ''}</p>
       ${monthlyBlock}</div>`;
   })();
 
@@ -8129,6 +8181,14 @@ document.addEventListener('submit', async e => {
     watchAdd = { busy: false, msg: `Could not add ${raw}: ${err.message}`, tone: 'bad' };
   }
   rerender();
+});
+// The advisory-fee switch. Every figure it touches is recomputed on render, so flipping it is a
+// redraw of the current route, pop-up included.
+document.addEventListener('change', e => {
+  const t = e.target.closest('[data-feetoggle]'); if (!t) return;
+  advisoryFee = !!t.checked;
+  try { localStorage.setItem('advisoryFee', advisoryFee ? '1' : '0'); } catch (err) {}
+  route();
 });
 // Portfolio / Benchmark / Vs. Benchmark tabs on the monthly returns grid.
 document.addEventListener('click', e => {
