@@ -3053,7 +3053,11 @@ currentRoute = 'capital-rotation';
     }
     bad = [...new Set(bad)].slice(0, 10);
     for (const b of bad) errors.push(`[capital-rotation] ${b}`);
-    const latest = months.map(r => r.month).sort().pop();
+    // The newest COMPLETE month, as the page reads it: the month in progress carries only the daily
+    // boxes until CPI, PPI, M2 and currency in circulation are published.
+    const perMonth = {};
+    for (const r of months) perMonth[r.month] = (perMonth[r.month] || 0) + 1;
+    const latest = Object.keys(perMonth).filter(m => perMonth[m] === boxes.length).sort().pop();
     const nBear = months.filter(r => r.month === latest && r.state === 'bear').length;
     say(` ok  capital rotation       -> ${boxes.length} boxes, ${nBear} bear at ${latest}, ${boxes.filter(b => b.substitution).length} stand-ins named`);
   }
