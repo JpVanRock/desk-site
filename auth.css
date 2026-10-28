@@ -10,7 +10,9 @@
    No border-radius: the mark is a line drawing on transparency, not a tile, and rounding its box
    does nothing except clip the corners of the drawing. Still true of the raster that replaced the
    inline SVG -- both fixed-ink files carry an alpha channel and no background. */
-.logo-header{width:40px;height:60px;display:block}
+/* Enlarged again on request, 40x60 -> 54x81, keeping the drawing's 0.669 aspect so it is never
+   letterboxed. The header's vertical padding is trimmed in step so the bar grows less than the mark. */
+.logo-header{width:54px;height:81px;display:block}
 .gate label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}
 .gate input{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}
 .gate input:focus{outline:2px solid var(--accent);outline-offset:1px}

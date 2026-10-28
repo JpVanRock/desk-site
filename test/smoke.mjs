@@ -181,6 +181,8 @@ globalThis.window = {
 for (const k of ['DESK_CONFIG', 'supabase']) globalThis[k] = window[k];
 
 // ---------------------------------------------------------------------------
+// The map outlines load as their own script ahead of app.js, exactly as index.html orders them.
+(0, eval)(readFileSync(join(SITE, 'vendor', 'world-regions.js'), 'utf8'));
 const src = readFileSync(join(SITE, 'app.js'), 'utf8');
 try { (0, eval)(src); } catch (e) { console.error('FAILED to evaluate app.js:', e); process.exit(1); }
 
@@ -239,7 +241,7 @@ const series = await pick('current_macro_readings', 'series_id,fred_code');
 // 1. Every route renders something that is not an error or a loading state.
 // ---------------------------------------------------------------------------
 const routes = argRoute ? [argRoute] : [
-  '#markets', '#sisyphus', '#stan', '#annie', '#adam', '#neil', '#sven', '#kate', '#gail', '#gail/inbox', '#gail/briefs', '#sandbox', '#signals', '#admin',
+  '#markets', '#sisyphus', '#stan', '#annie', '#adam', '#neil', '#sven', '#kate', '#gail', '#gail/inbox', '#gail/briefs', '#sandbox', '#admin',
   strat ? `#sisyphus/${strat.id}` : null,
   strat ? `#stan/${strat.id}` : null,
   sec ? `#markets/${sec.id}` : null,
@@ -281,7 +283,7 @@ if (!argRoute) {
   //    sitting in a bookmark, and without the redirect every stale link looks like a deleted page.
   // -------------------------------------------------------------------------
   currentRoute = 'legacy-hashes';
-  for (const [from, to, h1] of [['#overview', '#sisyphus', 'Sisyphus'], ['#decisions', '#annie', 'Decision Coach'], ['#playground', '#admin', 'Admin'], ['#views', '#admin', 'Admin'], ['#sources', '#admin', 'Admin'], ['#agents', '#admin', 'Admin'], ['#status', '#admin', 'Admin'], ['#briefs', '#gail/briefs', 'The Library'], ['#inbox', '#gail/inbox', 'The Library']]) {
+  for (const [from, to, h1] of [['#overview', '#sisyphus', 'Sisyphus'], ['#decisions', '#annie', 'Decision Coach'], ['#playground', '#admin', 'Admin'], ['#views', '#admin', 'Admin'], ['#sources', '#admin', 'Admin'], ['#agents', '#admin', 'Admin'], ['#status', '#admin', 'Admin'], ['#briefs', '#gail/briefs', 'Gail'], ['#inbox', '#gail/inbox', 'Gail'], ['#signals', '#admin', 'Admin']]) {
     await go(from);
     const ok = location.hash === to && new RegExp(`<h1>${h1}</h1>`).test(app());
     say(` ok  ${from} -> ${location.hash}${ok ? '' : '  DID NOT REDIRECT'}`);
@@ -306,7 +308,7 @@ if (!argRoute) {
     need(sized(cssAuth).length === 1, '[logo] auth.css should carry exactly one .logo-header rule');
     const px = (sized(cssAuth)[0].match(/height:\s*(\d+)px/) || [])[1];
     say(` ok  header logo           -> ${px}px, sized in auth.css only`);
-    need(+px === 60, `[logo] the header mark is ${px}px, expected 60`);
+    need(+px === 81, `[logo] the header mark is ${px}px, expected 81`);
     // Its controls must still drive it from inside Views.
     const models = [...v.matchAll(/data-pgmodel="([^"]+)"/g)].map(m => m[1]);
     if (models.length > 1) {
@@ -369,17 +371,18 @@ if (!argRoute) {
   const tot = (drawer().match(/TOTAL<\/b><\/td><td><\/td><td class="num"><b>([\d.]+)%<\/b>/) || [])[1];
   if (!tot) say(' ok  contribution total    -> no table for this model');
   else {
-    // THE GUARD IS NOW "100%, OR SAY WHY NOT". It used to require 100% flat, which was right while
-    // the only way to miss was an unfiltered dated set. There is a second way: a position bought
-    // AND sold inside the window is marked removed and carries the weight it had when it was
-    // bought rather than the zero it held at the start, so start weights legitimately over-count.
-    // That is a real attribution defect and the page now says so on the row; demanding 100% here
-    // would mean either hiding the defect or leaving the suite permanently red, and both are worse
-    // than requiring the page to be honest about it.
-    const flagged = /Start weights sum to .*not 100%/.test(drawer());
-    say(` ok  contribution total    -> ${tot}% of weight${flagged ? ', flagged on the page' : ''}`);
-    need(Math.abs(+tot - 100) < 2 || flagged,
-      `[contribution] weights total ${tot}% and the page does not flag it — either a dated set is unfiltered, or the start-weight over-count is being shown as though it added up`);
+    // Strict again. Start weights are now the drifted weights on the window's first day, so they
+    // total 100% by construction, and contribution is the model return decomposed line by line,
+    // so the bps total must equal the Total return figure on the same page.
+    say(` ok  contribution total    -> ${tot}% of weight`);
+    need(Math.abs(+tot - 100) < 2, `[contribution] start weights total ${tot}%, not 100%`);
+    const html = drawer();
+    const ret = (html.match(/<div class="slab">Total return<\/div><div class="sval"[^>]*>([+-][\d.]+)%/) || [])[1];
+    const bps = (html.match(/TOTAL<\/b>[\s\S]*?<b style="color:[^"]+">([+-]?-?\d+) bps<\/b>/) || [])[1];
+    if (ret !== undefined && bps !== undefined) {
+      say(` ok  contribution sum      -> ${bps} bps against a ${ret}% return`);
+      need(Math.abs(+bps / 100 - +ret) <= 0.02, `[contribution] lines total ${bps} bps but the model returned ${ret}%`);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -492,7 +495,14 @@ if (!argRoute) {
     writeFileSync(out, `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="_page.css"><body data-theme="dark" style="padding:20px;background:var(--bg)"><div style="max-width:1060px;margin:auto">${drawer()}</div>`); }
 
   need(bd1.includes('Ten largest countries'), '[breakdown] geography is missing the country table');
-  need(/viewBox="20 15 980 400"/.test(bd1), '[breakdown] the world map did not render');
+  // Real country outlines, not five regional blobs: well over a hundred shapes, and the countries
+  // the fit measures individually are marked so their hover text can carry their own figure.
+  if (bd1.includes('aria-label="Equity allocation by region"')) {
+    const shapes = (bd1.split('aria-label="Equity allocation by region"')[1].split('</svg>')[0].match(/<path /g) || []).length;
+    say(` ok  geography map         -> ${shapes} country outlines`);
+    need(shapes > 150, `[breakdown] the map drew ${shapes} shapes; the country outlines did not load`);
+  }
+  need(bd1.includes('aria-label="Equity allocation by region"'), '[breakdown] the world map did not render');
   {
     const seg = (bd0.split('Portfolio breakdown')[1] || '').split('Derived from the rows above')[0];
     const vals = [...seg.matchAll(/<div style="height:9px;width:[^"]*"><\/div>\s*<small style="color:var\(--text\)[^"]*">([\d.]+)%/g)].map(m => +m[1]);
@@ -937,8 +947,10 @@ if (!argRoute) {
     // standalone page used rather than a copy of it, so the two cannot drift.
     await go('#gail');
     const lib0 = app();
-    need(/<h1>The Library<\/h1>/.test(lib0), '[library] the page is not headed The Library');
-    need(/class="loc"/.test(lib0), '[library] the reading-room treatment is not applied');
+    need(/<h1>Gail<\/h1>/.test(lib0), '[library] the page is not headed Gail');
+    // Gail wears the site's own layout now -- standard tabs and cards -- not the bespoke library.
+    need(!/class="loc"/.test(lib0), '[library] the old reading-room chrome is back');
+    need(/class="tab" data-shelf=/.test(lib0), '[library] the shelves are not the site\'s standard tabs');
     for (const want of ['Trade Journal History', 'Inbox', 'Briefs'])
       need(lib0.includes(want), `[library] the ${want} shelf is missing from the bar`);
     need((lib0.match(/<h1>/g) || []).length === 1, '[library] a shelf kept its own page heading');
@@ -949,7 +961,7 @@ if (!argRoute) {
                                        ['briefs', 'Briefs', 'Sunday primer']]) {
       await go('#gail/' + k);
       const v = app();
-      need(new RegExp(`<h2>${heading}</h2>`).test(v), `[library] #gail/${k} does not open the ${heading} shelf`);
+      need(new RegExp(`<h2[^>]*>${heading}</h2>`).test(v), `[library] #gail/${k} does not open the ${heading} shelf`);
       need(/aria-current="page"/.test(v), `[library] no shelf is marked current on #gail/${k}`);
       if (probe) need(v.includes(probe), `[library] the ${heading} shelf rendered without its content`);
       seen[k] = v.length;
@@ -957,21 +969,13 @@ if (!argRoute) {
     need(new Set(Object.values(seen)).size === 3, '[library] two shelves rendered identical content, so the selector is not switching');
     // An unknown shelf must land in the reading room rather than on an empty page.
     await go('#gail/nonsense');
-    need(/<h2>Trade Journal History<\/h2>/.test(app()), '[library] an unknown shelf does not fall back to the journal');
+    need(/<h2[^>]*>Trade Journal History<\/h2>/.test(app()), '[library] an unknown shelf does not fall back to the journal');
     // And the header must no longer carry the two that moved.
     const nav2 = [...readFileSync(join(SITE, 'index.html'), 'utf8').matchAll(/<nav id="nav">([\s\S]*?)<\/nav>/g)].flatMap(m => [...m[1].matchAll(/href="#([a-z-]+)"/g)].map(x => x[1]));
     need(!nav2.includes('briefs') && !nav2.includes('inbox'), '[library] Briefs or Inbox is still a header tab');
-    // The reading room now uses the SITE's palette rather than its own. The guard is the inverse
-    // of what it was: the earlier parchment version had to re-base the theme tokens so dark-theme
-    // inline colours stayed legible, and the right way to never need that again is to not
-    // redefine them at all. A token redefined here means the tab has started drifting away from
-    // the rest of the site, which is what the first version got wrong.
     const css = readFileSync(join(SITE, 'style.css'), 'utf8');
-    const locBlock = (css.match(/\.loc\{[\s\S]*?\n\}/) || [''])[0];
-    for (const tok of ['--text:', '--muted:', '--line:', '--pos:', '--neg:', '--panel:', '--bg:'])
-      need(!locBlock.includes(tok), `[library] the reading room redefines ${tok.slice(0, -1)}, so it has started drifting from the site's own palette`);
-    need(/--loc-brass/.test(locBlock), '[library] the brass accent is gone, so the reading room has no identity left');
-    say(` ok  library                -> three shelves, each on its own hash; Briefs and Inbox left the header; on the site's own palette`);
+    need(!/\.loc\{/.test(css), '[library] the bespoke library stylesheet is back');
+    say(` ok  library                -> three shelves, each on its own hash; Briefs and Inbox left the header; in the site's standard layout`);
     await go('#sandbox');
 
     // A real sell: the tax table must name the models that hold the ticker and cost it from lots.
@@ -1061,7 +1065,11 @@ if (!argRoute) {
     const order = [...nav.matchAll(/<a href="#([a-z]+)">/g)].map(m => m[1]);
     // research sits next to stan: it holds the backtests and episode studies that used to crowd
     // Stan's dashboard, and the order matters because the nav doubles as the mobile menu.
-    const want = ['markets', 'sisyphus', 'stan', 'brakes', 'annie', 'adam', 'neil', 'sven', 'kate', 'gail', 'sandbox', 'signals', 'admin'];
+    // Signals is a section of Admin now, and Admin sits at the far right beside the theme toggle,
+    // outside the centred tab row.
+    const want = ['markets', 'sisyphus', 'stan', 'brakes', 'annie', 'adam', 'neil', 'sven', 'kate', 'gail', 'sandbox'];
+    need(/<div class="tools"><a href="#admin" class="navlink">Admin<\/a><button id="theme"/.test(nav), '[nav] Admin is not beside the theme toggle');
+    need(!/#signals/.test(nav), '[nav] a Signals tab is still in the header');
     say(` ok  nav order              -> ${order.join(' · ')}`);
 
   // ---- the tab menu ----
@@ -1083,7 +1091,9 @@ if (!argRoute) {
     need(/aria-controls="nav"/.test(html), '[menu] the button does not say what it controls');
     need(/aria-expanded="false"/.test(html), '[menu] the button does not start collapsed');
     need(/id="menu-label"/.test(html), '[menu] the button has no label element to name the current tab');
-    need((html.match(/<a href="#[a-z]+">/g) || []).length === 13, '[menu] the nav no longer carries all thirteen links in the document');
+    // Eleven tabs in the collapsible nav, and Admin outside it beside the theme toggle so it
+    // stays one click away on a phone too.
+    need((html.match(/<a href="#[a-z]+">/g) || []).length === 11, '[menu] the nav no longer carries all eleven tab links in the document');
     // CSS: the button is hidden by default and the nav collapses only below the breakpoint, so a
     // wide screen is untouched.
     need(/#menu\{display:none/.test(css), '[menu] the button is not hidden on wide screens');

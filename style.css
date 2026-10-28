@@ -38,9 +38,11 @@ body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system
 /* The header mark is sized in auth.css, which loads after this file and wins. A rule here was
    dead weight that read as though it were in charge -- it is deliberately not replaced. */
 .logo-gate{height:88px;width:59px;margin:0 auto 4px}
-.top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:28px;padding:16px 28px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:28px;padding:8px 28px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
 .brand{display:flex;gap:16px;align-items:center}.brand b{display:block;font-size:24px;letter-spacing:.2px;line-height:1.15}.brand small{color:var(--muted);font-size:13px;letter-spacing:.9px;text-transform:uppercase}
-nav{display:flex;gap:4px;flex:1;flex-wrap:wrap}nav a{color:var(--muted);text-decoration:none;font-size:16px;padding:12px 14px;border-radius:10px}nav a:hover{color:var(--text)}nav a.on{color:var(--text);background:var(--panel2)}
+nav{display:flex;gap:4px;flex:1;flex-wrap:wrap;justify-content:center}
+nav a,.tools a.navlink{color:var(--muted);text-decoration:none;font-size:16px;padding:12px 14px;border-radius:10px}
+nav a:hover,.tools a.navlink:hover{color:var(--text)}nav a.on,.tools a.navlink.on{color:var(--text);background:var(--panel2)}
 
 /* THE TAB MENU.
    Twelve tabs do not fit a laptop header, and wrapping them pushed the page down by two rows
@@ -53,7 +55,8 @@ nav{display:flex;gap:4px;flex:1;flex-wrap:wrap}nav a{color:var(--muted);text-dec
   #menu{display:inline-flex}
   nav{position:absolute;top:100%;left:0;right:0;z-index:40;display:none;flex-direction:column;gap:2px;
       background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px;margin-top:6px;
-      box-shadow:0 18px 40px rgba(0,0,0,.35);max-height:70vh;overflow:auto}
+      box-shadow:0 18px 40px rgba(0,0,0,.35);max-height:70vh;overflow:auto;justify-content:flex-start}
+  #menu{margin-left:auto}
   nav.open{display:flex}
   nav a{font-size:17px;padding:13px 14px}
   header.top{position:relative;flex-wrap:nowrap}
@@ -337,109 +340,6 @@ select{font:inherit;font-size:12.5px;padding:5px 7px;border-radius:7px;border:1p
 @media (max-width:1100px){ .mkgrid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)} }
 @media (max-width:720px){ .mkgrid{grid-template-columns:minmax(0,1fr)} }
 
-/* ---- Gail: The Library ----
-   The layout stayed; the colour scheme did not. The first version was literal Library of
-   Congress -- parchment, warm stone, brass -- and it was a light island in a dark site, which
-   made moving to this tab feel like leaving the application. The reading room is still a reading
-   room, but built out of the desk's own palette: the site's panels, the site's lines, the site's
-   text, with brass kept only as an accent on rules and tab edges. Nothing here redefines a theme
-   token any more, so every figure renders exactly as it does on every other page.
-
-   What carries the idea now is form rather than colour -- the arch struck across the title plate,
-   the oculus, the double rule of a title page, and shelf tabs that stand like index-card
-   dividers in a drawer. */
-.loc{
-  --loc-brass:#b08d4a; --loc-brass-dim:rgba(176,141,74,.34); --loc-green:#6fb39a;
-  position:relative; isolation:isolate;
-}
-/* The dome, implied rather than drawn: a warm light from above, and the coffer grid of the
-   ceiling fading as it falls. Held faint so it reads as depth, not as a texture. */
-.loc::before{
-  content:""; position:absolute; inset:-24px -24px -24px; z-index:-1; pointer-events:none;
-  border-radius:14px;
-  background:
-    radial-gradient(90% 55% at 50% -6%, rgba(176,141,74,.11), transparent 62%),
-    repeating-linear-gradient(90deg, rgba(176,141,74,.035) 0 1px, transparent 1px 58px),
-    repeating-linear-gradient(0deg,  rgba(176,141,74,.025) 0 1px, transparent 1px 58px);
-}
-/* The title plate: a card-catalogue drawer front, with the double rule of a title page. */
-.loc .locplate{
-  background:linear-gradient(180deg, var(--panel2), var(--panel));
-  border:1px solid var(--loc-brass-dim);
-  border-radius:12px 12px 4px 4px; padding:22px 26px 18px; margin:0 0 16px;
-  box-shadow:var(--shadow);
-  position:relative; overflow:hidden; text-align:center;
-}
-/* The arch, which is the building's grammar -- a semicircle struck across the top of the plate. */
-.loc .locplate::before{
-  content:""; position:absolute; top:-78px; left:50%; transform:translateX(-50%);
-  width:260px; height:160px; border:2px solid var(--loc-brass-dim);
-  border-radius:130px 130px 0 0; pointer-events:none;
-}
-/* The oculus. */
-.loc .locplate::after{
-  content:""; position:absolute; top:12px; left:50%; transform:translateX(-50%);
-  width:9px; height:9px; border-radius:50%; background:var(--loc-brass);
-  box-shadow:0 0 0 4px rgba(176,141,74,.16), 0 0 0 9px rgba(176,141,74,.08);
-}
-.loc .locplate h1{
-  font-family:Georgia,'Iowan Old Style','Times New Roman',serif;
-  color:var(--text); letter-spacing:.14em; text-transform:uppercase;
-  font-size:clamp(26px,4.4vw,40px); margin:10px 0 6px; font-weight:600;
-  border-bottom:3px double var(--loc-brass-dim); display:inline-block; padding-bottom:8px;
-}
-.loc .locplate .eyebrow{ color:var(--loc-brass); letter-spacing:.22em }
-.loc .locplate .sub{ max-width:60ch; margin:8px auto 0 }
-
-/* The shelf bar: index-card dividers standing in a drawer, the open one brought forward. */
-.loc .shelf{ display:flex; gap:6px; flex-wrap:wrap; margin:0 0 -1px; padding:0 6px; align-items:flex-end }
-.loc .shelftab{
-  font:inherit; font-size:12.5px; cursor:pointer; display:flex; align-items:center; gap:8px;
-  padding:9px 16px 10px; border:1px solid var(--line); border-bottom:0;
-  border-radius:9px 9px 0 0; color:var(--muted); background:var(--panel2);
-  font-family:Georgia,'Iowan Old Style','Times New Roman',serif; letter-spacing:.05em;
-}
-.loc .shelftab:hover{ color:var(--text); border-color:var(--loc-brass-dim) }
-.loc .shelftab.on{
-  color:var(--text); font-weight:700; padding-bottom:13px; margin-bottom:-3px;
-  background:var(--panel); border-color:var(--loc-brass-dim);
-  box-shadow:0 -2px 0 var(--loc-brass) inset;
-}
-.loc .shelfcount{
-  font:11px/1 ui-monospace,Menlo,monospace; letter-spacing:0; color:var(--muted);
-  background:rgba(176,141,74,.12); border:1px solid var(--loc-brass-dim);
-  border-radius:99px; padding:2px 7px;
-}
-.loc .shelftab.on .shelfcount{ color:var(--loc-brass) }
-
-/* The reading room itself. */
-.loc .locroom{
-  background:var(--panel); border:1px solid var(--loc-brass-dim);
-  border-radius:4px 12px 12px 12px; padding:20px 22px 22px; box-shadow:var(--shadow);
-}
-.loc .lochead{ border-bottom:3px double var(--loc-brass-dim); margin:0 0 16px; padding-bottom:10px }
-.loc .lochead h2{
-  font-family:Georgia,'Iowan Old Style','Times New Roman',serif; color:var(--text);
-  letter-spacing:.1em; text-transform:uppercase; font-size:17px; margin:0;
-}
-.loc .lochead p{ margin:4px 0 0; color:var(--muted); font-size:13px }
-
-/* Cards inside the room sit ON the room, so they take the page's second surface rather than the
-   same one -- otherwise a card on a panel of its own colour has no edge. */
-.loc .locroom .card{ background:var(--panel2); border-color:var(--line) }
-.loc h2, .loc h3{ font-family:Georgia,'Iowan Old Style','Times New Roman',serif }
-.loc .eyebrow{ color:var(--loc-brass) }
-.loc table th{
-  border-bottom-color:var(--loc-brass-dim); letter-spacing:.09em;
-  font-family:Georgia,'Iowan Old Style','Times New Roman',serif;
-}
-@media (max-width:640px){
-  .loc .locplate{ padding:18px 16px 14px }
-  .loc .locplate::before{ width:180px; top:-62px }
-  .loc .locroom{ padding:16px 14px 18px; border-radius:4px 10px 10px 10px }
-  .loc .shelftab{ padding:8px 11px 9px; font-size:11.5px }
-}
-
 /* ---- The ticker tape on Stan's page ----
    Full-bleed inside the card rail, scrolling right to left. The track holds the items twice so
    the loop is seamless: the animation translates exactly one copy's width, and the second copy is
@@ -500,4 +400,24 @@ select{font:inherit;font-size:12.5px;padding:5px 7px;border-radius:7px;border:1p
 @media (max-width:820px){
   .mx{grid-template-columns:minmax(72px,auto) repeat(3,minmax(0,1fr));gap:4px}
   .mx>div{padding:10px 4px;letter-spacing:0}
+}
+
+/* Kate: compact crowd sentiment */
+.crowdrow{display:grid;grid-template-columns:auto minmax(180px,1fr) minmax(260px,1.4fr);gap:22px;align-items:center;margin-top:12px}
+.crowdlegs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 16px}
+.crowdhow{margin-top:10px;font-size:13px}
+.crowdhow>summary{cursor:pointer;color:var(--muted);font-size:12px}
+@media (max-width:820px){.crowdrow{grid-template-columns:auto 1fr}.crowdlegs{grid-column:1/-1}}
+
+/* Phone header. The enlarged mark, the menu button, Admin, the theme toggle and Sign out do not fit
+   beside the full wordmark at 390px, so the mark steps back to its old size, the strapline goes,
+   and the gaps tighten. .brand .logo outranks auth.css's .logo-header on specificity, so the one
+   sizing rule there still governs every width above this. */
+@media (max-width:600px){
+  .top{gap:10px;padding:8px 12px}
+  .brand{gap:8px}.brand small{display:none}.brand b{font-size:19px}
+  .brand .logo{width:40px;height:60px}
+  .tools{gap:6px}
+  .tools a.navlink{padding:10px 8px;font-size:15px}
+  #signout{padding:6px 8px}
 }

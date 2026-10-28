@@ -1,0 +1,114 @@
+"""Builds vendor/world-regions.js: country outlines for the geography map, pre-projected.
+
+Source: Natural Earth 1:50m admin-0 countries (public domain), v5.1.2:
+  https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_50m_admin_0_countries.geojson
+
+Usage: python3 -I tools/build-world-map.py <path to that geojson>
+
+Projected once here rather than in the browser so the page ships a few hundred kilobytes of
+path data instead of three megabytes of coordinates and a projection library. The projection is
+Natural Earth I, the same formula d3 uses: it keeps the continents' shapes recognisable without
+the polar stretch of a flat lat/long grid.
+
+Each country is assigned to one of the five regions compute-geo-exposure.mjs aggregates to, so
+the map is shaded by exactly the figures it is labelled with. Russia is left unshaded: it left
+the MSCI and FTSE indices in March 2022, carries no weight in any index the geography fit uses,
+and drawn in either Europe or Asia it would be the largest shape on the map while holding nothing.
+"""
+import json, math, sys
+
+src = sys.argv[1]
+out = sys.argv[2] if len(sys.argv) > 2 else 'vendor/world-regions.js'
+feats = json.load(open(src))['features']
+
+def project(lon, lat):
+    l, p = math.radians(lon), math.radians(lat)
+    p2 = p * p; p4 = p2 * p2
+    x = l * (0.8707 - 0.131979 * p2 + p4 * (-0.013791 + p4 * (0.003971 * p2 - 0.001529 * p4)))
+    y = p * (1.007226 + p2 * (0.015085 + p4 * (-0.044475 + 0.028874 * p2 - 0.005916 * p4)))
+    return x, -y
+
+TO_EUROPE = {'TR', 'CY', 'GE', 'AM', 'AZ'}
+NORTH_AMERICA = {'US', 'CA', 'GL', 'BM', 'PM'}
+LATIN = {'Central America', 'South America', 'Caribbean'}
+UNSHADED = {'RU'}
+
+def region(p, lon):
+    a2 = p['ISO_A2_EH']
+    if a2 in UNSHADED: return None
+    if a2 in NORTH_AMERICA: return 'north_america'
+    if p['SUBREGION'] in LATIN: return 'latin_america'
+    if a2 in TO_EUROPE or p['CONTINENT'] == 'Europe': return 'europe'
+    if p['CONTINENT'] == 'Africa' or p['SUBREGION'] == 'Western Asia' or a2 == 'IR': return 'africa_mideast'
+    if p['CONTINENT'] in ('Asia', 'Oceania'): return 'asia_pacific'
+    if p['CONTINENT'] == 'Seven seas (open ocean)': return 'africa_mideast' if lon < 65 else 'asia_pacific'
+    return 'skip'
+
+def dp(pts, tol):
+    if len(pts) < 3: return pts
+    keep = [False] * len(pts); keep[0] = keep[-1] = True
+    stack = [(0, len(pts) - 1)]
+    while stack:
+        a, b = stack.pop()
+        (x1, y1), (x2, y2) = pts[a], pts[b]
+        dx, dy = x2 - x1, y2 - y1; L = math.hypot(dx, dy)
+        best, bi = -1, -1
+        for i in range(a + 1, b):
+            x0, y0 = pts[i]
+            d = abs(dy * x0 - dx * y0 + x2 * y1 - y2 * x1) / L if L else math.hypot(x0 - x1, y0 - y1)
+            if d > best: best, bi = d, i
+        if best > tol:
+            keep[bi] = True; stack += [(a, bi), (bi, b)]
+    return [p for p, k in zip(pts, keep) if k]
+
+def area(pts):
+    return abs(sum(pts[i][0] * pts[i - 1][1] - pts[i - 1][0] * pts[i][1] for i in range(len(pts)))) / 2
+
+W = 1000.0
+raw = []
+xs, ys = [], []
+for f in feats:
+    p = f['properties']
+    if p['CONTINENT'] == 'Antarctica': continue
+    g = f['geometry']
+    polys = g['coordinates'] if g['type'] == 'MultiPolygon' else [g['coordinates']]
+    rings = []
+    for poly in polys:
+        for ring in poly[:1]:                       # outer rings only; lakes are not drawn
+            pr = [project(lo, la) for lo, la in ring]
+            rings.append(pr); xs += [q[0] for q in pr]; ys += [q[1] for q in pr]
+    lon = p.get('LABEL_X') or polys[0][0][0][0]
+    raw.append((p, region(p, lon), rings))
+
+x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+k = W / (x1 - x0)
+H = (y1 - y0) * k
+TOL, MIN_AREA = 0.45, 0.8
+countries = []
+for p, reg, rings in raw:
+    if reg == 'skip': continue
+    paths, kept = [], []
+    for r in rings:
+        pts = [((x - x0) * k, (y - y0) * k) for x, y in r]
+        s = dp(pts, TOL)
+        if len(s) < 4 or area(s) < MIN_AREA: continue
+        kept.append(s)
+    if not kept:                                    # a microstate still gets its largest ring
+        r = max(rings, key=lambda r: area([((x - x0) * k, (y - y0) * k) for x, y in r]))
+        kept = [dp([((x - x0) * k, (y - y0) * k) for x, y in r], TOL / 3)]
+        if area(kept[0]) < 0.05: continue
+    d = ''.join('M' + 'L'.join(f'{x:.1f} {y:.1f}' for x, y in s[:-1] if True) + 'Z' for s in kept)
+    countries.append({'n': p['NAME'], 'c': p['ISO_A2_EH'], 'r': reg, 'd': d})
+
+def at(lon, lat):
+    x, y = project(lon, lat)
+    return [round((x - x0) * k, 1), round((y - y0) * k, 1)]
+
+LABELS = {'north_america': at(-99, 40), 'latin_america': at(-57, -11), 'europe': at(10, 47.5),
+          'africa_mideast': at(21, 4), 'asia_pacific': at(103, 34)}
+body = json.dumps({'w': W, 'h': round(H, 1), 'labels': LABELS, 'countries': countries}, separators=(',', ':'))
+with open(out, 'w') as fh:
+    fh.write('// Generated by tools/build-world-map.py from Natural Earth 1:50m admin-0 countries (public domain).\n'
+             '// Natural Earth I projection, outer rings only, simplified to 0.45px. Do not edit by hand.\n'
+             f'window.GEO_WORLD = {body};\n')
+print(f'{len(countries)} countries, {W:.0f}x{H:.0f}, {len(body)/1024:.0f} KB -> {out}')

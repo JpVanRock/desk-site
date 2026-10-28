@@ -401,13 +401,15 @@ function route() {
   // Views, Sources, Agents and Status were four tabs and are now four sections of Admin. Each
   // hash still resolves -- these are the links most likely to be sitting in a note or a bookmark,
   // and #views carried a sub-route for the macro charts, so the argument travels with it.
+  // Signals was its own tab and is a section of Admin now; the hash still resolves.
+  if (page === 'signals') { location.replace('#admin'); return; }
   if (page === 'views' || page === 'sources' || page === 'agents' || page === 'status') {
     location.replace('#admin' + (arg ? '/' + arg : '')); return;
   }
   // Briefs and the Inbox are shelves in Gail's Library now. Both were header tabs for months, so
   // these are among the likeliest hashes to be sitting in a note.
   if (page === 'briefs' || page === 'inbox') { location.replace('#gail/' + page); return; }
-  document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
+  document.querySelectorAll('#nav a, .tools a.navlink').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   // The collapsed menu names the tab it is standing in for, and closes itself on every navigation
   // -- including a hash change the user made some other way, which is why it lives here and not
   // only in the click handler.
@@ -417,7 +419,7 @@ function route() {
   closeDrawer();
   // Keyed lookup, so this order is cosmetic rather than load-bearing — but it is kept in step
   // with the nav in index.html so the two read the same way.
-  const pages = { markets, sisyphus, stan, brakes, annie, adam, neil, sven, kate, gail, sandbox, signals, admin };
+  const pages = { markets, sisyphus, stan, brakes, annie, adam, neil, sven, kate, gail, sandbox, admin };
   // A HOLLOW DASHBOARD MUST NOT LOOK LIKE A REAL ONE.
   //
   // Making the core tables soft stopped one busy minute in the database from blanking the whole
@@ -691,7 +693,7 @@ function sisyphus() {
 
 // ---------- Speed Limit and signal-to-noise: shared renderers ----------
 //
-// These are built once and used in two places: the Signals tab, and the pop-outs from Stan's
+// These are built once and used in two places: the Signals section of Admin, and the pop-outs from Stan's
 // header boxes. One implementation rather than two copies that drift.
 const LENSES = [
   { key: 'predictive',  label: 'Predictive',  weight: 0.60 },
@@ -3697,21 +3699,64 @@ function murmuration(rows, labelOf, kindOf) {
 
   // Labels at the rim, each pushed out along its own bearing and nudged apart where two birds
   // share one. Angle does most of the separating, which is the point of the projection.
-  const used = [];
+  // Placed by BOX, not by angle. A label is two lines of horizontal text, so whether two of them
+  // touch depends on where on the rim they are -- side by side at the top, stacked at the sides --
+  // and no single angular gap is right everywhere. Each label's box is estimated from its text and
+  // the nearest bearing whose box is clear of every label already placed, and of the eight phase
+  // names on their fixed bearings, is taken.
+  const boxOf = (x, y, anchor, w) => { const x0 = anchor === 'start' ? x : anchor === 'end' ? x - w : x - w / 2; return [x0 - 3, y - 12, x0 + w + 3, y + 15]; };
+  const hit = (a, b) => a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+  const placed = FLOCK_PHASES.map(([name], i) => {
+    const m = i * Math.PI / 4, lx = cx + Math.cos(m) * (R + 62), ly = cy - Math.sin(m) * (R + 62);
+    return boxOf(lx, ly + 4, 'middle', name.length * 6.6);
+  });
+  const anchorAt = a => Math.cos(a) > 0.2 ? 'start' : Math.cos(a) < -0.2 ? 'end' : 'middle';
   const labels = lead.map(r => {
     const { ang } = polar(+r.attention_pctile, +r.price_1m);
-    let a = ang;
-    // Keep at least seven degrees between labels, searching outward from the true bearing.
-    for (let step = 0; step < 40; step++) {
-      const cand = ang + (step % 2 ? 1 : -1) * Math.ceil(step / 2) * 0.12;
-      if (!used.some(u => Math.abs(Math.atan2(Math.sin(u - cand), Math.cos(u - cand))) < 0.12)) { a = cand; break; }
-    }
-    used.push(a);
+    const w = Math.min(26, labelOf(r.narrative).length) * 6.6;
     const lr = R + 26;
-    const x = cx + Math.cos(a) * lr, y = cy - Math.sin(a) * lr;
-    const anchor = Math.cos(a) > 0.2 ? 'start' : Math.cos(a) < -0.2 ? 'end' : 'middle';
+    let a = ang, box = null;
+    for (let step = 0; step < 120; step++) {
+      const cand = ang + (step % 2 ? 1 : -1) * Math.ceil(step / 2) * 0.03;
+      const b = boxOf(cx + Math.cos(cand) * lr, cy - Math.sin(cand) * lr, anchorAt(cand), w);
+      if (!placed.some(p => hit(p, b))) { a = cand; box = b; break; }
+    }
+    const x = cx + Math.cos(a) * lr, y = cy - Math.sin(a) * lr, anchor = anchorAt(a);
+    placed.push(box || boxOf(x, y, anchor, w));
     return { r, x, y, anchor, ang, a };
   });
+
+  // TIME, MADE EXPLICIT. The trail beads grow toward today, which is right but had to be decoded:
+  // nothing on the drawing said which end was now or how long ago the other end was. The dates
+  // come from the trail itself, so the key reads the same calendar the points were measured on.
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const dShort = iso => { if (!iso) return ''; const [, m, d] = String(iso).split('-'); return `${+d} ${MON[+m - 1]}`; };
+  const weekDate = {};
+  for (const r of all) for (const t of (Array.isArray(r.trail) ? r.trail : [])) if (t.date && weekDate[t.weeks_ago] === undefined) weekDate[t.weeks_ago] = t.date;
+  const pctTxt = v => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
+  const pointTip = (r, t) => `${labelOf(r.narrative)} — ${t.weeks_ago === 0 ? 'today' : t.weeks_ago + ' weeks ago'}${t.date ? ` (${dShort(t.date)})` : ''}: attention at the ${(+t.attention_pctile * 100).toFixed(0)}th percentile of its own year, proxy ${pctTxt(+t.price_1m)} over the month`;
+  const keySteps = [12, 8, 4, 0].filter(w => weekDate[w] !== undefined);
+  const timeKey = keySteps.length < 2 ? '' : (() => {
+    const x0 = 24, gap = 58, y = 44;
+    const dots = keySteps.map((w, i) => {
+      const x = x0 + i * gap, rr = w === 0 ? 4.5 : 1.6 + i * 0.7;
+      return `<circle cx="${x}" cy="${y}" r="${rr.toFixed(1)}" fill="var(--text)" opacity="${w === 0 ? 0.95 : (0.3 + i * 0.12).toFixed(2)}"/>
+        <text x="${x}" y="${y + 19}" font-size="11" text-anchor="middle" fill="${w === 0 ? 'var(--text)' : 'var(--muted)'}" font-weight="${w === 0 ? 700 : 400}">${w === 0 ? 'today' : esc(dShort(weekDate[w]))}</text>`;
+    }).join('');
+    const xe = x0 + (keySteps.length - 1) * gap;
+    return `<g aria-label="Time key"><text x="${x0 - 6}" y="${y - 16}" font-size="11" font-weight="700" fill="var(--muted)" letter-spacing=".06em">TRAIL, OLDEST → NEWEST</text>
+      <line x1="${x0}" y1="${y}" x2="${xe - 8}" y2="${y}" stroke="var(--muted)" stroke-width="1" opacity="0.5"/>
+      <path d="M${xe - 10} ${y - 3.2}L${xe - 5} ${y}L${xe - 10} ${y + 3.2}Z" fill="var(--muted)" opacity="0.7"/>${dots}
+      <text x="${xe + 14}" y="${y + 4}" font-size="11" fill="var(--muted)">today is ${esc(dShort(weekDate[0]))}</text></g>`;
+  })();
+  // A small arrowhead partway along the last leg of each trail, so the direction of travel is
+  // stated rather than inferred from bead size.
+  const arrowOn = (a, b, tone) => {
+    const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy);
+    if (L < 14) return '';
+    const ux = dx / L, uy = dy / L, mx = a[0] + dx * 0.55, my = a[1] + dy * 0.55, s2 = 4.2;
+    return `<path d="M${(mx + ux * s2).toFixed(1)} ${(my + uy * s2).toFixed(1)}L${(mx - ux * s2 - uy * s2 * 0.8).toFixed(1)} ${(my - uy * s2 + ux * s2 * 0.8).toFixed(1)}L${(mx - ux * s2 + uy * s2 * 0.8).toFixed(1)} ${(my - uy * s2 - ux * s2 * 0.8).toFixed(1)}Z" fill="${tone}" opacity="0.75"/>`;
+  };
 
   return `<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto" role="img" aria-label="The flock as a rotation: each narrative placed by where it sits in the attention and price cycle, with its path over the last twelve weeks">
     ${FLOCK_PHASES.map(([name, tone], i) => {
@@ -3725,6 +3770,7 @@ function murmuration(rows, labelOf, kindOf) {
         <text x="${lx.toFixed(1)}" y="${(ly + 4).toFixed(1)}" font-size="11.5" font-weight="600" text-anchor="middle" fill="${tone}" opacity="0.85">${esc(name)}</text>`;
     }).join('')}
     ${[0.33, 0.66, 1].map(f => `<circle cx="${cx}" cy="${cy}" r="${(R * f).toFixed(1)}" fill="none" stroke="var(--line)" stroke-width="${f === 1 ? 1.2 : 0.6}" opacity="${f === 1 ? 0.9 : 0.5}"/>`).join('')}
+    ${timeKey}
     <text x="${cx + 4}" y="${cy - 5}" font-size="9.5" fill="var(--muted)">ordinary</text>
     <text x="${cx + 4}" y="${(cy - R + 13).toFixed(1)}" font-size="9.5" fill="var(--muted)">extreme</text>
 
@@ -3739,14 +3785,15 @@ function murmuration(rows, labelOf, kindOf) {
       // without an arrowhead to decode -- the newest mark is simply the biggest.
       const pts = tr.map(t => pt(+t.attention_pctile, +t.price_1m));
       const path = `<path d="${pts.map((q, i) => `${i ? 'L' : 'M'}${q[0].toFixed(1)} ${q[1].toFixed(1)}`).join('')}" fill="none" stroke="${tone}" stroke-width="1.4" opacity="0.32" stroke-linecap="round"/>`;
-      const beads = pts.slice(0, -1).map((q, i) => `<circle cx="${q[0].toFixed(1)}" cy="${q[1].toFixed(1)}" r="${(1.6 + i * 0.7).toFixed(1)}" fill="${tone}" opacity="${(0.22 + i * 0.1).toFixed(2)}"/>`).join('');
+      const beads = pts.slice(0, -1).map((q, i) => `<circle cx="${q[0].toFixed(1)}" cy="${q[1].toFixed(1)}" r="${(1.6 + i * 0.7).toFixed(1)}" fill="${tone}" opacity="${(0.22 + i * 0.1).toFixed(2)}"><title>${esc(pointTip(r, tr[i]))}</title></circle>`).join('');
       const [x, y] = pt(+r.attention_pctile, +r.price_1m);
-      return `${path}${beads}<g><title>${esc(labelOf(r.narrative))} — ${esc(r.state_note || '')}</title>${marker(kindOf(r.narrative), x, y, tone, 0.95)}</g>`;
+      return `${path}${arrowOn(pts.at(-2), pts.at(-1), tone)}${beads}<g><title>${esc(labelOf(r.narrative))} — today${weekDate[0] ? ` (${esc(dShort(weekDate[0]))})` : ''}: ${esc(r.state_note || '')}</title>${marker(kindOf(r.narrative), x, y, tone, 0.95)}</g>`;
     }).join('')}
 
     ${coms.length < 2 ? '' : `<path d="${coms.map((c, i) => { const [x, y] = pt(c.c.a, c.c.p); return `${i ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`; }).join('')}" fill="none" stroke="var(--accent)" stroke-width="2.2" opacity="0.7" stroke-dasharray="5 3"/>`}
-    ${coms.map((c, i) => { const [x, y] = pt(c.c.a, c.c.p); return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${i === coms.length - 1 ? 6.5 : 3}" fill="none" stroke="var(--accent)" stroke-width="${i === coms.length - 1 ? 2.4 : 1.3}" opacity="${i === coms.length - 1 ? 1 : 0.45}"><title>The flock's centre, ${c.w === 0 ? 'today' : c.w + ' weeks ago'}</title></circle>`; }).join('')}
-    ${coms.length ? (() => { const [x, y] = pt(coms.at(-1).c.a, coms.at(-1).c.p); return `<text x="${(x + 10).toFixed(1)}" y="${(y - 9).toFixed(1)}" font-size="10.5" font-weight="700" fill="var(--accent)">the flock</text>`; })() : ''}
+    ${coms.map((c, i) => { const [x, y] = pt(c.c.a, c.c.p); return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${i === coms.length - 1 ? 6.5 : 3}" fill="none" stroke="var(--accent)" stroke-width="${i === coms.length - 1 ? 2.4 : 1.3}" opacity="${i === coms.length - 1 ? 1 : 0.45}"><title>The flock's centre, ${c.w === 0 ? 'today' : c.w + ' weeks ago'}${weekDate[c.w] ? ` (${esc(dShort(weekDate[c.w]))})` : ''}</title></circle>`; }).join('')}
+    ${coms.map((c, i) => { if (i === coms.length - 1) return ''; const [x, y] = pt(c.c.a, c.c.p); return `<text x="${(x + 6).toFixed(1)}" y="${(y + 13).toFixed(1)}" font-size="9.5" fill="var(--accent)" opacity="0.85" style="paint-order:stroke;stroke:var(--panel);stroke-width:3px">${esc(dShort(weekDate[c.w]) || c.w + 'w ago')}</text>`; }).join('')}
+    ${coms.length ? (() => { const [x, y] = pt(coms.at(-1).c.a, coms.at(-1).c.p); return `<text x="${(x + 10).toFixed(1)}" y="${(y - 9).toFixed(1)}" font-size="10.5" font-weight="700" fill="var(--accent)" style="paint-order:stroke;stroke:var(--panel);stroke-width:3px">the flock · today</text>`; })() : ''}
 
     ${labels.map(({ r, x, y, anchor, ang, a }) => {
       const tone = (FLOCK_LOOK[r.state] || { tone: 'var(--muted)' }).tone;
@@ -3812,38 +3859,52 @@ function kate() {
 
   const nScore = nReading ? n(nReading.score) : null;
   const [nLabel, nTone] = nReading && nReading.stance && STANCE_CROWD[nReading.stance] ? STANCE_CROWD[nReading.stance] : ['Not yet reading', 'var(--muted)'];
+  // COMPACT BY DESIGN. The reading, its four legs and one sentence are what a morning glance
+  // needs; the method notes and the per-leg definitions are one click away instead of always open.
+  const legs = nComps.slice().sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
   const gauge = `<div class="card" style="margin-bottom:14px">
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
       <h2 style="margin:0">Crowd sentiment</h2>
       <span style="font-size:12px;color:var(--muted)">${nReading ? `${nReading.n_live} of ${nReading.n_total} legs live · ${nReading.n_narratives} narratives · as of ${esc(nReading.as_of)}` : ''}</span></div>
-    <p class="note" style="margin:6px 0 0">What the crowd is <b>talking about</b> — asset classes, sectors and themes, not individual securities. Each narrative is measured against its <b>own</b> trailing year before anything is compared: artificial intelligence draws 11,784 Wikipedia views a day and corporate bonds draw 35, and ranking the raw numbers would only rediscover that AI is a more famous subject than credit.</p>
-    <div style="display:flex;align-items:center;gap:28px;flex-wrap:wrap;margin-top:14px">
-      <div style="min-width:150px">
-        <div style="font-size:52px;font-weight:700;line-height:1;color:${nTone}">${nScore === null ? '—' : nScore.toFixed(0)}</div>
-        <div style="font-size:17px;font-weight:600;color:${nTone};margin-top:4px">${esc(nLabel)}</div>
+    <div class="crowdrow">
+      <div class="crowdscore">
+        <div style="font-size:38px;font-weight:700;line-height:1;color:${nTone}">${nScore === null ? '—' : nScore.toFixed(0)}</div>
+        <div style="font-size:14px;font-weight:600;color:${nTone};margin-top:3px">${esc(nLabel)}</div>
       </div>
-      <div style="flex:1;min-width:260px">
+      <div class="crowddial">
         <div class="dialtrack"><div class="dialmark" style="left:${nScore === null ? 50 : nScore}%;background:${nScore === null ? 'var(--line)' : nTone}"></div></div>
-        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:6px">
-          <span>Scattered</span><span>Mixed</span><span>Crowded</span></div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:5px"><span>Scattered</span><span>Mixed</span><span>Crowded</span></div>
       </div>
+      ${!legs.length ? '' : `<div class="crowdlegs">${legs.map(c => {
+        const v = c.score === null ? null : +c.score;
+        return `<div class="crowdleg" title="${esc(c.measure + (c.value_text ? ' — ' + c.value_text : '') + (c.how_to_supply ? ' ' + c.how_to_supply : ''))}">
+          <div style="display:flex;justify-content:space-between;gap:6px;font-size:12px"><span>${esc(c.label)}</span>
+            <b style="color:${v === null ? 'var(--muted)' : 'var(--text)'}">${v === null ? (c.status === 'live' ? '—' : esc(c.status.replace('_', ' '))) : v.toFixed(0)}</b></div>
+          <div style="height:4px;background:var(--panel2);border-radius:2px;margin-top:4px"><div style="height:4px;width:${v === null ? 0 : Math.max(2, v)}%;background:${v === null ? 'transparent' : 'var(--accent)'};border-radius:2px"></div></div></div>`;
+      }).join('')}</div>`}
     </div>
-    ${!nComps.length ? '' : `<div style="overflow-x:auto;margin-top:16px"><table style="min-width:620px"><thead><tr><th>Leg</th><th class="num">Reading</th><th>What is counted</th></tr></thead><tbody>
-      ${nComps.slice().sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).map(c => `<tr>
-        <td><b>${esc(c.label)}</b>${c.status === 'live' ? '' : ` <span class="chip" title="${esc(c.how_to_supply || '')}">${esc(c.status.replace('_', ' '))}</span>`}</td>
-        <td class="num">${c.score === null ? '<span style="color:var(--muted)">—</span>' : (+c.score).toFixed(0)}${c.value_text ? `<br><span style="font-size:11px;color:var(--muted)">${esc(c.value_text)}</span>` : ''}</td>
-        <td style="font-size:12px;color:var(--muted)">${esc(c.measure)}${c.how_to_supply ? ` <b>${esc(c.how_to_supply)}</b>` : ''}</td></tr>`).join('')}
+    <p class="note" style="margin:10px 0 0">${nReading ? esc(nReading.headline) + ' ' : ''}<b>High is not a sell</b> — the state of each narrative, in the murmuration below, matters more than the level here.</p>
+    <details class="crowdhow"><summary>How this is measured</summary>
+      <p class="note">What the crowd is <b>talking about</b> — asset classes, sectors and themes, not individual securities. Each narrative is measured against its <b>own</b> trailing year before anything is compared: artificial intelligence draws 11,784 Wikipedia views a day and corporate bonds draw 35, and ranking the raw numbers would only rediscover that AI is a more famous subject than credit. Four legs, each a share of the flock, so a crowd that is not leaning sits near 50 on all of them.</p>
+      ${!legs.length ? '' : `<div style="overflow-x:auto"><table style="min-width:560px"><thead><tr><th>Leg</th><th class="num">Reading</th><th>What is counted</th></tr></thead><tbody>
+        ${legs.map(c => `<tr><td><b>${esc(c.label)}</b>${c.status === 'live' ? '' : ` <span class="chip">${esc(c.status.replace('_', ' '))}</span>`}</td>
+          <td class="num">${c.score === null ? '—' : (+c.score).toFixed(0)}${c.value_text ? `<br><span style="font-size:11px;color:var(--muted)">${esc(c.value_text)}</span>` : ''}</td>
+          <td style="font-size:12px;color:var(--muted)">${esc(c.measure)}${c.how_to_supply ? ` <b>${esc(c.how_to_supply)}</b>` : ''}</td></tr>`).join('')}
       </tbody></table></div>`}
-    <p class="note">${nReading ? esc(nReading.headline) + ' ' : ''}<b>High is not a sell.</b> A talked-about narrative can stay talked-about for a long time, which is why the state of each one matters more than the level of the gauge.</p>
-    <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
-      <div class="eyebrow" style="margin-bottom:4px">The murmuration</div>
-      <p class="note" style="margin:0 0 10px">A flock of starlings has no leader and no plan. Each bird watches the six or seven nearest it, and the whole thing turns as one — the turn visible in the <b>shape</b> long before it is visible in any single bird. So this is drawn as a rotation rather than a scatter: a narrative's <b>bearing</b> says where it sits in the cycle and its <b>distance from the centre</b> says how far from ordinary it has got. The trail behind it is where it was four, eight and twelve weeks ago, with the newest mark the largest, so the direction of travel reads without decoding an arrow.</p>
-      <p class="note" style="margin:0 0 10px">Read it anticlockwise from the right. <b>Loudest</b> is unusual attention with the price going nowhere; through <b>Gathering</b> and <b>Running</b> the price is rising with the talk; <b>Unwatched</b> is a price rising while attention drains; <b>Ignored</b>, <b>Dispersing</b> and <b>Fading</b> are the quiet half. <b>Crowding</b>, bottom right, is the one to read twice — attention still climbing into a falling price, which is the crowd arriving after the move stopped paying for it.</p>
-      <p class="note" style="margin:0 0 10px"><b>Eight narratives are drawn in full.</b> All ${flock.length} are still in the picture as faint dots, because the flock's centre — the dashed line — is computed from every one of them and leaving any out would move it. But thirty-two labelled birds with thirty-two trails is a tangle rather than a flock. Circles are asset classes, squares sectors, triangles themes.</p>
-      ${murmuration(flock, labelOf, kindOf)}
-      <p class="note">Each trail point's percentile is computed against the year that preceded <b>that date</b>, not against today's — a trail drawn with hindsight's baseline would move for reasons the flock never saw. Hover a bird for what it is doing and why.</p>
-    </div>
-    <p class="note"><b>What these sources are.</b> Wikipedia pageviews (what the public looks up), Hacker News story counts where a query cannot match something else — "nuclear power" counts, "gold" does not, because it matches "golden" — and StockTwits message velocity and tone on proxies specific to a narrative, never on a broad index. ${nComps.some(c => c.component === 'reddit' && c.status !== 'live') ? '<b>Reddit refuses unauthenticated reads</b>, so that leg is shown with no data rather than hidden.' : ''} <b>None of it is positioning.</b> Pageviews measure public curiosity, not capital: a narrative can be enormously talked about and barely owned, and the reverse.</p>
+      <p class="note"><b>What these sources are.</b> Wikipedia pageviews (what the public looks up), Hacker News story counts where a query cannot match something else — "nuclear power" counts, "gold" does not, because it matches "golden" — and StockTwits message velocity and tone on proxies specific to a narrative, never on a broad index. ${nComps.some(c => c.component === 'reddit' && c.status !== 'live') ? '<b>Reddit refuses unauthenticated reads</b>, so that leg is shown with no data rather than hidden. ' : ''}<b>None of it is positioning.</b> Pageviews measure public curiosity, not capital.</p>
+    </details>
+  </div>`;
+
+  const murmCard = `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">The murmuration</h2>
+      <span style="font-size:12px;color:var(--muted)">where each narrative sits in the attention and price cycle, and the path it took over twelve weeks</span></div>
+    <p class="note" style="margin:6px 0 8px">Read anticlockwise from the right: <b>Loudest</b> → <b>Gathering</b> → <b>Running</b> → <b>Unwatched</b> → the quiet half → <b>Crowding</b>, bottom right, the one to read twice: attention still climbing into a falling price. Distance from the centre is how far from ordinary. <b>Each trail runs oldest to newest along the arrow</b>, with the dates in the key; the dashed blue line is the whole flock's centre, dated at every step.</p>
+    ${murmuration(flock, labelOf, kindOf)}
+    <details class="crowdhow"><summary>Why it is drawn this way</summary>
+      <p class="note">A flock of starlings has no leader and no plan. Each bird watches the six or seven nearest it, and the whole thing turns as one — the turn visible in the <b>shape</b> long before it is visible in any single bird. So this is a rotation rather than a scatter: a narrative's <b>bearing</b> says where it sits in the cycle and its <b>distance from the centre</b> says how far from ordinary it has got.</p>
+      <p class="note"><b>Eight narratives are drawn in full.</b> All ${flock.length} are still in the picture as faint dots, because the flock's centre is computed from every one of them and leaving any out would move it. Circles are asset classes, squares sectors, triangles themes. Each trail point's percentile is computed against the year that preceded <b>that date</b>, not against today's — a trail drawn with hindsight's baseline would move for reasons the flock never saw. Hover any mark for its date and reading.</p>
+    </details>
   </div>`;
 
   // ---- the beauty contest, recreated with the reflexivity test ----
@@ -4106,7 +4167,7 @@ function kate() {
 
   return `<span class="eyebrow">Sentiment</span><h1>Kate</h1>
    <p class="sub">The popularity contest — which narratives the crowd is talking about, how full each one already is, and whether the loop behind it still pays.</p>
-   ${gauge}${reflexCard}${contestCard}${contrarian}${creditCard}${bookCard}${legend}`;
+   ${contestCard}${contrarian}${gauge}${murmCard}${reflexCard}${creditCard}${bookCard}${legend}`;
 }
 
 // ---------- Annie: decision quality, from Thinking in Bets ----------
@@ -5698,71 +5759,41 @@ function fingerprintCard(scope, strategyId, modelLabel, benchLabel, heading) {
     ${cov ? `Equity is ${p1(cov.model_equity_weight)} of ${scope === 'firm' ? 'the firm' : 'this model'}${have(cov.model_resolved) ? `, and the fingerprint describes ${p1(cov.model_resolved)} of it` : ''}. ` : ''}Equity only: a bond fund has no style tilt, and averaging one in at zero would read as "no tilt" rather than as "this does not apply to that part of the book". A fund whose fit explains less than 70% of its own daily movement is left out by name${un.length ? ' — the list above' : ''}.${cov?.window_start ? ` Fitted on daily returns from ${esc(cov.window_start)} to ${esc(cov.window_end)}.` : ''}</p></div>`;
 }
 
-// ---------- A flat world map, by region ----------
+// ---------- A world map, by region ----------
 //
-// Simplified landmasses on an equirectangular frame, grouped into the same five geographic
-// regions the job aggregates to. It is a schematic, not a projection to measure from: the
-// outlines are deliberately coarse because their only job is to say WHERE, while the number
-// beside each one says HOW MUCH. Mexico is drawn with Latin America rather than with the North
-// American landmass, so the shading matches the regional figure it carries.
-const GEO_REGION_PATHS = {
-  north_america: [
-    'M33.3 66.7 L111.1 55.6 L144.4 55.6 L236.1 50.0 L272.2 47.2 L327.8 63.9 L344.4 105.6 L316.7 116.7 L305.6 130.6 L288.9 147.2 L275.0 177.8 L266.7 166.7 L250.0 169.4 L230.6 177.8 L225.0 188.9 L208.3 188.9 L183.3 172.2 L175.0 161.1 L155.6 138.9 L152.8 113.9 L122.2 86.1 L83.3 80.6 L41.7 75.0 Z',
-    'M375.0 83.3 L438.9 55.6 L444.4 38.9 L416.7 19.4 L338.9 22.2 L327.8 38.9 L347.2 69.4 Z',
-    'M336.1 119.4 L352.8 119.4 L352.8 108.3 L336.1 108.3 Z',
-  ],
-  latin_america: [
-    'M208.3 188.9 L225.0 188.9 L230.6 205.6 L247.2 200.0 L255.6 205.6 L266.7 222.2 L283.3 227.8 L269.4 227.8 L255.6 213.9 L236.1 208.3 L211.1 200.0 Z',
-    'M283.3 227.8 L300.0 219.4 L327.8 219.4 L355.6 236.1 L361.1 250.0 L377.8 255.6 L402.8 266.7 L391.7 294.4 L366.7 319.4 L350.0 344.4 L338.9 358.3 L316.7 402.8 L300.0 394.4 L297.2 375.0 L302.8 341.7 L305.6 300.0 L288.9 266.7 L277.8 250.0 L283.3 236.1 Z',
-  ],
-  europe: [
-    'M475.0 147.2 L475.0 130.6 L494.4 130.6 L500.0 116.7 L486.1 116.7 L502.8 108.3 L511.1 105.6 L522.2 100.0 L527.8 91.7 L522.2 88.9 L513.9 80.6 L533.3 66.7 L550.0 58.3 L566.7 52.8 L583.3 55.6 L588.9 69.4 L605.6 80.6 L622.2 91.7 L633.3 105.6 L611.1 116.7 L600.0 125.0 L583.3 125.0 L577.8 136.1 L566.7 138.9 L552.8 138.9 L538.9 144.4 L533.3 127.8 L522.2 127.8 L508.3 130.6 L500.0 138.9 Z',
-    'M486.1 111.1 L500.0 108.3 L497.2 100.0 L491.7 86.1 L483.3 88.9 L486.1 100.0 Z',
-    'M433.3 72.2 L461.1 69.4 L455.6 66.7 L436.1 66.7 Z',
-  ],
-  africa_mideast: [
-    'M452.8 208.3 L455.6 191.7 L472.2 175.0 L483.3 150.0 L527.8 147.2 L555.6 158.3 L588.9 163.9 L597.2 183.3 L608.3 205.6 L619.4 216.7 L641.7 216.7 L641.7 233.3 L616.7 255.6 L613.9 280.6 L611.1 297.2 L597.2 316.7 L583.3 336.1 L569.4 344.4 L550.0 344.4 L536.1 313.9 L533.3 294.4 L525.0 252.8 L505.6 233.3 L477.8 236.1 L463.9 225.0 Z',
-    'M597.2 166.7 L616.7 166.7 L633.3 166.7 L658.3 183.3 L661.1 194.4 L644.4 205.6 L622.2 216.7 L608.3 205.6 Z',
-    'M619.4 286.1 L638.9 294.4 L633.3 319.4 L622.2 311.1 Z',
-  ],
-  asia_pacific: [
-    'M633.3 105.6 L661.1 102.8 L694.4 105.6 L722.2 111.1 L750.0 119.4 L777.8 119.4 L805.6 111.1 L833.3 102.8 L866.7 116.7 L894.4 100.0 L930.6 88.9 L972.2 77.8 L994.4 66.7 L977.8 52.8 L944.4 52.8 L888.9 44.4 L819.4 44.4 L763.9 33.3 L708.3 47.2 L666.7 52.8 L638.9 61.1 L622.2 91.7 Z',
-    'M622.2 91.7 L638.9 125.0 L638.9 138.9 L633.3 166.7 L658.3 183.3 L672.2 180.6 L688.9 183.3 L700.0 194.4 L702.8 208.3 L713.9 227.8 L722.2 213.9 L733.3 188.9 L744.4 191.7 L755.6 188.9 L761.1 205.6 L772.2 222.2 L777.8 213.9 L791.7 222.2 L802.8 213.9 L797.2 194.4 L805.6 191.7 L827.8 183.3 L838.9 163.9 L838.9 138.9 L855.6 130.6 L875.0 116.7 L894.4 100.0 L866.7 116.7 L833.3 102.8 L805.6 111.1 L777.8 119.4 L750.0 119.4 L722.2 111.1 L694.4 105.6 L661.1 102.8 L633.3 105.6 Z',
-    'M861.1 158.3 L877.8 150.0 L891.7 136.1 L902.8 127.8 L894.4 125.0 L880.6 147.2 L863.9 155.6 Z',
-    'M763.9 236.1 L791.7 247.2 L827.8 261.1 L861.1 263.9 L891.7 258.3 L891.7 272.2 L861.1 275.0 L827.8 275.0 L794.4 269.4 L766.7 250.0 Z',
-    'M833.3 200.0 L850.0 200.0 L850.0 233.3 L836.1 233.3 Z',
-    'M816.7 311.1 L838.9 300.0 L861.1 283.3 L877.8 283.3 L894.4 280.6 L905.6 302.8 L919.4 316.7 L925.0 327.8 L916.7 352.8 L905.6 358.3 L888.9 355.6 L875.0 347.2 L858.3 338.9 L841.7 344.4 L819.4 344.4 L813.9 322.2 Z',
-    'M980.6 347.2 L994.4 358.3 L986.1 366.7 L972.2 377.8 L963.9 375.0 L977.8 363.9 Z',
-    'M833.3 180.6 L838.9 180.6 L838.9 188.9 L833.3 188.9 Z',
-  ],
-};
-// Shading is relative to the largest region in the model, so a book that is 80% one place still
-// reads as a map rather than a single dark blob beside four invisible ones.
-function worldMap(byRegion, labelOf) {
+// Real country outlines -- Natural Earth 1:50m, pre-projected into vendor/world-regions.js by
+// tools/build-world-map.py -- shaded by the region each country belongs to, so the colours match
+// the five regional figures printed on them. Mexico sits with Latin America, as in the job.
+// Russia is drawn but left unshaded: it carries no weight in any index the fit uses.
+//
+// Countries the fit measures individually say so on hover with their own figure; the rest are
+// part of their region's number and say that instead, rather than implying a country estimate
+// that was never made.
+function worldMap(byRegion, labelOf, countryRows) {
+  const G = window.GEO_WORLD;
+  if (!G) return '<div class="empty">Map outlines did not load.</div>';
   const max = Math.max(0.0001, ...Object.values(byRegion).map(v => +v || 0));
   const shade = v => {
     const t = Math.max(0, Math.min(1, (+v || 0) / max));
-    return `color-mix(in srgb, var(--accent) ${(10 + t * 78).toFixed(0)}%, var(--panel2))`;
+    return `color-mix(in srgb, var(--accent) ${(12 + t * 76).toFixed(0)}%, var(--panel2))`;
   };
-  const paths = Object.entries(GEO_REGION_PATHS).map(([slug, ds]) => {
-    const v = byRegion[slug];
-    const pct = v === null || v === undefined ? 'not resolved' : `${(+v * 100).toFixed(1)}%`;
-    return `<g><title>${esc(labelOf(slug))} — ${esc(pct)}</title>
-      ${ds.map(d => `<path d="${d}" fill="${v === null || v === undefined ? 'var(--panel2)' : shade(v)}" stroke="var(--line)" stroke-width="1"/>`).join('')}</g>`;
+  const byCode = new Map((countryRows || []).map(r => [r.code, r]));
+  const pctOr = v => v === null || v === undefined ? 'not resolved' : `${(+v * 100).toFixed(1)}%`;
+  const paths = G.countries.map(c => {
+    const v = c.r ? byRegion[c.r] : undefined;
+    const fill = !c.r || v === null || v === undefined ? 'var(--panel2)' : shade(v);
+    const own = byCode.get(c.c);
+    const tip = !c.r ? `${c.n} — outside every index the geography fit uses`
+      : own ? `${c.n} — ${pctOr(own.model_weight)} of resolved equity · ${labelOf(c.r)} ${pctOr(v)}`
+      : `${c.n} — not measured on its own; part of ${labelOf(c.r)} ${pctOr(v)}`;
+    return `<path d="${c.d}" fill="${fill}" stroke="var(--bg)" stroke-width="0.6" stroke-linejoin="round"${own ? ' data-measured="1"' : ''}><title>${esc(tip)}</title></path>`;
   }).join('');
-  // Labels sit over the centre of mass of each region's drawn shape, nudged by hand so none of
-  // them lands in the sea or on top of another.
-  // Anchored at a real coordinate inside each region -- roughly central Canada, Brazil, central
-  // Europe, equatorial Africa and central Asia -- so the figure sits on land and not in the sea.
-  const LABEL_AT = { north_america: [222, 117], latin_america: [339, 283], europe: [556, 100], africa_mideast: [556, 244], asia_pacific: [764, 139] };
-  const labels = Object.entries(LABEL_AT).map(([slug, [x, y]]) => {
+  const labels = Object.entries(G.labels).map(([slug, [x, y]]) => {
     const v = byRegion[slug];
     if (v === null || v === undefined) return '';
-    return `<text x="${x}" y="${y}" text-anchor="middle" font-size="15" font-weight="700" fill="var(--text)" style="paint-order:stroke;stroke:var(--bg);stroke-width:3px">${(+v * 100).toFixed(0)}%</text>`;
+    return `<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="middle" font-size="17" font-weight="700" fill="var(--text)" style="paint-order:stroke;stroke:var(--bg);stroke-width:3.5px;pointer-events:none">${(+v * 100).toFixed(0)}%</text>`;
   }).join('');
-  // Equirectangular: x = (lon+180) x 1000/360, y = (90-lat) x 500/180. Cropped below 410 because
-  // Antarctica holds no equity and its absence buys height for everything that does.
-  return `<svg viewBox="20 15 980 400" style="width:100%;height:auto;display:block" role="img" aria-label="Equity allocation by region">${paths}${labels}</svg>`;
+  return `<svg viewBox="0 0 ${G.w} ${G.h}" style="width:100%;height:auto;display:block" role="img" aria-label="Equity allocation by region">${paths}${labels}</svg>`;
 }
 
 
@@ -5836,7 +5867,7 @@ function geographyCard(m) {
         <span style="display:inline-block;width:9px;height:9px;background:var(--bench);border-radius:2px;margin:0 5px 0 12px"></span>${esc(benchLabel)}</span></div>
     <div style="margin-top:10px">${tabs}</div>
     ${!anyModel ? `<div class="empty" style="margin-top:12px">None of this model's equity could be placed geographically${un.length ? ` — ${esc(un.map(u => u.ticker).join(', '))} ${un.length === 1 ? 'is' : 'are'} the holding${un.length === 1 ? '' : 's'} involved` : ''}. The benchmark's own geography is shown below for reference.</div>`
-      : `<div style="margin-top:14px">${worldMap(byRegionModel, labelOf)}</div>`}
+      : `<div style="margin-top:14px">${worldMap(byRegionModel, labelOf, countries)}</div>`}
     <div style="overflow-x:auto;margin-top:6px"><table style="min-width:520px"><thead><tr>
       <th>Region</th><th class="num">Model</th><th class="num">${esc(benchLabel)}</th><th class="num">Over / under</th>
     </tr></thead><tbody>${regionRows}</tbody></table></div>
@@ -6030,20 +6061,14 @@ function modelDashboard(m) {
   // ---- contribution ----
   const cRows = contrib.slice().sort((a, b) => (n(b.contribution_bps) ?? -1e9) - (n(a.contribution_bps) ?? -1e9));
   const totalBps = cRows.reduce((s, c) => s + (n(c.contribution_bps) || 0), 0);
-  // A TOTAL THAT DOES NOT ADD TO 100% MUST SAY SO RATHER THAN BE PRINTED AS IF IT DID.
-  //
-  // Start weights sum to 107% on some periods, and the cause is a real one: a position opened AND
-  // closed inside the window is marked "removed" and carries the weight it had when it was bought,
-  // not the zero it had at the period's start. On a six-month window for one model that is 77.25%
-  // of weight genuinely held at the start plus 30.00% from names that were not.
-  //
-  // The contribution figures themselves are per-position and unaffected; it is the start-weight
-  // COLUMN that is mislabelled. Correcting it means changing how the reporting job assigns weight
-  // to intra-period trades, which is attribution arithmetic this desk's results depend on, so it is
-  // flagged here and left for a deliberate fix rather than adjusted in passing.
+  // Contribution is the model return decomposed line by line on the weight actually held each day
+  // (jobs/compute-model-reporting.mjs), so the lines add back to the period return exactly. Start
+  // and end weights are the drifted weights on those two dates: a line bought inside the window
+  // starts at 0% and still carries what it earned. A start-weight total off 100% now means the
+  // job is wrong, so the warning stays as a tripwire.
   const startSum = cRows.reduce((s, c) => s + (n(c.start_weight) || 0), 0);
   const startOff = cRows.length && Math.abs(startSum - 1) > 0.02;
-  const inPeriod = cRows.filter(c => c.status === 'removed' && (n(c.start_weight) || 0) > 0).length;
+  const inPeriod = cRows.filter(c => c.priced && !(n(c.start_weight) > 0)).length;
   const unpriced = cRows.filter(c => !c.priced);
   const SUSPECT = /can be simplified to|as an AI|\*\*/i;
   const contribCard = `<div class="card" style="margin-bottom:18px">
@@ -6056,16 +6081,16 @@ function modelDashboard(m) {
       : stat && stat.unavailable_reason ? `<div class="empty">${esc(stat.unavailable_reason)}</div>`
       : !cRows.length ? '<div class="empty">No contribution rows for this period.</div>'
       : `<table><thead><tr><th>Ticker</th><th>Name</th><th class="num">Start wt</th><th class="num">Return</th><th class="num">End wt</th><th class="num">Contribution</th></tr></thead><tbody>
-      <tr style="border-bottom:2px solid var(--line);background:var(--panel2)"><td><b>TOTAL</b></td><td></td><td class="num"><b${startOff ? ' style="color:var(--warn)" title="Does not sum to 100%: a position opened and closed inside this window is marked removed and carries the weight it had when it was bought, not the zero it held at the start."' : ''}>${pct(startSum)}${startOff ? '<sup style="color:var(--warn)">!</sup>' : ''}</b></td><td class="num"></td><td class="num"><b>${pct(cRows.reduce((s, c) => s + (n(c.end_weight) || 0), 0))}</b></td><td class="num"><b style="color:${col(totalBps)}">${totalBps >= 0 ? '+' : ''}${totalBps.toFixed(0)} bps</b></td></tr>
-      ${cRows.map(c => `<tr><td><b>${esc(c.ticker)}</b>${c.status === 'removed' ? ' <small style="color:var(--muted);font-style:italic">no longer held</small>' : c.status === 'added' ? ' <small style="color:var(--muted);font-style:italic">added in period</small>' : ''}</td>
+      <tr style="border-bottom:2px solid var(--line);background:var(--panel2)"><td><b>TOTAL</b></td><td></td><td class="num"><b${startOff ? ' style="color:var(--warn)" title="Drifted start weights should total 100%; the reporting job and this table disagree."' : ''}>${pct(startSum)}${startOff ? '<sup style="color:var(--warn)">!</sup>' : ''}</b></td><td class="num"></td><td class="num"><b>${pct(cRows.reduce((s, c) => s + (n(c.end_weight) || 0), 0))}</b></td><td class="num"><b style="color:${col(totalBps)}">${totalBps >= 0 ? '+' : ''}${totalBps.toFixed(0)} bps</b></td></tr>
+      ${cRows.map(c => `<tr><td><b>${esc(c.ticker)}</b>${c.status === 'removed' && c.priced && !(n(c.start_weight) > 0) ? ' <small style="color:var(--muted);font-style:italic">bought and sold in period</small>' : c.status === 'removed' ? ' <small style="color:var(--muted);font-style:italic">no longer held</small>' : c.status === 'added' ? ' <small style="color:var(--muted);font-style:italic">added in period</small>' : ''}</td>
         <td style="max-width:280px;color:var(--muted)">${SUSPECT.test(c.name_raw || '') ? `<span style="color:var(--warn)" title="This name contains AI-generated editorial text in the source export, shown verbatim">⚠ ${esc(c.name_raw)}</span>` : esc(c.name_raw || '')}</td>
         <td class="num">${n(c.start_weight) === null ? '–' : pct(n(c.start_weight))}</td>
         <td class="num">${c.priced ? `<span style="color:${col(n(c.period_return))}">${pc(n(c.period_return))}</span>` : '<span style="color:var(--muted)" title="No price for this holding across the window">no price</span>'}</td>
         <td class="num">${n(c.end_weight) === null ? '–' : pct(n(c.end_weight))}</td>
         <td class="num">${n(c.contribution_bps) === null ? '<span style="color:var(--muted)">—</span>' : `<span style="color:${col(n(c.contribution_bps))}">${n(c.contribution_bps) >= 0 ? '+' : ''}${n(c.contribution_bps).toFixed(0)} bps</span>`}</td></tr>`).join('')}
       </tbody></table>
-      ${!startOff ? '' : `<p class="note" style="color:var(--warn)"><b>Start weights sum to ${pct(startSum)}, not 100%.</b> ${inPeriod} position${inPeriod === 1 ? '' : 's'} in this window ${inPeriod === 1 ? 'was' : 'were'} bought and sold inside it, and the reporting job gives such a position the weight it had when it was bought rather than the zero it held at the period's start. <b>The contribution figures are per-position and unaffected</b> — it is this column that over-counts. Fixing it means changing how intra-period trades are weighted in the attribution, which is left as a deliberate change rather than adjusted in passing.</p>`}
-      <p class="note">Contribution = start weight × period return, in basis points, on actual holdings. Positions added during the period start at zero weight and contribute nothing by this measure; positions sold show the weight they started at. ${unpriced.length ? `<b>${unpriced.length} holding${unpriced.length === 1 ? '' : 's'} could not be priced across this window</b>, so the total understates. ` : ''}The total approximates the period return and drifts from it over long windows, since it uses starting weights and ignores rebalancing in between.</p>`}
+      ${!startOff ? '' : `<p class="note" style="color:var(--warn)"><b>Start weights sum to ${pct(startSum)}, not 100%.</b> They are drifted weights on the window's first day and should total 100%; this means the reporting job and the table disagree, and the figures should not be relied on until it is rerun.</p>`}
+      <p class="note">Contribution is each holding's share of the model return, measured on the weight actually held each day and compounded, so the lines add up to the period return exactly. Start and end weight are where each position stood on those two dates after drift. ${inPeriod ? `<b>${inPeriod} position${inPeriod === 1 ? ' was' : 's were'} bought during this window</b>, so ${inPeriod === 1 ? 'it starts' : 'they start'} at 0% and the contribution counts only the stretch ${inPeriod === 1 ? 'it was' : 'they were'} held. ` : ''}Return is the holding's total return while owned in the window, so a position held for two weeks shows two weeks of return, not the window's. ${unpriced.length ? `<b>${unpriced.length} holding${unpriced.length === 1 ? '' : 's'} could not be priced across this window</b> and ${unpriced.length === 1 ? 'is' : 'are'} outside the reconstruction, which the coverage figure records. ` : ''}</p>`}
   </div>`;
 
   // ---- drawdown ----
@@ -6345,7 +6370,7 @@ function lightDot(l, size = 14) {
   return `<span style="display:inline-block;width:${size}px;height:${size}px;border-radius:50%;background:${l ? LIGHT_COLOR[l] : 'transparent'};border:${l ? 'none' : '2px solid var(--line)'};vertical-align:middle"></span>`;
 }
 
-function signals() {
+function signals(embed) {
   const sl = D.speedLimit || [];
   const master = sl.find(r => r.category === 'master');
   // Heaviest lens first: predictive at 60% should lead, not whatever order the rows arrived in.
@@ -6383,7 +6408,7 @@ function signals() {
     <p class="note">A trigger fires on a CHANGE, not on a state: something bullish for months does not fire, the day it flips does. Rules live in the database and can be tuned without a deploy. None of these is a recommendation — the desk's standing position is that the technical layer is descriptive context, and the risk-range bands in particular use constants calibrated on the source spec's universe rather than ours.</p>
    </div>`;
 
-  return `<span class="eyebrow">Gigantic Rocks</span><h1>Signals</h1>
+  return `${embed ? '' : '<span class="eyebrow">Gigantic Rocks</span><h1>Signals</h1>'}
    <p class="sub">The Speed Limit, the rate-of-change board, and what has crossed a line recently.</p>
    <div class="card" style="margin-bottom:14px"><h2>Master Speed Limit <span class="chip draft">draft scoring rule</span></h2>${masterCard}</div>
    ${modelCard}${boardCard}${hitsCard}`;
@@ -7642,22 +7667,16 @@ function gail(shelf) {
     inbox: (D.routingLog || []).length,
     briefs: outputsFor('sisyphus', ['morning_brief', 'sunday_primer']).length,
   };
-  return `<div class="loc">
-    <div class="locplate">
-      <span class="eyebrow">Gail · The Librarian</span>
-      <h1>The Library</h1>
-      <p class="sub">The desk's record of itself — what was decided, what came in, and what was written about it. Nothing here is computed; everything here was filed.</p>
+  // Laid out like every other page -- eyebrow, title, standard tabs, cards -- rather than the
+  // bespoke "library" chrome it used to wear: a serif plate, an arch and brass shelf tabs read as
+  // a different site, and the content is records the desk consults like any other panel.
+  return `<span class="eyebrow">Records</span><h1>Gail</h1>
+    <p class="sub">The desk's record of itself — what was decided, what came in, and what was written about it. Nothing here is computed; everything here was filed.</p>
+    <div class="tabs" role="tablist" aria-label="Library sections" style="margin-bottom:14px">
+      ${LIBRARY_SHELVES.map(([k, label]) => `<button class="tab" data-shelf="${k}" aria-selected="${k === active}"${k === active ? ' aria-current="page"' : ''}>${esc(label)} <span class="chip" style="margin-left:4px">${counts[k]}</span></button>`).join('')}
     </div>
-    <nav class="shelf" aria-label="Library sections">
-      ${LIBRARY_SHELVES.map(([k, label]) => `<button class="shelftab${k === active ? ' on' : ''}" data-shelf="${k}"${k === active ? ' aria-current="page"' : ''}>
-        <span class="shelflabel">${esc(label)}</span>
-        <span class="shelfcount">${counts[k]}</span></button>`).join('')}
-    </nav>
-    <div class="locroom">
-      <div class="lochead"><h2>${esc(meta[1])}</h2><p>${esc(meta[2])}</p></div>
-      ${body}
-    </div>
-  </div>`;
+    <div style="margin:0 0 12px"><h2 style="margin:0;font-size:18px">${esc(meta[1])}</h2><p class="note" style="margin:4px 0 0">${esc(meta[2])}</p></div>
+    ${body}`;
 }
 
 // ---------- Admin: status, sources, views and agents under one roof ----------
@@ -7677,8 +7696,10 @@ function admin() {
     <h2 style="margin:2px 0 0;font-size:20px">${esc(title)}</h2>
     ${note ? `<p class="note" style="margin:4px 0 0">${note}</p>` : ''}</div>${body}`;
   return `<span class="eyebrow">Allocation model</span><h1>Admin</h1>
-   <p class="sub">What is running, what the data came from, the allocation views behind it, and the agents' latest output. Everything here qualifies the rest of the site rather than adding to it.</p>
+   <p class="sub">What is running, the Speed Limit and the signals that have fired, what the data came from, the allocation views behind it, and the agents' latest output. Everything here qualifies the rest of the site rather than adding to it.</p>
    ${sec('Housekeeping', 'Status', status(true), 'Read this first: a failed query or a stale price run changes how every other figure on the site should be taken.')}
+   <div style="height:26px;border-top:1px solid var(--line);margin:22px 0 0"></div>
+   ${sec('Gigantic Rocks', 'Signals', signals(true))}
    <div style="height:26px;border-top:1px solid var(--line);margin:22px 0 0"></div>
    ${sec('Provenance', 'Sources', sources(true))}
    <div style="height:26px;border-top:1px solid var(--line);margin:22px 0 0"></div>
