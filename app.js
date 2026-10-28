@@ -146,7 +146,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill, quadPit] = await Promise.all([
     qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
     qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
     qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note'), 'securities'),
@@ -270,6 +270,7 @@ async function load() {
     qAllSoft(() => sb.from('capital_rotation_month').select('month,box_key,label,drawdown,n_months,state').order('month', { ascending: true }).order('box_key', { ascending: true }), 'capital rotation'),
     qAllSoft(() => sb.from('capital_rotation_box').select('box_key,label,numerator,denominator,substitution,sort_order,first_month').order('sort_order', { ascending: true }), 'capital rotation boxes'),
     qAllSoft(() => sb.from('capital_rotation_skill').select('as_of,bucket,n_obs,fwd_spy_12m,fwd_spy_gold_12m,hit_spy,sort_order').order('sort_order', { ascending: true }), 'capital rotation skill'),
+    qAllSoft(() => sb.from('macro_quad_pit').select('as_of,regime,growth_z,inflation_z,n_growth,n_inflation,revised_regime,fwd_spy_63d,fwd_spy_maxdd_63d').order('as_of', { ascending: true }), 'quad point in time'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -371,7 +372,7 @@ async function load() {
     flowWins: newest(flowWins || []), flowMonths: newest(flowMonths || []), flowMonitor: newest(flowMonitor || []),
     flowHist: newest(flowHist || []), flowNext: newest(flowNext || []),
     eventRisk: newest(eventRisk || []), slHist: slHist || [], insCands: insCands || [],
-    crMonth: crMonth || [], crBox: crBox || [], crSkill: newest(crSkill || []) };
+    crMonth: crMonth || [], crBox: crBox || [], crSkill: newest(crSkill || []), quadPit: quadPit || [] };
 }
 
 // ---------- Views ----------
@@ -3504,7 +3505,74 @@ function adam() {
   </div>`;
   return `<span class="eyebrow">Macro</span><h1>Adam</h1>
    <p class="sub">The four macro seasons, the path between them, the liquidity that sets the amplitude, and the consumer the cycle begins with.</p>
-   ${headCard}${mapCard}${liqCard}${codeCard}`;
+   ${headCard}${mapCard}${quadSkillCard()}${liqCard}${codeCard}`;
+}
+
+// ---------- Was the quad tradeable? ----------
+//
+// The quad read POINT IN TIME: every revised statistic as FRED showed it on each month end
+// (ALFRED vintages), market series as printed -- jobs/compute-quad-pit.mjs. The table is computed
+// here from the stored rows rather than stored as a summary, so it can never describe a different
+// set of months from the one the job wrote.
+//
+// Significance is on every third month only. At a 63-session horizon consecutive monthly
+// readings share two thirds of their window, so the overlapping counts are counts, not evidence.
+function quadSkillCard() {
+  const rows = D.quadPit || [];
+  const tested = rows.filter(r => r.fwd_spy_63d !== null && r.fwd_spy_maxdd_63d !== null);
+  if (tested.length < 24) return '';
+  const indep = tested.filter((_, i) => i % 3 === 0);
+  const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+  const sd = a => { const m = mean(a); return Math.sqrt(a.reduce((x, y) => x + (y - m) ** 2, 0) / (a.length - 1)); };
+  const pc = v => v === null ? '—' : `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
+  const DEEP = -0.10;
+  const NAMES = { goldilocks: 'Quad 1 · goldilocks', reflation: 'Quad 2 · reflation', inflation: 'Quad 3 · inflation', deflation: 'Quad 4 · deflation' };
+  const line = (label, sub, subI, restI) => {
+    const r = sub.map(x => +x.fwd_spy_63d), dd = sub.map(x => +x.fwd_spy_maxdd_63d);
+    const ri = subI.map(x => +x.fwd_spy_63d), rr = (restI || []).map(x => +x.fwd_spy_63d);
+    const t = restI && ri.length > 1 && rr.length > 1 ? (mean(ri) - mean(rr)) / Math.sqrt(sd(ri) ** 2 / ri.length + sd(rr) ** 2 / rr.length) : null;
+    const deep = dd.filter(x => x < DEEP).length / dd.length;
+    return `<tr${restI ? '' : ' style="border-top:2px solid var(--line);font-weight:600"'}><td>${label}</td>
+      <td class="num">${sub.length}</td><td class="num" style="color:${mean(r) >= 0 ? 'var(--pos)' : 'var(--neg)'}">${pc(mean(r))}</td>
+      <td class="num">${(r.filter(x => x > 0).length / r.length * 100).toFixed(0)}%</td>
+      <td class="num" style="color:var(--neg)">${pc(mean(dd))}</td><td class="num">${(deep * 100).toFixed(0)}%</td>
+      <td class="num" style="color:var(--muted)">${subI.length}</td>
+      <td class="num">${t === null ? '' : `<span style="color:${Math.abs(t) >= 2 ? 'var(--text)' : 'var(--muted)'}">${t.toFixed(2)}</span>`}</td></tr>`;
+  };
+  const regRows = ['goldilocks', 'reflation', 'inflation', 'deflation'].map(g => {
+    const sub = tested.filter(r => r.regime === g);
+    return sub.length ? line(NAMES[g], sub, indep.filter(r => r.regime === g), indep.filter(r => r.regime !== g)) : '';
+  }).join('');
+  const both = rows.filter(r => r.revised_regime);
+  const agree = both.filter(r => r.regime === r.revised_regime).length;
+  const up = indep.filter(r => +r.inflation_z >= 0), dn = indep.filter(r => +r.inflation_z < 0);
+  const dUp = up.filter(r => +r.fwd_spy_maxdd_63d < DEEP).length, dDn = dn.filter(r => +r.fwd_spy_maxdd_63d < DEEP).length;
+  const pp = (dUp + dDn) / (up.length + dn.length);
+  const zInf = up.length && dn.length ? (dUp / up.length - dDn / dn.length) / Math.sqrt(pp * (1 - pp) * (1 / up.length + 1 / dn.length)) : null;
+  const best = ['goldilocks', 'reflation', 'inflation', 'deflation'].map(g => {
+    const si = indep.filter(r => r.regime === g).map(r => +r.fwd_spy_63d), ri = indep.filter(r => r.regime !== g).map(r => +r.fwd_spy_63d);
+    return si.length > 1 && ri.length > 1 ? Math.abs((mean(si) - mean(ri)) / Math.sqrt(sd(si) ** 2 / si.length + sd(ri) ** 2 / ri.length)) : 0;
+  }).reduce((a, b) => Math.max(a, b), 0);
+  const CRISES = [['2008-08-31', 'Before Lehman'], ['2008-09-30', 'Lehman month'], ['2020-01-31', 'Before Covid'], ['2020-02-29', 'Covid crash begins'], ['2020-03-31', 'Covid low'], ['2021-12-31', 'Before the 2022 bear']];
+  const crisisRows = CRISES.map(([d, lab]) => {
+    const r = rows.find(x => x.as_of === d); if (!r) return '';
+    return `<tr><td>${esc(d)} <small style="color:var(--muted)">${esc(lab)}</small></td><td>${esc(NAMES[r.regime])}</td>
+      <td style="color:var(--muted)">${r.revised_regime && r.revised_regime !== r.regime ? esc(NAMES[r.revised_regime]) : 'same'}</td>
+      <td class="num" style="color:${r.fwd_spy_63d === null ? 'var(--muted)' : +r.fwd_spy_63d >= 0 ? 'var(--pos)' : 'var(--neg)'}">${r.fwd_spy_63d === null ? '—' : pc(+r.fwd_spy_63d)}</td>
+      <td class="num" style="color:var(--neg)">${r.fwd_spy_maxdd_63d === null ? '—' : pc(+r.fwd_spy_maxdd_63d)}</td></tr>`;
+  }).join('');
+  return `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">Was the quad tradeable?</h2>
+      <span style="font-size:12px;color:var(--muted)">read point in time from ALFRED vintages · ${esc(tested[0].as_of)} to ${esc(tested.at(-1).as_of)} · SPY over the next 63 sessions</span></div>
+    <p class="note" style="margin:6px 0 12px"><b>${best >= 2 ? 'At least one quad separates from the rest at a t above 2.' : `No quad separates from the rest: the largest t across the four is ${best.toFixed(2)}, on ${indep.length} non-overlapping quarters.`}</b> This is the quad as it could actually have been read — each payroll, GDP, production and price figure as FRED showed it on that month end, before revisions — through 2008, 2020 and 2022. Hindsight matters: on today's revised figures the call differs in <b>${both.length - agree} of ${both.length} months</b> (${((both.length - agree) / both.length * 100).toFixed(0)}%), so the revised path in the chart above flatters what was knowable.</p>
+    <div style="overflow-x:auto"><table style="min-width:680px"><thead><tr><th>Quad, as read at the time</th><th class="num">Months</th><th class="num">Next 63 sessions</th><th class="num">Up</th><th class="num">Worst drawdown, mean</th><th class="num">Drawdown &gt; 10%</th><th class="num">Independent</th><th class="num">t vs rest</th></tr></thead><tbody>
+      ${regRows}${line('Every month', tested, indep, null)}
+    </tbody></table></div>
+    <p class="note"><b>Deflation is late, not bearish.</b> It is the best quad for the next quarter because it is read after the damage — September 2008 and March 2020 — when the data has finally caught up with a price that already fell. <b>The inflation axis is where the drawdown risk sits:</b> with inflation accelerating, ${dUp} of ${up.length} independent quarters held a drawdown worse than 10% (${up.length ? (dUp / up.length * 100).toFixed(0) : '—'}%), against ${dDn} of ${dn.length} with it decelerating (${dn.length ? (dDn / dn.length * 100).toFixed(0) : '—'}%)${zInf === null ? '' : `, z ${zInf.toFixed(2)}`}. That split was found by looking at this table, so it is a hypothesis to watch out of sample, not a rule.</p>
+    <div style="overflow-x:auto;margin-top:6px"><table style="min-width:620px"><thead><tr><th>Month end</th><th>Quad at the time</th><th>On revised data</th><th class="num">SPY next 63</th><th class="num">Worst drawdown</th></tr></thead><tbody>${crisisRows}</tbody></table></div>
+    <p class="note">Same z-score method and the same 2005 history as the nightly reading; the newest point-in-time reading is checked against it. A series with no archived vintage on a date is left out that month rather than filled with a later figure — CFNAI's archive starts 2011, jobless claims 2009 and sticky CPI 2014, so 2008 stands on five growth legs. Monthly readings overlap three to one at this horizon; the t statistics use every third month only.</p>
+  </div>`;
 }
 
 // The news-flow breakdown behind the percentage on Sven's table. Built from the releases array

@@ -758,6 +758,20 @@ if (!argRoute) {
   const newestQ = quadRows.slice().sort((a, b) => a.as_of.localeCompare(b.as_of)).pop();
   say(` ok  adam quads             -> ${quadRows.length} months, now Quad ${newestQ.quad} (g ${(+newestQ.growth_z).toFixed(2)} i ${(+newestQ.inflation_z).toFixed(2)}), ${adBad.length} problems`);
 
+  // The point-in-time quad: every row's label must match its own signs, and the card's hindsight
+  // figure must equal a count taken independently from the table.
+  const pit = await rest('macro_quad_pit', 'as_of,regime,quad,growth_z,inflation_z,revised_regime,fwd_spy_63d', '&order=as_of.asc');
+  if (pit.length) {
+    const pitBad = pit.filter(r => QMAP[r.regime] !== r.quad || (+r.growth_z >= 0 ? (+r.inflation_z >= 0 ? 2 : 1) : (+r.inflation_z >= 0 ? 3 : 4)) !== r.quad);
+    for (const r of pitBad.slice(0, 5)) errors.push(`[quad pit] ${r.as_of} labelled quad ${r.quad} against its own signs`);
+    const both = pit.filter(r => r.revised_regime), differ = both.filter(r => r.regime !== r.revised_regime).length;
+    const card = (ad.split('Was the quad tradeable?')[1] || '').split('</table>')[0] + (ad.split('Was the quad tradeable?')[1] || '').split('<table')[0];
+    need(ad.includes('Was the quad tradeable?'), '[quad pit] the point-in-time card is missing from Adam');
+    need(card.includes(`<b>${differ} of ${both.length} months</b>`), `[quad pit] the card's hindsight count does not match the table (${differ} of ${both.length})`);
+    need(pit[0].as_of <= '2008-06-30', `[quad pit] the point-in-time history starts ${pit[0].as_of}, after 2008`);
+    say(` ok  quad point in time     -> ${pit.length} months from ${pit[0].as_of}, revised differs in ${differ} of ${both.length}, ${pitBad.length} problems`);
+  }
+
   // A reading on an axis must be shown as contested. Stating a coin toss flatly is the failure
   // this guard exists for, and today's reading is exactly that case.
   if (Math.abs(+newestQ.growth_z) < 0.15 || Math.abs(+newestQ.inflation_z) < 0.15)
