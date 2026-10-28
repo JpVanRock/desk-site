@@ -146,7 +146,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands] = await Promise.all([
     qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
     qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
     qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note'), 'securities'),
@@ -266,6 +266,7 @@ async function load() {
     qAllSoft(() => sb.from('flows_calendar_upcoming').select('as_of,seq,window_key,entry_date,exit_date,days_held,month_num,hist_hit,hist_mean,recent_hit').order('seq', { ascending: true }), 'flows upcoming'),
     qAllSoft(() => sb.from('event_risk').select('as_of,event_id,week_start,week_end,event_date,kind,importance,title,source,detail').order('event_date', { ascending: true }), 'event risk'),
     qAllSoft(() => sb.from('speed_limit_readings').select('as_of,category,score,light,weight,freshness,n_calls').order('as_of', { ascending: true }), 'speed limit history'),
+    qAllSoft(() => sb.from('insurance_candidates').select('ticker,label,sort_order,in_sleeve,note').order('sort_order', { ascending: true }), 'insurance candidates'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -366,7 +367,7 @@ async function load() {
     // run's window library on top of last run's and double every count on the page.
     flowWins: newest(flowWins || []), flowMonths: newest(flowMonths || []), flowMonitor: newest(flowMonitor || []),
     flowHist: newest(flowHist || []), flowNext: newest(flowNext || []),
-    eventRisk: newest(eventRisk || []), slHist: slHist || [] };
+    eventRisk: newest(eventRisk || []), slHist: slHist || [], insCands: insCands || [] };
 }
 
 // ---------- Views ----------
@@ -848,6 +849,7 @@ let watchTab = 'equities';
 let volPeriod = null;                  // null = follow the performance window
 let bigChart = null;                   // 'perf' | 'vol' -- which chart is open enlarged
 let ladderDetail = null;               // "<strategy_id>|<ticker>" -- the open position detail
+let insEdit = { busy: false, msg: null, tone: null };
 let watchAdd = { busy: false, msg: null, tone: null };
 const SCATTER_PERIODS = ['YTD', '1Y', '3Y', '5Y'];
 
@@ -1130,7 +1132,19 @@ function stan(mode = 'dashboard') {
   // was the second source of the loss. An average cannot tell those apart and a sleeve sized off
   // one would have carried its largest bond weight into the single episode where bonds did not
   // help.
-  const ins = (D.insValue || []).filter(r => r.window_key === 'full').sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  // THE TABLE SHOWS THE LIVE CANDIDATE LIST, not whatever the last run happened to measure. A row
+  // removed here should disappear at once rather than linger until the next nightly; a row just
+  // added has no measurement yet and is shown as pending rather than omitted, so the add visibly
+  // did something. When the candidates table is absent the job's built-in list is what ran, and
+  // everything measured is shown.
+  const insCandList = D.insCands || [];
+  const insWanted = insCandList.length ? new Set(insCandList.map(c => c.ticker)) : null;
+  const insMeasured = (D.insValue || []).filter(r => r.window_key === 'full')
+    .filter(r => !insWanted || insWanted.has(r.instrument))
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const insPending = !insWanted ? []
+    : insCandList.filter(c => !insMeasured.some(r => r.instrument === c.ticker));
+  const ins = insMeasured;
   const insPx = (D.insPricing || [])[0] || null;
   const INS_LOOK = {
     brake:        { label: 'brake',        tone: 'var(--pos)',   short: 'Paid in the book\u2019s worst days, stayed negatively correlated through stress, and made money through every drawdown it was actually in.' },
@@ -1154,7 +1168,16 @@ function stan(mode = 'dashboard') {
     return `<div class="card" style="margin-bottom:14px">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
         <h2 style="margin:0">Which brake is worth owning?</h2>
-        <span style="font-size:12px;color:var(--muted)">${esc(ins[0].as_of)} · against the 50/10/10/30 reference book</span></div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--muted)">${esc(ins[0].as_of)} · against the 50/10/10/30 reference book</span>
+          ${!insWanted ? '' : `<form data-insadd style="display:flex;align-items:center;gap:6px;margin:0">
+            <input name="ticker" placeholder="Add candidate" autocomplete="off" spellcheck="false" maxlength="12"
+              style="width:118px;padding:4px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel2);color:var(--fg);font-size:12px;text-transform:uppercase" ${insEdit.busy ? 'disabled' : ''}>
+            <button type="submit" ${insEdit.busy ? 'disabled' : ''} style="padding:4px 11px;border:1px solid var(--line);border-radius:5px;background:var(--panel2);color:var(--fg);font-size:12px;cursor:pointer;white-space:nowrap">${insEdit.busy ? 'Working…' : '+ Add'}</button>
+          </form>`}
+        </div></div>
+      ${!insEdit.msg ? '' : `<div style="font-size:11px;margin-top:6px;color:${insEdit.tone === 'bad' ? 'var(--neg)' : 'var(--pos)'}">${esc(insEdit.msg)}</div>`}
+      ${!insPending.length ? '' : `<div style="font-size:11px;color:var(--muted);margin-top:8px">Awaiting measurement, next run: ${insPending.map(c => `<b style="color:var(--fg)">${esc(c.ticker)}</b><button data-insdel="${esc(c.ticker)}" title="Remove ${esc(c.ticker)}" style="border:none;background:none;color:var(--muted);cursor:pointer;font-size:11px;padding:0 4px 0 2px">✕</button>`).join(' ')}</div>`}
       <p class="note" style="margin:8px 0 12px">Measured, not modelled. The desk holds no option chains and no skew surface, so this answers the question from prices it has: <b>what each instrument paid when the book fell, what it costs the rest of the time, and whether it worked every time it was needed.</b></p>
       ${!insPx ? '' : `<div style="display:flex;gap:22px;flex-wrap:wrap;align-items:baseline;padding:10px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin-bottom:12px">
         <div><span class="eyebrow">Protection costs</span> <b style="color:${insPx.verdict === 'cheap' ? 'var(--pos)' : insPx.verdict === 'dear' ? 'var(--neg)' : insPx.verdict === 'late' ? 'var(--warn)' : 'var(--muted)'};font-size:17px">${esc(insPx.verdict)}</b></div>
@@ -1166,7 +1189,7 @@ function stan(mode = 'dashboard') {
           const L = INS_LOOK[r.verdict] || INS_LOOK.insufficient;
           const thin = r.carry_annual !== null && Math.abs(+r.carry_annual) < 0.03;
           return `<tr${held.has(r.instrument) ? ' style="background:var(--panel2)"' : ''}>
-            <td><b>${esc(r.instrument)}</b>${held.has(r.instrument) ? ' <span class="chip" style="font-size:9px">held</span>' : ''}<br><span style="font-size:11px;color:var(--muted)">${esc(r.label)}</span></td>
+            <td><b>${esc(r.instrument)}</b>${held.has(r.instrument) ? ' <span class="chip" style="font-size:9px">held</span>' : ''}${!insWanted ? '' : `<button data-insdel="${esc(r.instrument)}" title="Remove ${esc(r.instrument)} from the candidates. The measurement already computed stays in the table until the next run; nothing is deleted." style="margin-left:6px;border:none;background:none;color:var(--muted);cursor:pointer;font-size:12px;padding:0 2px">✕</button>`}<br><span style="font-size:11px;color:var(--muted)">${esc(r.label)}</span></td>
             <td class="num" style="color:${+r.crash_1pct > 0 ? 'var(--pos)' : 'var(--neg)'}"><b>${p2(r.crash_1pct)}</b></td>
             <td class="num" style="color:${r.free_carry ? 'var(--pos)' : 'var(--neg)'}">${p2(r.carry_annual, 1)}</td>
             <td class="num" title="${esc(thin ? 'Carry is near zero, so this ratio is unstable and should not be compared across rows.' : 'Days of carry that one worst-1% day pays back.')}">${r.free_carry ? '<span style="color:var(--pos)">free</span>' : r.payoff_per_carry === null ? '—' : `${(+r.payoff_per_carry).toFixed(0)}${thin ? '<sup style="color:var(--warn)">?</sup>' : ''}`}</td>
@@ -7777,6 +7800,71 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Escape' || !bigChart) return;
   bigChart = null;
   if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
+});
+// Adding and removing brake candidates.
+//
+// A CANDIDATE MUST ALREADY BE A TRACKED SECURITY. The job measures from this desk's own price
+// history, so an instrument with no prices here cannot be judged -- it would come back as a blank
+// row, which reads as "no verdict" when it means "never measured". The check happens before the
+// write and says what to do instead.
+//
+// REMOVING ONE DELETES NOTHING THAT WAS MEASURED. It drops the instrument from the candidate list,
+// so the next run stops measuring it; every insurance_value row already computed stays where it
+// is. Adding the ticker back restores it without recomputing the episode record, which is the
+// expensive part.
+const insRerender = () => { if ((location.hash || '').startsWith('#brakes')) $('#app').innerHTML = brakes(); };
+document.addEventListener('click', async e => {
+  const t = e.target.closest('[data-insdel]');
+  if (!t || insEdit.busy) return;
+  const tk = t.dataset.insdel;
+  insEdit = { busy: true, msg: null, tone: null };
+  insRerender();
+  try {
+    const { error } = await sb.from('insurance_candidates').delete().eq('ticker', tk);
+    if (error) throw new Error(error.message);
+    D = await load();
+    insEdit = { busy: false, msg: `${tk} removed from the candidates. What was already measured stays in the table until the next run — nothing was deleted.`, tone: 'ok' };
+  } catch (err) {
+    insEdit = { busy: false, msg: `Could not remove ${tk}: ${err.message}`, tone: 'bad' };
+  }
+  insRerender();
+});
+document.addEventListener('submit', async e => {
+  const f = e.target.closest('[data-insadd]');
+  if (!f) return;
+  e.preventDefault();
+  if (insEdit.busy) return;
+  const raw = (new FormData(f).get('ticker') || '').toString().trim().toUpperCase();
+  if (!raw) return;
+  if (!/^[A-Z0-9.\-]{1,12}$/.test(raw)) {
+    insEdit = { busy: false, msg: `"${raw}" is not a ticker symbol.`, tone: 'bad' };
+    return insRerender();
+  }
+  insEdit = { busy: true, msg: null, tone: null };
+  insRerender();
+  try {
+    const { data: sec } = await sb.from('securities').select('ticker,name').eq('ticker', raw).maybeSingle();
+    if (!sec) {
+      insEdit = { busy: false, tone: 'bad',
+        msg: `${raw} is not a tracked security, so there is no price history here to measure it against. Add it to the Watchlist on the Markets page first; it can be a candidate once the nightly has loaded its prices.` };
+      return insRerender();
+    }
+    const { data: dupe } = await sb.from('insurance_candidates').select('ticker').eq('ticker', raw).maybeSingle();
+    if (dupe) {
+      insEdit = { busy: false, msg: `${raw} is already a candidate.`, tone: 'bad' };
+      return insRerender();
+    }
+    const order = Math.max(0, ...(D.insCands || []).map(c => +c.sort_order || 0)) + 10;
+    const { error } = await sb.from('insurance_candidates')
+      .insert({ ticker: raw, label: sec.name || raw, sort_order: order, in_sleeve: false, added_by: 'page' });
+    if (error) throw new Error(error.message);
+    D = await load();
+    insEdit = { busy: false, tone: 'ok',
+      msg: `${raw} added. It carries no verdict until the nightly measures it against the reference book's drawdowns.` };
+  } catch (err) {
+    insEdit = { busy: false, msg: `Could not add ${raw}: ${err.message}`, tone: 'bad' };
+  }
+  insRerender();
 });
 // Opening a Recovery Ladder position, and closing it again.
 document.addEventListener('click', e => {

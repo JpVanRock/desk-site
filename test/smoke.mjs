@@ -2963,6 +2963,35 @@ await go('#stan');
 }
 
 // ---------------------------------------------------------------------------
+// [brake-candidates] The editable list behind "Which brake is worth owning?".
+//
+//   The controls render only when the candidates table has rows, because the job falls back to its
+//   own built-in list when the table is missing and a delete button over a list the job is not
+//   reading would be a lie. If the table is absent that is a pending migration, not a pass.
+// -------------------------------------------------------------------------
+currentRoute = 'brake-candidates';
+{
+  const probe = await fetch(`${SUPABASE_URL}/rest/v1/insurance_candidates?select=ticker&limit=1`, { headers: REST });
+  if (probe.status === 404) {
+    errors.push('[brake-candidates] insurance_candidates does not exist — migration 20261109100000_insurance_candidates.sql has not been applied');
+  } else {
+    await go('#brakes');
+    const bp = app();
+    const cands = await rest('insurance_candidates', 'ticker,label,sort_order,in_sleeve');
+    need(cands.length > 0, '[brake-candidates] the table exists but is empty, so the job silently falls back to its built-in list');
+    need(/data-insadd/.test(bp), '[brake-candidates] no field for adding a candidate');
+    need(/data-insdel/.test(bp), '[brake-candidates] no control for removing a candidate');
+    // Every measured row on the page must be a live candidate: a removal has to take effect at
+    // once rather than linger until the next nightly.
+    const shown = [...bp.matchAll(/data-insdel="([^"]+)"/g)].map(m => m[1]);
+    const live = new Set(cands.map(c => c.ticker));
+    const stale = shown.filter(t => !live.has(t));
+    need(stale.length === 0, `[brake-candidates] the page still offers ${stale.join(', ')}, which is no longer a candidate`);
+    say(` ok  brake candidates       -> ${cands.length} candidates, ${cands.filter(c => c.in_sleeve).length} marked held`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log('');
 if (errors.length) { console.log(`${errors.length} PROBLEM(S):`); for (const e of errors) console.log('  ' + e); process.exit(1); }
 console.log('No problems found.');
