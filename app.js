@@ -2598,7 +2598,7 @@ function markets() {
           ${ticks}
           ${lines.map(l => `<path d="${path(l.pts)}" fill="none" stroke="${l.tone}" stroke-width="1.7"/>`).join('')}
           ${realised.length ? `<path d="${path(realised)}" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.9"/>` : ''}
-          ${ends.map(e => `<text x="${(W - pad.r + 30).toFixed(1)}" y="${(e.y + 3.5).toFixed(1)}" font-size="10.5" font-weight="600" fill="${e.tone}">${esc(e.label)} ${e.v.toFixed(1)}</text>`).join('')}
+          ${ends.map(e => `<text x="${(W - 2).toFixed(1)}" y="${(e.y + 3.5).toFixed(1)}" font-size="10.5" font-weight="600" text-anchor="end" fill="${e.tone}">${esc(e.label)} ${e.v.toFixed(1)}</text>`).join('')}
           <text x="${pad.l}" y="${Hh - 6}" font-size="10" fill="var(--muted)">${esc(dates[0])}</text>
           <text x="${(W - pad.r).toFixed(1)}" y="${Hh - 6}" font-size="10" text-anchor="end" fill="var(--muted)">${esc(dates.at(-1))}</text>
         </svg>
@@ -2833,7 +2833,7 @@ function markets() {
       <line x1="${pd}" y1="${Y(nBox * 0.75).toFixed(1)}" x2="${CW - pd}" y2="${Y(nBox * 0.75).toFixed(1)}" stroke="var(--neg)" stroke-dasharray="3 3" stroke-width="0.7" opacity="0.6"/>
       <polygon points="${area}" fill="var(--neg)" opacity="0.18"/>
       <polyline points="${hist.map((h, i) => `${X(i).toFixed(1)},${Y(h.n).toFixed(1)}`).join(' ')}" fill="none" stroke="var(--neg)" stroke-width="1.4"/>
-      ${years.map(y => { const i = hist.findIndex(h => h.m.startsWith(y)); return `<text x="${X(i).toFixed(1)}" y="${CH + 11}" font-size="9" text-anchor="middle" fill="var(--muted)">${y}</text>`; }).join('')}</svg>`;
+      ${years.map((y, k) => { const i = hist.findIndex(h => h.m.startsWith(y)); const anchor = i === 0 ? 'start' : k === years.length - 1 && i >= hist.length - 6 ? 'end' : 'middle'; return `<text x="${X(i).toFixed(1)}" y="${CH + 11}" font-size="9" text-anchor="${anchor}" fill="var(--muted)">${y}</text>`; }).join('')}</svg>`;
 
     const skill = D.crSkill || [];
     const pc = v => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : '−'}${Math.abs(+v * 100).toFixed(1)}%`;

@@ -470,3 +470,34 @@ select{font:inherit;font-size:12.5px;padding:5px 7px;border-radius:7px;border:1p
 /* Capital Rotation Monitor: the evidence grid and the gauge sit side by side, and stack below
    tablet width -- a 2.2:1 split leaves the gauge too narrow to read on a phone. */
 @media (max-width:820px){.cr-grid{grid-template-columns:minmax(0,1fr)!important}}
+
+/* PHONES: SEVEN OF TWELVE PAGES SCROLLED SIDEWAYS, from two causes. Measured at 390px wide.
+
+   KPI rows. .kpis above is already responsive -- auto-fit at 170px -- but six call sites set
+   grid-template-columns inline to 3, 4 or 5 fixed columns, and an inline style beats this sheet,
+   so those rows never collapsed. Stan ran 297px past the screen and Annie 240px. !important is the
+   only way a stylesheet can reach an inline declaration, and it is confined to narrow screens so
+   the desktop layouts those call sites wanted are untouched.
+
+   Tables. Several sit directly in a card with no overflow-x wrapper, so one wide table dragged the
+   whole page sideways (Brakes 297px, Admin 248, Signals 197, Sisyphus 134, Kate 79). Making each
+   table its own horizontal scroller on small screens contains it without touching any markup;
+   tables already inside a wrapper simply scroll there instead. */
+@media (max-width:820px){
+  .kpis{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))!important}
+  table{display:block;overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch}
+}
+
+/* Grid items default to min-width:auto, which means a cell will not shrink below its widest
+   content. So a table inside a .grid2 cell forced the whole CARD past the screen -- the table's
+   own overflow-x never engaged, because its container had grown to fit it first. Sisyphus's net
+   exposure card ran 92px off a phone this way. min-width:0 lets the cell shrink and the table
+   scroll inside it, which is the behaviour the overflow rule above assumed. */
+.grid2>*,.mkgrid>*,.mkcol>*{min-width:0}
+
+/* The exposure matrix fixes its label column at 200px, more than half a phone, before three value
+   columns and their gaps. Below tablet width the label column sizes to its text instead. */
+@media (max-width:820px){
+  .mx{grid-template-columns:minmax(72px,auto) repeat(3,minmax(0,1fr));gap:4px}
+  .mx>div{padding:10px 4px;letter-spacing:0}
+}

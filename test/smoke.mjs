@@ -192,6 +192,13 @@ async function go(hash) {
   // reports a drawer that works as a drawer that hangs. Long enough for the fetch, not so long
   // that the whole walk crawls.
   await sleep(1800);
+  // DUMP_DIR writes each top-level page as rendered, so the design can be reviewed against real
+  // data without signing in to the live site. Off unless asked for; it never touches the database.
+  if (process.env.DUMP_DIR && /^#[a-z]+$/.test(hash)) {
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    mkdirSync(process.env.DUMP_DIR, { recursive: true });
+    writeFileSync(`${process.env.DUMP_DIR}/${hash.slice(1)}.html`, el('#app').innerHTML);
+  }
 }
 // Fire every registered click handler with a closest() that answers for ONE selector and null for
 // every other. Answering for all of them is how an earlier version of this file silently invoked
