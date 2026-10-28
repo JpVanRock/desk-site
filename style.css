@@ -466,3 +466,7 @@ select{font:inherit;font-size:12.5px;padding:5px 7px;border-radius:7px;border:1p
   .tapetrack{animation:none;flex-wrap:wrap;width:auto}
   .tape::before,.tape::after{display:none}
 }
+
+/* Capital Rotation Monitor: the evidence grid and the gauge sit side by side, and stack below
+   tablet width -- a 2.2:1 split leaves the gauge too narrow to read on a phone. */
+@media (max-width:820px){.cr-grid{grid-template-columns:minmax(0,1fr)!important}}

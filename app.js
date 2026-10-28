@@ -146,7 +146,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill] = await Promise.all([
     qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
     qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
     qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note'), 'securities'),
@@ -267,6 +267,9 @@ async function load() {
     qAllSoft(() => sb.from('event_risk').select('as_of,event_id,week_start,week_end,event_date,kind,importance,title,source,detail').order('event_date', { ascending: true }), 'event risk'),
     qAllSoft(() => sb.from('speed_limit_readings').select('as_of,category,score,light,weight,freshness,n_calls').order('as_of', { ascending: true }), 'speed limit history'),
     qAllSoft(() => sb.from('insurance_candidates').select('ticker,label,sort_order,in_sleeve,note').order('sort_order', { ascending: true }), 'insurance candidates'),
+    qAllSoft(() => sb.from('capital_rotation_month').select('month,box_key,label,drawdown,n_months,state').order('month', { ascending: true }).order('box_key', { ascending: true }), 'capital rotation'),
+    qAllSoft(() => sb.from('capital_rotation_box').select('box_key,label,numerator,denominator,substitution,sort_order,first_month').order('sort_order', { ascending: true }), 'capital rotation boxes'),
+    qAllSoft(() => sb.from('capital_rotation_skill').select('as_of,bucket,n_obs,fwd_spy_12m,fwd_spy_gold_12m,hit_spy,sort_order').order('sort_order', { ascending: true }), 'capital rotation skill'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -367,7 +370,8 @@ async function load() {
     // run's window library on top of last run's and double every count on the page.
     flowWins: newest(flowWins || []), flowMonths: newest(flowMonths || []), flowMonitor: newest(flowMonitor || []),
     flowHist: newest(flowHist || []), flowNext: newest(flowNext || []),
-    eventRisk: newest(eventRisk || []), slHist: slHist || [], insCands: insCands || [] };
+    eventRisk: newest(eventRisk || []), slHist: slHist || [], insCands: insCands || [],
+    crMonth: crMonth || [], crBox: crBox || [], crSkill: newest(crSkill || []) };
 }
 
 // ---------- Views ----------
@@ -2759,6 +2763,108 @@ function markets() {
     </div>`;
   })();
 
+  // ---- Capital Rotation Monitor ----
+  //
+  // NORTHSTAR'S FRAMEWORK, THIS DESK'S MEASUREMENT. The claim is that capital rotates out of
+  // financial assets into hard assets in long waves, visible first as ratio after ratio falling
+  // into a bear market against gold. Northstar publishes neither the rule nor the series, so the
+  // rule here is stated rather than inferred: a box is BEAR when its ratio is 20% or more below its
+  // trailing 36-month high, the textbook definition of a bear market; BULL within 5% of that high.
+  //
+  // THE CITED ROTATIONS ARE NOT IN THIS RECORD. 1930, 1972 and 2002 are Northstar's history. Every
+  // box is measured against gold and the longest gold series reachable here is GLD from 2004, so
+  // the page shows those dates as theirs, and shows what the desk can actually see beside them.
+  //
+  // THE TEST BELOW HAS A CIRCULARITY IN IT, AND THE PAGE SAYS SO. The bear count is built from gold
+  // having risen against everything else; the outcome it is tested against is gold continuing to
+  // rise. If it "works", the honest reading is that gold's strength has tended to persist -- which
+  // is momentum, and not by itself evidence of a rotation.
+  const crSection = (() => {
+    const rows = D.crMonth || [];
+    if (!rows.length) return '';
+    const boxes = (D.crBox || []).slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+    const byMonth = new Map();
+    for (const r of rows) { if (!byMonth.has(r.month)) byMonth.set(r.month, []); byMonth.get(r.month).push(r); }
+    const nBox = boxes.length || 12;
+    const months = [...byMonth.keys()].filter(m => byMonth.get(m).length === nBox).sort();
+    if (!months.length) return '';
+    const last = months[months.length - 1];
+    const cur = byMonth.get(last);
+    const curBy = Object.fromEntries(cur.map(r => [r.box_key, r]));
+    const nBear = cur.filter(r => r.state === 'bear').length;
+    const hist = months.map(m => ({ m, n: byMonth.get(m).filter(r => r.state === 'bear').length }));
+    const STATE = { bear: { bg: 'rgba(214,82,74,.16)', fg: 'var(--neg)', word: 'Bear' },
+                    neutral: { bg: 'transparent', fg: 'var(--text)', word: 'Neutral' },
+                    bull: { bg: 'rgba(80,180,110,.15)', fg: 'var(--pos)', word: 'Bull' } };
+
+    const grid = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));border:1px solid var(--line);border-radius:8px;overflow:hidden">
+      ${boxes.map(b => {
+        const r = curBy[b.box_key]; const st = STATE[(r || {}).state] || STATE.neutral;
+        const tip = `${b.numerator} divided by ${b.denominator}.${b.substitution ? '\n' + b.substitution : ''}${r ? `\n${(+r.drawdown * 100).toFixed(1)}% from its ${r.n_months}-month high.` : ''}`;
+        return `<div title="${esc(tip)}" style="background:${st.bg};border-right:1px solid var(--line);border-bottom:1px solid var(--line);padding:12px 8px;text-align:center;min-height:78px;display:flex;flex-direction:column;justify-content:center;cursor:default">
+          <div style="font-size:12px;color:var(--muted);line-height:1.3">${esc(b.label)}${b.substitution ? '<sup style="color:var(--warn)">*</sup>' : ''}</div>
+          <div style="font-size:20px;font-weight:700;color:${st.fg};margin-top:4px">${st.word}</div>
+          ${r ? `<div style="font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums">${(+r.drawdown * 100).toFixed(1)}% off high</div>` : ''}</div>`;
+      }).join('')}</div>`;
+
+    // The gauge: twelve segments from green to red, the needle at the bear count.
+    const W = 240, Hh = 140, cx = 120, cy = 124, R1 = 96, R0 = 58;
+    const pt = (r, f) => { const a = Math.PI * (1 - f); return [cx + r * Math.cos(a), cy - r * Math.sin(a)]; };
+    const segs = [...Array(nBox)].map((_, i) => {
+      const f0 = i / nBox, f1 = (i + 1) / nBox;
+      const [ax, ay] = pt(R1, f0), [bx, by] = pt(R1, f1), [c2x, c2y] = pt(R0, f1), [dx, dy] = pt(R0, f0);
+      const hue = 120 - (i / (nBox - 1)) * 120;
+      return `<path d="M${ax.toFixed(1)} ${ay.toFixed(1)} A${R1} ${R1} 0 0 1 ${bx.toFixed(1)} ${by.toFixed(1)} L${c2x.toFixed(1)} ${c2y.toFixed(1)} A${R0} ${R0} 0 0 0 ${dx.toFixed(1)} ${dy.toFixed(1)}Z" fill="hsl(${hue.toFixed(0)},62%,48%)" stroke="var(--panel)" stroke-width="1.5"/>`;
+    }).join('');
+    const ticks = [...Array(nBox + 1)].map((_, i) => { const [x, y] = pt(R1 + 11, i / nBox); return `<text x="${x.toFixed(1)}" y="${(y + 3.5).toFixed(1)}" font-size="10" text-anchor="middle" fill="var(--muted)">${i}</text>`; }).join('');
+    const [nx, ny] = pt(R1 - 6, nBear / nBox);
+    const gauge = `<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;max-width:300px;display:block;margin:0 auto" role="img" aria-label="Capital rotation indicator: ${nBear} of ${nBox}">
+      ${segs}${ticks}
+      <line x1="${cx}" y1="${cy}" x2="${nx.toFixed(1)}" y2="${ny.toFixed(1)}" stroke="var(--text)" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="${cx}" cy="${cy}" r="6" fill="var(--text)"/></svg>`;
+
+    // The count through time, so a reading of eleven is seen against what eleven has meant before.
+    const CW = 760, CH = 96, pd = 6;
+    const X = i => pd + (i / Math.max(1, hist.length - 1)) * (CW - 2 * pd);
+    const Y = n => pd + (1 - n / nBox) * (CH - 2 * pd);
+    const area = `${X(0).toFixed(1)},${(CH - pd).toFixed(1)} ` + hist.map((h, i) => `${X(i).toFixed(1)},${Y(h.n).toFixed(1)}`).join(' ') + ` ${X(hist.length - 1).toFixed(1)},${(CH - pd).toFixed(1)}`;
+    const years = [...new Set(hist.map(h => h.m.slice(0, 4)))].filter((y, i) => i % 4 === 0);
+    const chart = `<svg viewBox="0 0 ${CW} ${CH + 14}" style="width:100%;height:auto;display:block" preserveAspectRatio="none" role="img" aria-label="Bear count by month">
+      <line x1="${pd}" y1="${Y(nBox * 0.75).toFixed(1)}" x2="${CW - pd}" y2="${Y(nBox * 0.75).toFixed(1)}" stroke="var(--neg)" stroke-dasharray="3 3" stroke-width="0.7" opacity="0.6"/>
+      <polygon points="${area}" fill="var(--neg)" opacity="0.18"/>
+      <polyline points="${hist.map((h, i) => `${X(i).toFixed(1)},${Y(h.n).toFixed(1)}`).join(' ')}" fill="none" stroke="var(--neg)" stroke-width="1.4"/>
+      ${years.map(y => { const i = hist.findIndex(h => h.m.startsWith(y)); return `<text x="${X(i).toFixed(1)}" y="${CH + 11}" font-size="9" text-anchor="middle" fill="var(--muted)">${y}</text>`; }).join('')}</svg>`;
+
+    const skill = D.crSkill || [];
+    const pc = v => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : '−'}${Math.abs(+v * 100).toFixed(1)}%`;
+    const subs = boxes.filter(b => b.substitution);
+    return `<div class="card" style="margin-top:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <h2 style="margin:0">Capital Rotation Monitor</h2>
+        <span style="font-size:12px;color:var(--muted)">monthly closes · as at ${esc(last)} · measured from ${esc(months[0].slice(0, 4))}</span></div>
+      <div style="display:grid;grid-template-columns:minmax(0,2.2fr) minmax(220px,1fr);gap:14px;margin-top:12px;align-items:start" class="cr-grid">
+        <div><div class="eyebrow" style="margin-bottom:6px">Capital rotation evidence</div>${grid}</div>
+        <div>
+          <div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px">
+            ${gauge}
+            <div style="text-align:center;margin-top:2px"><b style="font-size:22px;color:${nBear >= 9 ? 'var(--neg)' : nBear >= 5 ? 'var(--warn)' : 'var(--pos)'}">${nBear}</b><span style="color:var(--muted)"> of ${nBox} in a bear market</span></div></div>
+          <div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:10px">
+            <div class="eyebrow">Capital rotation dates</div>
+            <div style="font-size:15px;margin-top:4px">1930, 1972, 2002 <span style="color:var(--muted)">and</span> 202?</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4">Northstar's history, not this desk's: the record here starts in ${esc(months[0].slice(0, 4))} because that is as far back as a gold series reaches.</div></div>
+        </div></div>
+      <div class="eyebrow" style="margin:16px 0 4px">How many boxes have been red, month by month</div>
+      ${chart}
+      ${!skill.length ? '' : `<div class="eyebrow" style="margin:16px 0 4px">What followed, by count</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums">
+        <thead><tr style="color:var(--muted);font-size:11px;text-align:right"><th style="text-align:left;padding:3px 6px">Bears</th><th style="padding:3px 6px">Months</th><th style="padding:3px 6px">SPY next 12m</th><th style="padding:3px 6px">SPY vs gold next 12m</th><th style="padding:3px 6px">SPY positive</th></tr></thead>
+        <tbody>${skill.map(k => `<tr style="text-align:right;border-top:1px solid var(--line)"><td style="text-align:left;padding:3px 6px">${esc(k.bucket)}</td><td style="padding:3px 6px;color:var(--muted)">${k.n_obs}</td><td style="padding:3px 6px">${pc(k.fwd_spy_12m)}</td><td style="padding:3px 6px;color:${+k.fwd_spy_gold_12m >= 0 ? 'var(--pos)' : 'var(--neg)'}"><b>${pc(k.fwd_spy_gold_12m)}</b></td><td style="padding:3px 6px;color:var(--muted)">${k.hit_spy === null ? '—' : (+k.hit_spy * 100).toFixed(0) + '%'}</td></tr>`).join('')}</tbody></table></div>`}
+      <p class="note" style="margin-top:14px"><b>A box is Bear when its ratio is 20% or more below its trailing 36-month high</b> — the textbook definition of a bear market, read against gold. Bull is within 5% of that high. Northstar does not publish the rule behind the original chart, so this is the desk's reading of it, stated so it can be argued with. 20% is the definition; 36 months and 5% are choices.</p>
+      <p class="note"><b>Read the table above with its circularity in mind.</b> The count is built from gold having risen against everything else, and the outcome is gold continuing to outperform. A high count has preceded SPY lagging gold over the next year — which is the framework's claim — but the same result is what persistent gold momentum would produce on its own, and this record cannot tell the two apart. Months overlap twelve times over at a 12-month horizon and the sample holds few distinct regimes, so the counts overstate the evidence.</p>
+      ${!subs.length ? '' : `<p class="note"><sup style="color:var(--warn)">*</sup> <b>Stand-ins:</b> ${subs.map(b => `${esc(b.label)} — ${esc(b.substitution)}`).join(' ')}</p>`}
+    </div>`;
+  })();
+
   // The enlarged chart. It redraws the SAME markup the card holds -- the SVGs already carry a
   // viewBox and scale to their container, so there is nothing to re-plot, and a second plotting
   // path would be a second thing to keep correct. The window buttons come along with it, which
@@ -2807,6 +2913,7 @@ function markets() {
   </div>
   ${yieldSection}
   ${flowsSection}
+  ${crSection}
   ${table}`;
 }
 

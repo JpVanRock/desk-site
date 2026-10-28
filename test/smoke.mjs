@@ -2992,6 +2992,43 @@ currentRoute = 'brake-candidates';
 }
 
 // ---------------------------------------------------------------------------
+// [capital-rotation] Northstar's twelve ratios against gold.
+//
+//   THE CITED DATES MUST STAY ATTRIBUTED. 1930, 1972 and 2002 are Northstar's history; the gold
+//   record here begins in 2004, so the page must never let them read as something this desk found.
+//
+//   THE CIRCULARITY MUST STAY ON THE PAGE. The count is built from gold rising and is tested
+//   against gold continuing to rise; without the caveat, momentum reads as a rotation signal.
+// -------------------------------------------------------------------------
+currentRoute = 'capital-rotation';
+{
+  const probe = await fetch(`${SUPABASE_URL}/rest/v1/capital_rotation_month?select=month&limit=1`, { headers: REST });
+  if (probe.status === 404) {
+    errors.push('[capital-rotation] tables do not exist — migration 20261110100000_capital_rotation.sql has not been applied');
+  } else {
+    await go('#markets');
+    const cp = app();
+    need(/Capital Rotation Monitor/.test(cp), '[capital-rotation] the monitor is not on the Markets page');
+    need(/Northstar's history, not this desk's/.test(cp), '[capital-rotation] the 1930/1972/2002 dates are not attributed to Northstar');
+    need(/circularity/i.test(cp), '[capital-rotation] the page does not warn that the count and its outcome share gold');
+    const boxes = await rest('capital_rotation_box', 'box_key,label,substitution');
+    need(boxes.length === 12, `[capital-rotation] ${boxes.length} boxes, expected 12`);
+    const months = await rest('capital_rotation_month', 'month,box_key,drawdown,state');
+    let bad = [];
+    for (const r of months) {
+      if (+r.drawdown > 1e-9) bad.push(`${r.box_key} ${r.month}: a drawdown of ${r.drawdown}, above its own high`);
+      const want = +r.drawdown <= -0.20 ? 'bear' : +r.drawdown >= -0.05 ? 'bull' : 'neutral';
+      if (r.state !== want) bad.push(`${r.box_key} ${r.month}: labelled ${r.state} at ${(+r.drawdown * 100).toFixed(1)}%, the rule says ${want}`);
+    }
+    bad = [...new Set(bad)].slice(0, 10);
+    for (const b of bad) errors.push(`[capital-rotation] ${b}`);
+    const latest = months.map(r => r.month).sort().pop();
+    const nBear = months.filter(r => r.month === latest && r.state === 'bear').length;
+    say(` ok  capital rotation       -> ${boxes.length} boxes, ${nBear} bear at ${latest}, ${boxes.filter(b => b.substitution).length} stand-ins named`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log('');
 if (errors.length) { console.log(`${errors.length} PROBLEM(S):`); for (const e of errors) console.log('  ' + e); process.exit(1); }
 console.log('No problems found.');
