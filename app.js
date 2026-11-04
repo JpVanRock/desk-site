@@ -2764,12 +2764,11 @@ function markets() {
 
   // ---- Event Risks: the week ahead, across the top of the page ----
   //
-  // EARNINGS ARE MISSING AND THE STRIP SAYS SO. The brief asked for the earnings of the largest
-  // names alongside the calendar. No forward earnings calendar is reachable with this desk's
-  // credentials -- FRED publishes none, Tiingo carries fiscal period ends rather than announcement
-  // dates, and the one public feed refuses any client that does not claim to be a browser. A strip
-  // that simply showed fewer events would read as a quiet week rather than as partial coverage,
-  // which is the more expensive mistake the week Apple reports.
+  // EARNINGS ARE ON THE STRIP since 2026-11-04: the largest 30% of the S&P 500 by index weight,
+  // from EODHD's earnings calendar (jobs/compute-event-risk.mjs). Each carries its timing -- before
+  // the open, after the close -- because a report after Thursday's close is Friday's risk. Days
+  // with many reports collapse to the high-importance names plus a count, so the strip stays a
+  // strip; the full list is in the tooltip.
   const eventStrip = (() => {
     const ev = D.eventRisk || [];
     if (!ev.length) return '';
@@ -2783,7 +2782,9 @@ function markets() {
       const d = new Date(w.week_start + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + i);
       return d.toISOString().slice(0, 10);
     });
-    const KIND = { central_bank: 'var(--neg)', economic: 'var(--fg)' };
+    const KIND = { central_bank: 'var(--neg)', economic: 'var(--fg)', earnings: 'var(--accent)' };
+    const SESS = { 'before the open': 'pre', 'after the close': 'post' };
+    const MAX_EARN = 3;
     return `<div class="card" style="margin-bottom:14px;padding:12px 14px">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px">
         <span class="eyebrow">Event risks · week of ${esc(w.week_start)}</span>
@@ -2795,10 +2796,18 @@ function markets() {
           return `<div style="border:1px solid ${isToday ? 'var(--fg)' : 'var(--line)'};border-radius:5px;padding:6px 8px;min-height:62px">
             <div style="font-size:10px;color:${isToday ? 'var(--fg)' : 'var(--muted)'};text-transform:uppercase;letter-spacing:.04em">${DW[dnum(d)]} ${esc(d.slice(8))}${isToday ? ' · today' : ''}</div>
             ${!list.length ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">—</div>'
-              : list.map(e => `<div style="font-size:11px;margin-top:4px;line-height:1.3;color:${KIND[e.kind] || 'var(--fg)'}" title="${esc(`${e.title}\n${e.source}${e.detail ? '\n' + e.detail : ''}`)}">
-                  ${e.importance === 'high' ? '<b>' : ''}${esc(e.title)}${e.importance === 'high' ? '</b>' : ''}</div>`).join('')}</div>`;
+              : (() => {
+                  const macro = list.filter(e => e.kind !== 'earnings' || !e.symbol);
+                  const earn = list.filter(e => e.kind === 'earnings' && e.symbol);
+                  const shown = earn.filter(e => e.importance === 'high').concat(earn.filter(e => e.importance !== 'high')).slice(0, MAX_EARN);
+                  const rest = earn.slice().filter(e => !shown.includes(e));
+                  const line = e => `<div style="font-size:11px;margin-top:4px;line-height:1.3;color:${KIND[e.kind] || 'var(--fg)'}" title="${esc(`${e.title}\n${e.source}${e.detail ? '\n' + e.detail : ''}`)}">
+                    ${e.importance === 'high' ? '<b>' : ''}${esc(e.symbol ? e.symbol : e.title)}${e.importance === 'high' ? '</b>' : ''}${e.symbol && SESS[e.session] ? ` <span style="color:var(--muted);font-size:10px">${SESS[e.session]}</span>` : ''}</div>`;
+                  return macro.map(line).join('') + shown.map(line).join('')
+                    + (rest.length ? `<div style="font-size:10.5px;margin-top:4px;color:var(--muted)" title="${esc(rest.map(e => `${e.symbol} ${e.session || ''} — ${e.title}`).join('\n'))}">+${rest.length} more report${rest.length === 1 ? '' : 's'}</div>` : '');
+                })()}</div>`;
         }).join('')}</div>
-      <p class="note" style="margin-top:10px;font-size:11px"><b>Economic releases and central-bank decisions only — company earnings are not on this strip.</b> A forward earnings calendar needs a vendor this desk does not have: FRED publishes none, and Tiingo carries fiscal period ends rather than announcement dates. Rather than show a thinner week and let it read as a quiet one, the gap is stated. Sources: ${esc([...new Set(ev.map(e => e.source))].join(', '))}. Rebuilt Sunday mornings.</p>
+      <p class="note" style="margin-top:10px;font-size:11px"><b>Economic releases, central-bank decisions and the earnings of the largest 30% of the S&P 500</b> by index weight, in <span style="color:var(--accent)">blue</span> by ticker, marked pre (before the open) or post (after the close); bold are the ten largest. Hover any line for its detail. Sources: ${esc([...new Set(ev.map(e => e.source))].join(', '))}. Rebuilt Sunday mornings.</p>
     </div>`;
   })();
 
@@ -2863,16 +2872,29 @@ function markets() {
       <circle cx="${cx}" cy="${cy}" r="6" fill="var(--text)"/></svg>`;
 
     // The count through time, so a reading of eleven is seen against what eleven has meant before.
+    // Since spot gold reaches 1980, the record runs further back than all twelve boxes do: before
+    // a box's own history starts there are fewer of them, so those months are drawn as the SHARE
+    // of the boxes then available, scaled to twelve, in a dashed line that changes to solid where
+    // all twelve exist. Only seven boxes exist in 1980, so the early line is a thinner reading.
+    const MIN_BOXES = 7;
+    const longMonths = [...byMonth.keys()].filter(m => byMonth.get(m).length >= MIN_BOXES).sort();
+    const longHist = longMonths.map(m => { const rs = byMonth.get(m); return { m, k: rs.length, v: rs.filter(r => r.state === 'bear').length / rs.length * nBox }; });
     const CW = 760, CH = 96, pd = 6;
-    const X = i => pd + (i / Math.max(1, hist.length - 1)) * (CW - 2 * pd);
+    const X = i => pd + (i / Math.max(1, longHist.length - 1)) * (CW - 2 * pd);
     const Y = n => pd + (1 - n / nBox) * (CH - 2 * pd);
-    const area = `${X(0).toFixed(1)},${(CH - pd).toFixed(1)} ` + hist.map((h, i) => `${X(i).toFixed(1)},${Y(h.n).toFixed(1)}`).join(' ') + ` ${X(hist.length - 1).toFixed(1)},${(CH - pd).toFixed(1)}`;
-    const years = [...new Set(hist.map(h => h.m.slice(0, 4)))].filter((y, i) => i % 4 === 0);
+    const iFull = longHist.findIndex(h => h.k === nBox);
+    const line = pts => pts.map(([i, h]) => `${X(i).toFixed(1)},${Y(h.v).toFixed(1)}`).join(' ');
+    const idx = longHist.map((h, i) => [i, h]);
+    const area = `${X(0).toFixed(1)},${(CH - pd).toFixed(1)} ` + line(idx) + ` ${X(longHist.length - 1).toFixed(1)},${(CH - pd).toFixed(1)}`;
+    const years = [...new Set(longHist.map(h => h.m.slice(0, 4)))].filter((y, i) => i % 5 === 0);
     const chart = `<svg viewBox="0 0 ${CW} ${CH + 14}" style="width:100%;height:auto;display:block" preserveAspectRatio="none" role="img" aria-label="Bear count by month">
       <line x1="${pd}" y1="${Y(nBox * 0.75).toFixed(1)}" x2="${CW - pd}" y2="${Y(nBox * 0.75).toFixed(1)}" stroke="var(--neg)" stroke-dasharray="3 3" stroke-width="0.7" opacity="0.6"/>
-      <polygon points="${area}" fill="var(--neg)" opacity="0.18"/>
-      <polyline points="${hist.map((h, i) => `${X(i).toFixed(1)},${Y(h.n).toFixed(1)}`).join(' ')}" fill="none" stroke="var(--neg)" stroke-width="1.4"/>
-      ${years.map((y, k) => { const i = hist.findIndex(h => h.m.startsWith(y)); const anchor = i === 0 ? 'start' : k === years.length - 1 && i >= hist.length - 6 ? 'end' : 'middle'; return `<text x="${X(i).toFixed(1)}" y="${CH + 11}" font-size="9" text-anchor="${anchor}" fill="var(--muted)">${y}</text>`; }).join('')}</svg>`;
+      <polygon points="${area}" fill="var(--neg)" opacity="0.14"/>
+      ${iFull > 0 ? `<polyline points="${line(idx.slice(0, iFull + 1))}" fill="none" stroke="var(--neg)" stroke-width="1.2" stroke-dasharray="3 2" opacity="0.75"/>
+      <line x1="${X(iFull).toFixed(1)}" y1="${pd}" x2="${X(iFull).toFixed(1)}" y2="${CH - pd}" stroke="var(--muted)" stroke-width="0.6" stroke-dasharray="2 3"/>` : ''}
+      <polyline points="${line(idx.slice(Math.max(0, iFull)))}" fill="none" stroke="var(--neg)" stroke-width="1.4"/>
+      ${years.map((y, k) => { const i = longHist.findIndex(h => h.m.startsWith(y)); const anchor = i === 0 ? 'start' : k === years.length - 1 && i >= longHist.length - 6 ? 'end' : 'middle'; return `<text x="${X(i).toFixed(1)}" y="${CH + 11}" font-size="9" text-anchor="${anchor}" fill="var(--muted)">${y}</text>`; }).join('')}</svg>`;
+    const fullFrom = months[0].slice(0, 4), longFrom = longMonths[0] ? longMonths[0].slice(0, 4) : fullFrom;
 
     const skill = D.crSkill || [];
     const pc = v => v === null || v === undefined ? '—' : `${+v >= 0 ? '+' : '−'}${Math.abs(+v * 100).toFixed(1)}%`;
@@ -2880,7 +2902,7 @@ function markets() {
     return `<div class="card" style="margin-top:14px">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
         <h2 style="margin:0">Capital Rotation Monitor</h2>
-        <span style="font-size:12px;color:var(--muted)">monthly closes · as at ${esc(last)} · measured from ${esc(months[0].slice(0, 4))}</span></div>
+        <span style="font-size:12px;color:var(--muted)">monthly closes · as at ${esc(last)} · against spot gold from ${esc(longFrom)}</span></div>
       <div style="display:grid;grid-template-columns:minmax(0,2.2fr) minmax(220px,1fr);gap:14px;margin-top:12px;align-items:start" class="cr-grid">
         <div><div class="eyebrow" style="margin-bottom:6px">Capital rotation evidence</div>${grid}</div>
         <div>
@@ -2890,16 +2912,18 @@ function markets() {
           <div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:10px">
             <div class="eyebrow">Capital rotation dates</div>
             <div style="font-size:15px;margin-top:4px">1930, 1972, 2002 <span style="color:var(--muted)">and</span> 202?</div>
-            <div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4">Northstar's history, not this desk's: the record here starts in ${esc(months[0].slice(0, 4))} because that is as far back as a gold series reaches.</div></div>
+            <div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4">Northstar's dates. Spot gold reaches back to December 1979, so this record covers the rotation out of gold after 1980 and the 2002 date; 1930 and 1972 lie before any gold series this desk can reach.</div></div>
         </div></div>
       <div class="eyebrow" style="margin:16px 0 4px">How many boxes have been red, month by month</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Solid from ${esc(fullFrom)}, when all twelve boxes exist. Dashed before it: the share of the boxes then available (seven in ${esc(longFrom)}), scaled to twelve.</div>
       ${chart}
       ${!skill.length ? '' : `<div class="eyebrow" style="margin:16px 0 4px">What followed, by count</div>
       <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums">
         <thead><tr style="color:var(--muted);font-size:11px;text-align:right"><th style="text-align:left;padding:3px 6px">Bears</th><th style="padding:3px 6px">Months</th><th style="padding:3px 6px">SPY next 12m</th><th style="padding:3px 6px">SPY vs gold next 12m</th><th style="padding:3px 6px">SPY positive</th></tr></thead>
         <tbody>${skill.map(k => `<tr style="text-align:right;border-top:1px solid var(--line)"><td style="text-align:left;padding:3px 6px">${esc(k.bucket)}</td><td style="padding:3px 6px;color:var(--muted)">${k.n_obs}</td><td style="padding:3px 6px">${pc(k.fwd_spy_12m)}</td><td style="padding:3px 6px;color:${+k.fwd_spy_gold_12m >= 0 ? 'var(--pos)' : 'var(--neg)'}"><b>${pc(k.fwd_spy_gold_12m)}</b></td><td style="padding:3px 6px;color:var(--muted)">${k.hit_spy === null ? '—' : (+k.hit_spy * 100).toFixed(0) + '%'}</td></tr>`).join('')}</tbody></table></div>`}
       <p class="note" style="margin-top:14px"><b>A box is Bear when its ratio is 20% or more below its trailing 36-month high</b> — the textbook definition of a bear market, read against gold. Bull is within 5% of that high. Northstar does not publish the rule behind the original chart, so this is the desk's reading of it, stated so it can be argued with. 20% is the definition; 36 months and 5% are choices.</p>
-      <p class="note"><b>Read the table above with its circularity in mind.</b> The count is built from gold having risen against everything else, and the outcome is gold continuing to outperform. A high count has preceded SPY lagging gold over the next year — which is the framework's claim — but the same result is what persistent gold momentum would produce on its own, and this record cannot tell the two apart. Months overlap twelve times over at a 12-month horizon and the sample holds few distinct regimes, so the counts overstate the evidence.</p>
+      <p class="note"><b>Read the table above with its circularity in mind.</b> The count is built from gold having risen against everything else, and the outcome is gold continuing to outperform. A high count has preceded SPY lagging gold over the next year — which is the framework's claim — but the same result is what persistent gold momentum would produce on its own, and this record cannot tell the two apart. Months overlap twelve times over at a 12-month horizon and the sample holds few distinct regimes, so the counts overstate the evidence. The table uses only the months with all twelve boxes (${esc(fullFrom)} onward); SPY is total return, built from its closes and dividends.</p>
+      <p class="note"><b>The ratios are on the real indices and spot gold</b> — the S&P 500, Dow, NYSE Composite, Nasdaq 100, S&P 500 Equal Weight and the ICE dollar index, against XAUUSD — rather than on ETFs against GLD, which the monitor used until 2026-11-04. Price indices are what the original chart is drawn on, and spot gold carries no fund expense.</p>
       ${!subs.length ? '' : `<p class="note"><sup style="color:var(--warn)">*</sup> <b>Stand-ins:</b> ${subs.map(b => `${esc(b.label)} — ${esc(b.substitution)}`).join(' ')}</p>`}
     </div>`;
   })();

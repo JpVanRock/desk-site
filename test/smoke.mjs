@@ -2806,13 +2806,10 @@ if (!argRoute) {
 //   nothing on the page would have looked wrong -- a ticker is believed precisely because nobody
 //   cross-checks the dates on it.
 //
-//   THE EARNINGS OMISSION MUST BE ON THE PAGE. The brief asked for earnings. They are not here,
-//   and a strip that silently showed fewer events would read as a quiet week rather than as
-//   partial coverage -- the expensive version of that mistake lands the week Apple reports. If
-//   the sentence ever disappears from the page, this fails.
-//
-//   NOTHING MAY CLAIM TO BE EARNINGS. The schema still permits the kind; the job no longer emits
-//   it. A row that did would be carrying data from a source this desk does not have.
+//   EARNINGS COME FROM EODHD ONLY, since 2026-11-04. Every earnings row must carry a ticker, the
+//   EODHD source and its rank by index weight inside the top 30% -- or be the single row saying
+//   the calendar could not be retrieved. Anything else is data from a source this desk does not
+//   have, which is what the old guard here existed to catch.
 // -------------------------------------------------------------------------
 currentRoute = 'event-risk';
 await go('#markets');
@@ -2836,8 +2833,14 @@ await go('#markets');
   for (const r of cur) {
     if (r.event_date < W0 || r.event_date > W1) eb.push(`${r.title} on ${r.event_date} falls outside the week ${W0}..${W1} it claims`);
     if (dnum(r.event_date) === 0 || dnum(r.event_date) === 6) eb.push(`${r.title} is scheduled on a weekend (${r.event_date})`);
-    if (!['economic', 'central_bank'].includes(r.kind)) eb.push(`${r.title} carries kind "${r.kind}"`);
-    if (r.kind === 'earnings' || r.symbol) eb.push(`${r.title}: an earnings row, from a source this desk does not have`);
+    if (!['economic', 'central_bank', 'earnings'].includes(r.kind)) eb.push(`${r.title} carries kind "${r.kind}"`);
+    if (r.kind === 'earnings') {
+      if (r.source !== 'EODHD') eb.push(`${r.title}: an earnings row from "${r.source}", not EODHD`);
+      const rk = +((r.detail || '').match(/Number (\d+) of (\d+) S&P 500 companies/) || [])[1];
+      const of = +((r.detail || '').match(/Number \d+ of (\d+) S&P 500 companies/) || [])[1];
+      if (r.symbol && !(rk >= 1 && of > 400 && rk <= Math.ceil(of * 0.3))) eb.push(`${r.title}: rank ${rk} of ${of} is outside the top 30%`);
+      if (!r.symbol && !/could not be retrieved/.test(r.title)) eb.push(`${r.title}: an earnings row with no ticker`);
+    } else if (r.symbol) eb.push(`${r.title}: a ${r.kind} row carrying a ticker`);
     if (!['high', 'medium'].includes(r.importance)) eb.push(`${r.title} carries importance "${r.importance}"`);
     if (!r.source) eb.push(`${r.title} names no source, so it cannot be audited`);
     if (!r.title) eb.push(`a row on ${r.event_date} has no title`);
@@ -2845,11 +2848,12 @@ await go('#markets');
     ids.add(r.event_id);
   }
   // Only the official calendars. If a scraped source ever reappears this catches it.
-  const OK = /Bureau of Labor Statistics|Bureau of Economic Analysis|Census|Federal Reserve/;
+  const OK = /Bureau of Labor Statistics|Bureau of Economic Analysis|Census|Federal Reserve|^EODHD$/;
   for (const r of cur) if (!OK.test(r.source)) eb.push(`${r.title} cites "${r.source}", which is not one of the official calendars`);
 
   need(/Event risks/i.test(mp), '[event-risk] the strip is not on the Markets page');
-  need(/company earnings are not on this strip/i.test(mp), '[event-risk] the page does not state that earnings are omitted');
+  need(/earnings of the largest 30% of the S&amp;P 500|earnings of the largest 30% of the S&P 500/.test(mp), '[event-risk] the strip does not say which earnings it carries');
+  need(!/company earnings are not on this strip/i.test(mp), '[event-risk] the strip still says earnings are omitted');
   // Scoped to the strip's own source list, not the page: "Nasdaq 100" is an index name and
   // appears legitimately in the market panels above.
   const srcLine = (mp.match(/Sources: ([^<.]+)/) || [])[1] || '';
@@ -2858,7 +2862,7 @@ await go('#markets');
   eb = [...new Set(eb)];
   for (const b of eb) errors.push(`[event-risk] ${b}`);
   need(eb.length === 0, `[event-risk] ${eb.length} problem(s) above`);
-  say(` ok  event risks            -> ${cur.length} events, ${cur.filter(r => r.importance === 'high').length} high, week ${W0}..${W1}`);
+  say(` ok  event risks            -> ${cur.length} events (${cur.filter(r => r.kind === 'earnings').length} earnings), ${cur.filter(r => r.importance === 'high').length} high, week ${W0}..${W1}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -3085,7 +3089,8 @@ currentRoute = 'capital-rotation';
     await go('#markets');
     const cp = app();
     need(/Capital Rotation Monitor/.test(cp), '[capital-rotation] the monitor is not on the Markets page');
-    need(/Northstar's history, not this desk's/.test(cp), '[capital-rotation] the 1930/1972/2002 dates are not attributed to Northstar');
+    need(/Northstar's dates/.test(cp) && /1930 and 1972 lie before/.test(cp), '[capital-rotation] the 1930/1972 dates are not attributed to Northstar as out of reach');
+    need(/against spot gold from 19\d\d/.test(cp), '[capital-rotation] the monitor does not say it runs on spot gold from before 2000');
     need(/circularity/i.test(cp), '[capital-rotation] the page does not warn that the count and its outcome share gold');
     const boxes = await rest('capital_rotation_box', 'box_key,label,substitution');
     need(boxes.length === 12, `[capital-rotation] ${boxes.length} boxes, expected 12`);
