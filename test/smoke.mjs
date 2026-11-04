@@ -103,7 +103,9 @@ function builder(table) {
     gte(k, v) { st.filters.push(`${k}=gte.${v}`); return b; },
     lte(k, v) { st.filters.push(`${k}=lte.${v}`); return b; },
     not(k, op, v) { st.filters.push(`${k}=not.${op}.${v === null ? 'null' : v}`); return b; },
-    order(c, o) { st.order = `${c}.${o && o.ascending === false ? 'desc' : 'asc'}`; return b; },
+    // Chained calls APPEND, as supabase-js does: .order('as_of').order('strategy_id') is one
+    // two-key sort. Overwriting would test a different query from the one the site sends.
+    order(c, o) { const k = `${c}.${o && o.ascending === false ? 'desc' : 'asc'}`; st.order = st.order ? `${st.order},${k}` : k; return b; },
     limit(n) { st.limit = n; return b; },
     range(a, z) { st.range = [a, z]; return b; },
     then(res, rej) { runQuery(st).then(res, rej); },

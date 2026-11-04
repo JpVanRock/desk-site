@@ -122,6 +122,10 @@ async function qSoft(query, label) {
 // trading day and was at 992 when this was written: without paging, the drawdown chart would have
 // started quietly losing its oldest days about a week later, with nothing to show for it.
 // `make` is a thunk because a builder cannot be re-ranged once awaited.
+// EVERY PAGED READ NEEDS A TOTAL ORDER. Ordered on a column that is not unique -- every
+// contribution row shares one as_of; eight models share each value-series date -- PostgREST can
+// return a row on two pages and skip another, and nothing on the page looks wrong. Each call
+// below orders down to its table's unique key.
 async function qAllSoft(make, label) {
   const page = 1000, out = [];
   try {
@@ -178,9 +182,9 @@ async function load() {
     qSoft(sb.from('latest_model_period_stats').select('strategy_id,period,as_of,start_date,end_date,model_return,benchmark_return,gold_return,btc_return,max_drawdown,benchmark_max_drawdown,upside_capture,downside_capture,beta_sp500,beta_r2,dividend_yield,min_coverage,window_starts_in_gap,unavailable_reason,method_note').order('as_of', { ascending: false }), 'model period stats'),
     // Eight models of holdings across ten periods is over a thousand rows in a SINGLE run, so
     // the newest-run view is not enough on its own — this one has to page as well.
-    qAllSoft(() => sb.from('latest_model_contribution').select('strategy_id,period,as_of,ticker,name_raw,start_weight,end_weight,period_return,contribution_bps,status,priced').order('as_of', { ascending: false }), 'model contribution'),
+    qAllSoft(() => sb.from('latest_model_contribution').select('strategy_id,period,as_of,ticker,name_raw,start_weight,end_weight,period_return,contribution_bps,status,priced').order('as_of', { ascending: false }).order('strategy_id').order('period').order('ticker'), 'model contribution'),
     qSoft(sb.from('latest_model_factor_allocation').select('strategy_id,as_of,basis,long_growth,long_inflation,long_liquidity,short_growth,short_inflation,short_liquidity,unclassified,detail').order('as_of', { ascending: false }), 'model factor allocation'),
-    qAllSoft(() => sb.from('model_value_series').select('strategy_id,as_of,value,benchmark_value,coverage').order('as_of', { ascending: true }), 'model value series'),
+    qAllSoft(() => sb.from('model_value_series').select('strategy_id,as_of,value,benchmark_value,coverage').order('as_of', { ascending: true }).order('strategy_id'), 'model value series'),
     qSoft(sb.from('holdings_snapshot_integrity').select('strategy_id,as_of,n_holdings,weight_total,weight_off,n_unmatched,n_suspect_names,gap_days_before').order('as_of', { ascending: true }), 'holdings integrity'),
     qSoft(sb.from('current_holdings').select('strategy_id,as_of,ticker,security_id,name_raw,weight'), 'current holdings'),
     qSoft(sb.from('holding_factor_overrides').select('security_id,split,note,author,as_of'), 'factor overrides'),
