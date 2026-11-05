@@ -82,12 +82,18 @@ console.log(`Reading ${SUPABASE_URL} as ${AS}.`);
 // NO WRITE LEAVES THE HARNESS, WHATEVER IT HOLDS. The client below stubs every write; this refuses
 // anything but a read at the network layer too, so a new code path cannot write by accident.
 const realFetch = globalThis.fetch;
-globalThis.fetch = (url, opts = {}) => {
+// Every database request is timed, so a failure in CI can say whether the database was slow for
+// this identity or a page was simply waiting on something it could not read.
+const timings = [];
+globalThis.fetch = async (url, opts = {}) => {
   const method = String(opts.method || 'GET').toUpperCase();
   if (String(url).startsWith(SUPABASE_URL) && method !== 'GET' && method !== 'HEAD') {
     return Promise.reject(new Error(`smoke harness refused a ${method} to ${String(url).split('?')[0]}: it never writes`));
   }
-  return realFetch(url, opts);
+  const t0 = Date.now();
+  const res = await realFetch(url, opts);
+  if (String(url).startsWith(SUPABASE_URL)) timings.push({ path: String(url).slice(SUPABASE_URL.length).split('&')[0].slice(0, 90), ms: Date.now() - t0, status: res.status, route: (() => { try { return currentRoute; } catch { return 'boot'; } })() });
+  return res;
 };
 
 const errors = [];
@@ -306,11 +312,16 @@ for (const r of routes) {
   // Markets wall fetches six price series and went from passing to failing the instant a seventh
   // was added, which was a race in the test and not a fault on the page. What is still a fault
   // is a loading state that never resolves, and that is what the bound catches.
-  for (let i = 0; i < 24 && /Loading chart…|Loading…|Loading price history…|Loading intraday bars…/.test(both()); i++) await sleep(250);
+  // Bounded at 20 s: CI reads the database from further away than a laptop does, and the bound is
+  // there to catch a loading state that never resolves, not one that takes a few seconds.
+  for (let i = 0; i < 80 && /Loading chart…|Loading…|Loading price history…|Loading intraday bars…/.test(both()); i++) await sleep(250);
   const body = both();
   const problems = [];
   if (!body.trim()) problems.push('rendered nothing');
-  if (/Loading chart…|Loading…|Loading price history…|Loading intraday bars…/.test(body)) problems.push('still showing a loading state');
+  if (/Loading chart…|Loading…|Loading price history…|Loading intraday bars…/.test(body)) {
+    const where = [...new Set((body.match(/[^<>]{0,40}(?:Loading chart…|Loading…|Loading price history…|Loading intraday bars…)/g) || []).map(x => x.trim()))].slice(0, 4);
+    problems.push(`still showing a loading state after 20 s: ${where.join(' | ')}`);
+  }
   if (/Could not load/.test(body)) problems.push('shows a load error: ' + (/Could not load[^<]*/.exec(body) || [''])[0]);
   const svgs = (body.match(/<svg/g) || []).length, empties = (body.match(/class="empty"/g) || []).length;
   say(`${problems.length ? 'FAIL' : ' ok '} ${r.padEnd(44)} ${String(body.length).padStart(7)}b  svg:${svgs} empty:${empties}${problems.length ? '  << ' + problems.join('; ') : ''}`);
@@ -3275,5 +3286,13 @@ currentRoute = 'fastest-cars';
 
 // ---------------------------------------------------------------------------
 console.log('');
-if (errors.length) { console.log(`${errors.length} PROBLEM(S):`); for (const e of errors) console.log('  ' + e); process.exit(1); }
+if (errors.length) {
+  console.log(`${errors.length} PROBLEM(S):`); for (const e of errors) console.log('  ' + e);
+  const slow = timings.slice().sort((a, b) => b.ms - a.ms).slice(0, 8);
+  const failed = timings.filter(t => t.status >= 400).slice(0, 8);
+  console.log(`\nDatabase requests: ${timings.length}, median ${timings.length ? timings.map(t => t.ms).sort((a, b) => a - b)[Math.floor(timings.length / 2)] : 0} ms. Slowest:`);
+  for (const t of slow) console.log(`  ${String(t.ms).padStart(6)} ms  ${t.status}  ${t.route}  ${t.path}`);
+  if (failed.length) { console.log('Failed requests:'); for (const t of failed) console.log(`  ${t.status}  ${t.route}  ${t.path}`); }
+  process.exit(1);
+}
 console.log('No problems found.');
