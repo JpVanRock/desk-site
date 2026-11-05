@@ -1,22 +1,54 @@
 name: Deploy site
 
+# NOTHING DEPLOYS UNTESTED (architecture review step 0, owner approved 2026-11-05). Every push to
+# main runs the smoke suite against the live database first, signed in as the read-only desk
+# reader, and the site deploys only if it passes. Pull requests from this repository run the suite
+# too, without deploying. This repository is public, so it holds that read-only sign-in and never
+# the service-role key.
+
 on:
   push:
     branches: [main]
+  pull_request: {}
   workflow_dispatch: {}
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: true
 
 jobs:
-  deploy:
+  smoke:
+    # A pull request from a fork gets no secrets, so it cannot sign in; it is not run here.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Smoke suite, as the read-only desk reader
+        env:
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+        run: |
+          if [ -z "$SMOKE_EMAIL" ] || [ -z "$SMOKE_PASSWORD" ]; then
+            echo "::error::SMOKE_EMAIL and SMOKE_PASSWORD are not set in this repository's secrets, so the deploy gate cannot run and nothing deploys. They are the sign-in of the read-only desk reader."
+            exit 1
+          fi
+          # One retry: the nightly can saturate the database, and a loading state that never settles
+          # in that window is a flake, not a failure. A second failure blocks the deploy.
+          node test/smoke.mjs || { echo "::warning::Smoke suite failed once; retrying in 60s"; sleep 60; node test/smoke.mjs; }
+
+  deploy:
+    needs: smoke
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: true
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

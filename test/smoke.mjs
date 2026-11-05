@@ -19,6 +19,7 @@
 // rewritten the owner's own look-throughs on every run.
 //
 // Usage:
+//   SMOKE_EMAIL=... SMOKE_PASSWORD=... node test/smoke.mjs   as the read-only desk reader (CI does this)
 //   SUPABASE_SERVICE_ROLE_KEY=... node test/smoke.mjs
 //   node test/smoke.mjs --route '#stan/<id>'   one route only, no interaction tests
 //   node test/smoke.mjs --dump                 write the rendered page to preview/_page.html
@@ -42,14 +43,52 @@ const wantEmpties = process.argv.includes('--empties');
 // the one it ships against. The key does not: it is a secret and belongs in the environment.
 const cfgSrc = readFileSync(join(SITE, 'config.js'), 'utf8');
 const SUPABASE_URL = process.env.SUPABASE_URL || (cfgSrc.match(/url:\s*"([^"]+)"/) || [])[1];
-const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const PUBLISHABLE = (cfgSrc.match(/key:\s*"([^"]+)"/) || [])[1];
 if (!SUPABASE_URL) { console.error('No Supabase URL in config.js and none in SUPABASE_URL.'); process.exit(2); }
-if (!KEY) {
-  console.error('SUPABASE_SERVICE_ROLE_KEY is not set. The harness reads the real database, so it needs a key.\n' +
+
+// TWO WAYS TO READ, AND THE ONE CI USES IS READ-ONLY (architecture review step 0, 2026-11-05).
+// With SMOKE_EMAIL and SMOKE_PASSWORD set, the harness signs in as the desk READER: a user whose
+// app_metadata carries desk_reader, which the "desk readers read" policies let select everything a
+// desk member sees and write nothing (migration 20261117100000_desk_readers.sql). desk-site is a
+// public repository, so its CI holds that read-only sign-in, never the service-role key. Locally
+// the service-role key still works.
+let KEY, REST, AS;
+if (process.env.SMOKE_EMAIL && process.env.SMOKE_PASSWORD) {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+    method: 'POST', headers: { apikey: PUBLISHABLE, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: process.env.SMOKE_EMAIL, password: process.env.SMOKE_PASSWORD }),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || !j.access_token) { console.error(`Could not sign in as the desk reader: ${res.status} ${j.error_description || j.msg || ''}`); process.exit(2); }
+  const meta = (j.user && j.user.app_metadata) || {};
+  if (!meta.desk_reader && !meta.desk_member) {
+    console.error('Signed in, but this account is neither a desk reader nor a desk member, so every table would read empty. Set app_metadata.desk_reader = true on it.');
+    process.exit(2);
+  }
+  KEY = PUBLISHABLE;
+  REST = { apikey: PUBLISHABLE, Authorization: `Bearer ${j.access_token}` };
+  AS = `the desk reader (${meta.desk_member ? 'a desk member, so NOT read-only' : 'read-only'})`;
+} else if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  REST = { apikey: KEY, Authorization: `Bearer ${KEY}` };
+  AS = 'the service role';
+} else {
+  console.error('No credentials. In CI set SMOKE_EMAIL and SMOKE_PASSWORD (the read-only desk reader); locally the service-role key also works:\n' +
     "  export $(grep -E '^SUPABASE_(URL|SERVICE_ROLE_KEY)=' ../family-office-agentic-orchestration/.env | xargs)");
   process.exit(2);
 }
-const REST = { apikey: KEY, Authorization: `Bearer ${KEY}` };
+console.log(`Reading ${SUPABASE_URL} as ${AS}.`);
+
+// NO WRITE LEAVES THE HARNESS, WHATEVER IT HOLDS. The client below stubs every write; this refuses
+// anything but a read at the network layer too, so a new code path cannot write by accident.
+const realFetch = globalThis.fetch;
+globalThis.fetch = (url, opts = {}) => {
+  const method = String(opts.method || 'GET').toUpperCase();
+  if (String(url).startsWith(SUPABASE_URL) && method !== 'GET' && method !== 'HEAD') {
+    return Promise.reject(new Error(`smoke harness refused a ${method} to ${String(url).split('?')[0]}: it never writes`));
+  }
+  return realFetch(url, opts);
+};
 
 const errors = [];
 // Captured before anything renders, so "did the page write to the database" can be asked by
