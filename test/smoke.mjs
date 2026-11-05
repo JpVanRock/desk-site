@@ -1065,55 +1065,71 @@ if (!argRoute) {
     const off = Object.entries(byStrat).filter(([, w]) => Math.abs(w - 1) > 0.02);
     say(` ok  open lots              -> ${lots.length} lots across ${Object.keys(byStrat).length} models, ${off.length} not summing to 100%`);
 
-    // The allocation editor: the pies come straight off the weights, and Test must rebuild a real
-    // series and produce real statistics rather than rendering a shape with nothing behind it.
-    // Measure an equity-bearing model: the fingerprint and sector sections are equity properties,
-    // and a bond book correctly has neither, which would make this test prove nothing.
+    // THE MODEL LEVEL REBALANCE TAB (owner's request 2026-11-05), which replaced the target
+    // allocation editor. Current weights on the left are the DRIFTED weights, not the last trade's;
+    // nothing below the table appears until Test changes is pressed; Test must produce every
+    // section the owner asked for from real prices; and Submit must stay shut until the rationale
+    // and premortem are written. THIS TEST NEVER PRESSES SUBMIT OR AGENT FINE TUNE: both write.
+    await go('#sandbox/rebalance');
+    need(/data-sbtab="rebalance" aria-selected="true"/.test(app()), '[rebalance] #sandbox/rebalance did not open the Model Level Rebalance tab');
     const eqModel = (await fetch(`${SUPABASE_URL}/rest/v1/strategies?select=id,name&name=eq.Balanced%20Core`, { headers: REST }).then(r => r.json()))[0];
-    if (eqModel) await click('[data-samodel]', { samodel: eqModel.id });
-    const ed0 = app();
-    need(/data-sawt=/.test(ed0), '[sandbox] the allocation editor rendered no weight fields');
-    need(/data-satest/.test(ed0) && /data-safinal/.test(ed0), '[sandbox] Test or Submit Final is missing');
-    const totalShown = (ed0.match(/<b style="color:var\(--(?:pos|warn)\)">([\d.]+)%<\/b>/) || [])[1];
-    need(totalShown && Math.abs(+totalShown - 100) < 0.6, `[sandbox] the editor total reads ${totalShown}%, expected the model's own weights to sum to 100%`);
-    // The fingerprint and the sector breakdown must be on the page BEFORE Test is pressed. Both
-    // are weighted sums of per-security figures already loaded, so gating them on Test left the
-    // section showing two pies and nothing else on arrival -- which read as the fingerprint simply
-    // not having been built. Assert the real content, not just the heading: a book with equity in
-    // it must produce a radar and at least one sector row without any price fetch at all.
-    need(/Factor fingerprint/.test(ed0), '[sandbox] no factor fingerprint before Test was pressed');
-    need(/Sector weighting/.test(ed0), '[sandbox] no sector breakdown before Test was pressed');
-    need(!/no style tilt to report/.test(ed0), '[sandbox] the fingerprint is empty for a book that holds equity');
-    need(!/no breakdown to show|no sector fit/.test(ed0), '[sandbox] the sector breakdown is empty for a book that holds equity');
-    need(/Share of equity/.test(ed0), '[sandbox] the sector table has no rows before Test');
-    need(ed0.indexOf('Factor fingerprint') < ed0.indexOf('Portfolio statistics'),
-      '[sandbox] the fingerprint is not directly below the two pies');
-    need(ed0.indexOf('>Regimes<') < ed0.indexOf('Factor fingerprint'),
-      '[sandbox] the fingerprint is above the Regimes pie rather than below both pies');
-    say(` ok  sandbox fingerprint    -> radar and sector table render on arrival, no Test needed`);
-    await click('[data-satest]', { satest: '1' });
-    // Waits for the figure rather than for a fixed interval. A flat 2500ms was enough until the
-    // suite grew another price fetch to contend with, and then this failed intermittently --
-    // which is the worst kind of test, because the failure says the feature is broken when the
-    // only thing that was broken is the clock.
-    for (let i = 0; i < 48 && !/YTD return<\/span><br><b/.test(app()); i++) await sleep(250);
-    const tested = app();
-    const ytd = (tested.match(/YTD return<\/span><br><b[^>]*>([+-][\d.]+)%/) || [])[1];
-    const vol = (tested.match(/Volatility<\/span><br><b[^>]*>([\d.]+)%/) || [])[1];
-    say(` ok  sandbox test           -> YTD ${ytd ?? '—'}, volatility ${vol ?? '—'}`);
-    need(ytd !== undefined, '[sandbox] Test produced no YTD figure');
-    need(vol !== undefined, '[sandbox] Test produced no volatility figure');
-    // A measured book should land in a plausible range; a broken series shows itself here first.
-    if (ytd !== undefined) need(Math.abs(+ytd) < 60, `[sandbox] Test returned a YTD of ${ytd}%, which is not this book`);
-    need(/Factor fingerprint/.test(tested), '[sandbox] Test did not produce a factor fingerprint');
-    need(/Sector weighting/.test(tested), '[sandbox] Test did not produce a sector breakdown');
-    // The second pie is the regime split, and the fingerprint sits with the pies rather than
-    // among the statistics: those three say what the book IS, the statistics how it has behaved.
-    need(/>Regimes</.test(tested), '[sandbox] the second pie is not labelled Regimes');
-    // Specifically the pie's eyebrow label, not the fingerprint table's "Factor" column header.
-    need(!/class="eyebrow"[^>]*>Factor</.test(tested), '[sandbox] the old Factor pie label is still there');
-    need(tested.indexOf('Factor fingerprint') < tested.indexOf('Portfolio statistics'),
-      '[sandbox] the fingerprint is not above the portfolio statistics');
+    if (eqModel) await click('[data-rbmodel]', { rbmodel: eqModel.id });
+    const rb1 = app();
+    need(/data-rbwt=/.test(rb1), '[rebalance] the proposed side has no editable weights');
+    need(/drifted to \d{4}-\d{2}-\d{2}/.test(rb1), '[rebalance] the current weights are not the drifted ones');
+    const curTot = (rb1.match(/>Total<\/td><td class="num"><b>([\d.]+)%<\/b>/) || [])[1];
+    need(curTot && Math.abs(+curTot - 100) < 0.6, `[rebalance] the current weights total ${curTot}%, expected 100%`);
+    need(/data-rbsubmit="1" disabled/.test(rb1), '[rebalance] Submit is enabled before anything has changed');
+    need(/data-rbwhy/.test(rb1) && /data-rbconf/.test(rb1) && /data-rbhorizondays/.test(rb1) && /data-rbpremortem/.test(rb1),
+      '[rebalance] the why-now, confidence or premortem field is missing');
+    need(!/Capture and beta to the S&amp;P 500/.test(rb1), '[rebalance] results showed before Test changes was pressed');
+    // A real edit: two points off the largest position, onto the second.
+    const wts = [...rb1.matchAll(/data-rbwt="(\d+)"[^>]*?value="([\d.]+)"/g)].map(m => +m[2]);
+    const tks = [...rb1.matchAll(/<tr>\s*<td><b>([A-Z0-9.]+)<\/b>/g)].map(m => m[1]);
+    need(wts.length >= 2, '[rebalance] fewer than two positions to move weight between');
+    if (wts.length >= 2) {
+      await change('[data-rbwt]', { rbwt: '0' }, String(+(wts[0] - 2).toFixed(1)));
+      await change('[data-rbwt]', { rbwt: '1' }, String(+(wts[1] + 2).toFixed(1)));
+      need(/data-rbtotal style="color:var\(--(pos|warn)\)">[\d.]+%/.test(app()), '[rebalance] the proposed total is not shown');
+      await click('[data-rbtest]', { rbtest: '1' });
+      for (let i = 0; i < 160 && !/Capture and beta to the S&amp;P 500/.test(app()) && !/Could not test that/.test(app()); i++) await sleep(250);
+      const rb3 = app();
+      const err = (rb3.match(/Could not test that: ([^<]+)/) || [])[1];
+      need(!err, `[rebalance] Test changes failed: ${err}`);
+      need(/Capture and beta to the S&amp;P 500/.test(rb3), '[rebalance] Test changes produced no capture table');
+      need(/aria-label="Current asset mix"/.test(rb3) && /aria-label="Proposed asset mix"/.test(rb3), '[rebalance] the current and proposed asset mix pies are not both there');
+      for (const sleeve of ['Equities', 'Fixed Income', 'Cash', 'Alternatives']) need(new RegExp(`</span>${sleeve}</td>`).test(rb3), `[rebalance] the asset mix has no ${sleeve} row`);
+      need(/>Macro factors</.test(rb3) && />Equity style</.test(rb3), '[rebalance] the factor map is missing an overlay');
+      need((rb3.match(/aria-label="Factor fingerprint"/g) || []).length >= 2, '[rebalance] the factor map did not draw both radars');
+      const wins = ['3M', '6M', 'YTD', '1Y', '3Y', '5Y', 'ALL'].filter(w => new RegExp(`<td><b>${w}</b></td>`).test(rb3));
+      need(wins.length === 7, `[rebalance] the capture table has ${wins.length} of the seven windows`);
+      const allRow = (rb3.match(/<td><b>ALL<\/b><\/td>[\s\S]*?<\/tr>/) || [''])[0];
+      need(/whole book/.test(allRow), '[rebalance] ALL does not measure the whole book');
+      const oneY = (rb3.match(/<td><b>1Y<\/b><\/td>[\s\S]*?<\/tr>/) || [''])[0];
+      const caps = [...oneY.matchAll(/>(\d+)%</g)].map(m => +m[1]);
+      need(caps.length >= 4, '[rebalance] the 1Y row has no capture figures');
+      // EVERY WINDOW IS BOUNDED, not just one. The first cut checked only 1Y and passed while 3Y and
+      // 5Y read a downside capture of -44,753% and a beta of -21 off CPAI's placeholder history.
+      for (const w of wins) {
+        const row = (rb3.match(new RegExp(`<td><b>${w}</b></td>[\\s\\S]*?</tr>`)) || [''])[0];
+        for (const m of row.matchAll(/>(-?\d+)%</g)) need(Math.abs(+m[1]) < 300, `[rebalance] a ${w} capture of ${m[1]}% is not this book`);
+        for (const m of row.matchAll(/>(-?\d+\.\d\d)</g)) need(Math.abs(+m[1]) < 3, `[rebalance] a ${w} beta of ${m[1]} is not this book`);
+      }
+      need(/Tax impact/.test(rb3) && (/Estimated tax/.test(rb3) || /realises no gain or loss/.test(rb3)), '[rebalance] the tax section is missing');
+      if (tks[0] && tks[0] !== 'CASH') need(new RegExp(`<td><b>${tks[0]}</b></td><td class="num">[\\d.]+%</td>`).test(rb3.slice(rb3.indexOf('Tax impact'))),
+        `[rebalance] ${tks[0]} was cut and has no row in the tax table`);
+      need(/data-rbsubmit="1" disabled/.test(rb3), '[rebalance] Submit is enabled with no rationale or premortem');
+      need(/Still needed: why rebalance now, a premortem/.test(rb3), '[rebalance] the form does not say the rationale and premortem are missing');
+      // An edit after the test leaves figures that describe a different book; the page must say so.
+      await change('[data-rbwt]', { rbwt: '1' }, String(+(wts[1] + 1).toFixed(1)));
+      need(/has changed since the last test/.test(app()), '[rebalance] an edit after Test did not mark the figures stale');
+      need(/a test of the current edits/.test(app()), '[rebalance] Submit is not gated on a fresh test');
+      const tax = (rb3.match(/Estimated tax<\/div><div[^>]*>([^<]+)</) || [])[1];
+      // The tab lives on a sub-route, which go() does not dump; written here so the tested state can be reviewed.
+      if (process.env.DUMP_DIR) { const { writeFileSync } = await import('node:fs'); writeFileSync(`${process.env.DUMP_DIR}/sandbox-rebalance.html`, rb3); }
+      say(` ok  rebalance              -> Balanced Core: ${wins.length} windows, ALL from ${(allRow.match(/(\d{4}-\d{2}-\d{2})/) || [])[1] || '—'}, 1Y up/down ${caps.slice(0, 2).join('/')}%, tax ${tax || 'none'}`);
+      await click('[data-rbreset]', { rbreset: '1' });
+    }
     for (const [sid, w] of off) errors.push(`[sandbox] open lots for ${sid} sum to ${(w * 100).toFixed(1)}%`);
     for (const l of lots) if (!(+l.cost_price > 0)) errors.push(`[sandbox] a ${l.ticker} lot has no cost basis`);
   }
