@@ -153,7 +153,7 @@ async function load() {
     narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill, quadPit] = await Promise.all([
     qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
     qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
-    qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note'), 'securities'),
+    qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note,on_watchlist'), 'securities'),
     qSoft(sb.from('asset_classes').select('id,slug,name,sort_order,primary_role,primary_role_is_draft').order('sort_order'), 'asset classes'),
     qSoft(sb.from('factors').select('id,slug,name,sort_order').order('sort_order'), 'factors'),
     qSoft(sb.from('asset_class_factor_loadings').select('asset_class_id,factor_id,loading,as_of'), 'asset class factor loadings'),
@@ -268,7 +268,7 @@ async function load() {
     qAllSoft(() => sb.from('flows_calendar_monitor').select('as_of,metric,reading,baseline,t_stat,status,headline,detail').order('metric', { ascending: true }), 'flows monitor'),
     qAllSoft(() => sb.from('flows_calendar_history').select('as_of,value_date,roll_hit,roll_mean,conc_in,conc_out').order('value_date', { ascending: true }), 'flows history'),
     qAllSoft(() => sb.from('flows_calendar_upcoming').select('as_of,seq,window_key,entry_date,exit_date,days_held,month_num,hist_hit,hist_mean,recent_hit').order('seq', { ascending: true }), 'flows upcoming'),
-    qAllSoft(() => sb.from('event_risk').select('as_of,event_id,week_start,week_end,event_date,kind,importance,title,source,detail').order('event_date', { ascending: true }), 'event risk'),
+    qAllSoft(() => sb.from('event_risk').select('as_of,event_id,week_start,week_end,event_date,kind,importance,title,source,detail,symbol,session').order('event_date', { ascending: true }).order('event_id', { ascending: true }), 'event risk'),
     qAllSoft(() => sb.from('speed_limit_readings').select('as_of,category,score,light,weight,freshness,n_calls').order('as_of', { ascending: true }), 'speed limit history'),
     qAllSoft(() => sb.from('insurance_candidates').select('ticker,label,sort_order,in_sleeve,note').order('sort_order', { ascending: true }), 'insurance candidates'),
     qAllSoft(() => sb.from('capital_rotation_month').select('month,box_key,label,drawdown,n_months,state').order('month', { ascending: true }).order('box_key', { ascending: true }), 'capital rotation'),
@@ -302,7 +302,9 @@ async function load() {
   const priceBySec = Object.fromEntries(prices.map(p => [p.security_id, p]));
   const techBySec = Object.fromEntries(technicals.map(t => [t.security_id, t]));
   const markets = secs.map(s => ({ id: s.id, ticker: s.ticker, name: s.name, role: s.role, cls: cls[s.asset_class_id]?.slug || 'unclassified', price: priceBySec[s.id] || null, tech: techBySec[s.id] || null,
-    hp: !!s.high_potential, hpSince: s.high_potential_since || null, hpNote: s.high_potential_note || null }))
+    hp: !!s.high_potential, hpSince: s.high_potential_since || null, hpNote: s.high_potential_note || null,
+    // Absent until the 2026-11-14 migration has applied, and absent means shown.
+    onWatch: s.on_watchlist !== false }))
     .sort((a, b) => a.ticker.localeCompare(b.ticker));
 
   const factorSlug = Object.fromEntries(factors.map(f => [f.id, f.slug]));
@@ -731,7 +733,7 @@ function speedLimitMasterCard() {
     </tbody></table></div>
    <p class="note"><b>Draft rule.</b> The framework set the lens weights; the scoring rule was left open, so this is a proposal to argue with, not a settled measure. A lens scores the confidence-weighted mean direction of its open research calls — green above +0.33, red below −0.33 — and the master is the weighted mean over the lenses that actually have calls, so a silent lens abstains rather than counting as neutral. ${master.n_calls < 6 ? `<b>This reading rests on ${master.n_calls} scoring call${master.n_calls === 1 ? '' : 's'}</b>, far too few to lean on — read it as the machinery working, not as a signal.` : ''} Only equities, commodities and cash calls carry a sign: bond and gold calls are counted but score zero, because their risk reading is genuinely ambiguous.</p>
    ${master.freshness === null || master.freshness === undefined ? '' : `<p class="note"><b>Calls decay over their own horizon.</b> This light printed one value — −0.1303, yellow — on all 18 readings between 2026-09-24 and 2026-10-23, because the nine calls behind it were all recorded on two days in September and all sat inside their review dates, so the same nine confidences passed the same filter every day. A call now carries full conviction the day it is made and nothing the day it comes up for review, straight line between, which adds no new setting — the horizon is the analyst's own declaration of how long the call is good for. Evidence is <b>${(+master.freshness * 100).toFixed(0)}% fresh</b>${master.oldest_call ? `, the newest call was made ${esc(String(master.newest_call))}` : ''}.</p>
-   <p class="note"><b>A light it can no longer support is suppressed.</b> As evidence decays the boundary widens: green or red needs a score past ±0.33 ÷ freshness, so at ${(+master.freshness * 100).toFixed(0)}% it needs <b>|score| &gt; ${(0.33 / +master.freshness).toFixed(2)}</b>, and below about a third fresh the light pins to yellow because nothing honest is left to say.${master.raw_light && master.raw_light !== master.light ? ` <b style="color:var(--warn)">Suppressed now:</b> the ungated score would have read ${esc(master.raw_light)}.` : ''}${+master.n_silent > 0 ? ` <b>${master.n_silent} of 4 lenses have no open calls at all</b>${master.detail && master.detail.silent_categories ? ` (${master.detail.silent_categories.map(esc).join(', ')})` : ''} — the master renormalises them away, so it is a partial framework reported as the whole one.` : ''}</p>
+   <p class="note"><b>A light it can no longer support is suppressed.</b> As evidence decays the boundary widens: green or red needs a score past ±0.33 ÷ freshness, so at ${(+master.freshness * 100).toFixed(0)}% it needs <b>|score| &gt; ${(0.33 / +master.freshness).toFixed(2)}</b>, and below about a third fresh the light pins to yellow because nothing honest is left to say. <b>It also needs enough evidence behind it:</b> live confidence summing to at least one full call (1.0), because the score is a ratio and a single call at 5% confidence would otherwise read −1 on its own.${master.detail && master.detail.evidence ? ` Live confidence behind this reading is <b>${(+master.detail.evidence.live_total).toFixed(2)}</b>${+master.detail.evidence.live_total < +master.detail.evidence.floor ? ', under the floor' : ''}.` : ''}${master.raw_light && master.raw_light !== master.light ? ` <b style="color:var(--warn)">Suppressed now:</b> the ungated score would have read ${esc(master.raw_light)}.` : ''}${+master.n_silent > 0 ? ` <b>${master.n_silent} of 4 lenses have no open calls at all</b>${master.detail && master.detail.silent_categories ? ` (${master.detail.silent_categories.map(esc).join(', ')})` : ''} — the master renormalises them away, so it is a partial framework reported as the whole one.` : ''}</p>
    <p class="note"><b>What decay does not fix.</b> Every call on file was recorded on one of two dates, so inside a lens the decay factors are identical and cancel in the ratio: the score itself still will not move until calls arrive on new dates. The mechanism is fixed; the signal needs feeding. Market responsiveness is a different layer and deliberately not bolted on here — mixing price action into a panel of analyst conviction would quietly turn it into a momentum signal wearing their names.</p>`}`;
 }
 
@@ -2180,7 +2182,9 @@ async function loadVolSeries() {
     for (const m of meta) {
       const obs = [];
       for (let from = 0; from < 1800; from += 900) {
-        const page = await q(() => sb.from('macro_observations').select('obs_date,value,vintage_date')
+        // The newest vintage of each date (latest_macro_observations): one row per date, so 1,800
+        // rows really is about seven years. The raw table holds a row per night per date.
+        const page = await q(() => sb.from('latest_macro_observations').select('obs_date,value,vintage_date')
           .eq('series_id', m.id).order('obs_date', { ascending: false }).range(from, from + 899));
         for (const o of page) obs.push(o);
         if (page.length < 900) break;
@@ -2727,9 +2731,13 @@ function markets() {
   ];
   const bucketOf = cls => (WATCH_BUCKETS.find(([, , set]) => set.has(cls)) || WATCH_BUCKETS[2])[0];
   const counts = Object.fromEntries(WATCH_BUCKETS.map(([k]) => [k, 0]));
-  for (const r of rows) counts[bucketOf(r.cls)]++;
+  // The ✕ takes a ticker OFF the watchlist; it does not delete the security. The panels above still
+  // price it, and a model that holds it still does. Hidden rows drop out of the tabs and counts.
+  const listed = rows.filter(r => r.onWatch);
+  const hiddenN = rows.length - listed.length;
+  for (const r of listed) counts[bucketOf(r.cls)]++;
   if (!WATCH_BUCKETS.some(([k]) => k === watchTab)) watchTab = 'equities';
-  const shown = rows.filter(r => bucketOf(r.cls) === watchTab);
+  const shown = listed.filter(r => bucketOf(r.cls) === watchTab);
 
   const table = `<div class="card" style="margin-top:14px">
   <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
@@ -2752,7 +2760,7 @@ function markets() {
   ${!shown.length ? '<tr><td colspan="9" style="color:var(--muted);padding:10px">Nothing in this sleeve.</td></tr>' : ''}
   ${shown.map(r => { const t = r.tech; const vs = (c, sma) => sma ? `<span style="color:${c > sma ? 'var(--pos)' : 'var(--neg)'}">${c > sma ? '+' : ''}${(((c - sma) / sma) * 100).toFixed(1)}%</span>` : '–';
     const rs = t?.rs_vs_class_63; const rsStr = rs === null || rs === undefined ? '–' : `<span style="color:${rs >= 0 ? 'var(--pos)' : 'var(--neg)'}">${rs >= 0 ? '+' : ''}${(rs * 100).toFixed(1)}%</span>`;
-    return `<tr class="click" data-go="#markets/${esc(r.id)}"><td><b>${esc(r.ticker)}</b><br><small style="color:var(--muted)">${esc(r.name)}</small></td><td>${esc(D.classNames[r.cls] || r.cls)}</td>
+    return `<tr class="click" data-go="#markets/${esc(r.id)}"><td><b>${esc(r.ticker)}</b><button data-watchdel="${esc(r.id)}" data-watchtk="${esc(r.ticker)}" title="Remove ${esc(r.ticker)} from the watchlist. Nothing is deleted: its prices, and any model that holds it, are untouched, and + Add puts it back." style="margin-left:6px;border:none;background:none;color:var(--muted);cursor:pointer;font-size:12px;padding:0 2px" ${watchAdd.busy ? 'disabled' : ''}>✕</button><br><small style="color:var(--muted)">${esc(r.name)}</small></td><td>${esc(D.classNames[r.cls] || r.cls)}</td>
      <td class="num">${r.price ? '$' + Number(r.price.close).toFixed(2) : '<span style="color:var(--muted)">no price</span>'}</td>
      <td class="num">${r.price ? chg(r.price.day_change_pct) : ''}</td>
      <td class="num" style="color:${rsiColor(t?.rsi14)}">${t?.rsi14 != null ? t.rsi14.toFixed(1) : '–'}</td>
@@ -2761,6 +2769,7 @@ function markets() {
      <td class="num">${t ? vs(t.close ?? r.price?.close, t.sma200) : '–'}</td>
      <td class="num">${rsStr}</td></tr>`; }).join('')}
   </tbody></table></div>
+  ${hiddenN ? `<p class="note" style="margin-top:8px">${hiddenN} ticker${hiddenN === 1 ? ' is' : 's are'} off the watchlist. Add one again to bring it back.</p>` : ''}
   <p class="note"><b>Three sleeves over the desk's six asset classes.</b> Cash sits with bonds under Fixed Income — the same liquidity role, and a tab of its own would hold two tickers. Commodities, real assets and gold sit under Alternatives, along with anything carrying no class: today that is the four LifeStrategy funds, which are 20/80 through 80/20 blends that no single class describes. <b>A new ticker is added unclassified</b>, so it appears under Alternatives until a class is set, and it carries no price until the nightly job loads its history.</p>
   <p class="note">RSI14 uses Wilder's smoothing; below 30 (green) is oversold, above 70 (red) is overbought by the standard convention, not a signal to act on alone. Trend: bullish = close &gt; SMA50 &gt; SMA200, bearish = the reverse, else neutral. RS vs class = 63-day return minus the median of same-asset-class peers. SMA200 and RS need ~10 months of history — newer listings show "–". This is price action and trend, not a rating: the desk decided the underlying trend-anchored rating hasn't earned a role in decisions yet (see ROADMAP.md / the Admin tab). Parameters: desk-workspace/stan/technicals-parameters.md.</p></div>`;
 
@@ -2768,11 +2777,10 @@ function markets() {
 
   // ---- Event Risks: the week ahead, across the top of the page ----
   //
-  // EARNINGS ARE ON THE STRIP since 2026-11-04: the largest 30% of the S&P 500 by index weight,
-  // from EODHD's earnings calendar (jobs/compute-event-risk.mjs). Each carries its timing -- before
-  // the open, after the close -- because a report after Thursday's close is Friday's risk. Days
-  // with many reports collapse to the high-importance names plus a count, so the strip stays a
-  // strip; the full list is in the tooltip.
+  // EARNINGS: each day's five most widely held or most traded reporters among the 1,000 largest
+  // companies listed on a US exchange (jobs/compute-event-risk.mjs), strongest first, each with its
+  // timing -- before the open, after the close -- because a report after Thursday's close is
+  // Friday's risk.
   const eventStrip = (() => {
     const ev = D.eventRisk || [];
     if (!ev.length) return '';
@@ -2788,12 +2796,12 @@ function markets() {
     });
     const KIND = { central_bank: 'var(--neg)', economic: 'var(--fg)', earnings: 'var(--accent)' };
     const SESS = { 'before the open': 'pre', 'after the close': 'post' };
-    const MAX_EARN = 3;
+    const MAX_EARN = 5;
     return `<div class="card" style="margin-bottom:14px;padding:12px 14px">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px">
         <span class="eyebrow">Event risks · week of ${esc(w.week_start)}</span>
         <span style="font-size:11px;color:var(--muted)">${ev.filter(e => e.importance === 'high').length} high · built ${esc(String(w.as_of))}</span></div>
-      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px">
+      <div class="evweek">
         ${days.map(d => {
           const list = (byDay.get(d) || []);
           const isToday = d === today;
@@ -2803,7 +2811,9 @@ function markets() {
               : (() => {
                   const macro = list.filter(e => e.kind !== 'earnings' || !e.symbol);
                   const earn = list.filter(e => e.kind === 'earnings' && e.symbol);
-                  const shown = earn.filter(e => e.importance === 'high').concat(earn.filter(e => e.importance !== 'high')).slice(0, MAX_EARN);
+                  // The job keeps each day's five most widely held or most traded reporters and puts
+                  // their order in the event id, so the day reads strongest first.
+                  const shown = earn.slice().sort((a, b) => String(a.event_id).localeCompare(String(b.event_id))).slice(0, MAX_EARN);
                   const rest = earn.slice().filter(e => !shown.includes(e));
                   const line = e => `<div style="font-size:11px;margin-top:4px;line-height:1.3;color:${KIND[e.kind] || 'var(--fg)'}" title="${esc(`${e.title}\n${e.source}${e.detail ? '\n' + e.detail : ''}`)}">
                     ${e.importance === 'high' ? '<b>' : ''}${esc(e.symbol ? e.symbol : e.title)}${e.importance === 'high' ? '</b>' : ''}${e.symbol && SESS[e.session] ? ` <span style="color:var(--muted);font-size:10px">${SESS[e.session]}</span>` : ''}</div>`;
@@ -2811,7 +2821,7 @@ function markets() {
                     + (rest.length ? `<div style="font-size:10.5px;margin-top:4px;color:var(--muted)" title="${esc(rest.map(e => `${e.symbol} ${e.session || ''} — ${e.title}`).join('\n'))}">+${rest.length} more report${rest.length === 1 ? '' : 's'}</div>` : '');
                 })()}</div>`;
         }).join('')}</div>
-      <p class="note" style="margin-top:10px;font-size:11px"><b>Economic releases, central-bank decisions and the earnings of the largest 30% of the S&P 500</b> by index weight, in <span style="color:var(--accent)">blue</span> by ticker, marked pre (before the open) or post (after the close); bold are the ten largest. Hover any line for its detail. Sources: ${esc([...new Set(ev.map(e => e.source))].join(', '))}. Rebuilt Sunday mornings.</p>
+      <p class="note" style="margin-top:10px;font-size:11px"><b>Economic releases, central-bank decisions, and each day's five most widely held or most traded companies reporting</b> — ranked among the 1,000 largest companies listed on a US exchange by market cap (how widely held) or dollars traded a day (how popular), whichever is higher. In <span style="color:var(--accent)">blue</span> by ticker, marked pre (before the open) or post (after the close); bold are the week's ten highest. Hover any line for both ranks. Sources: ${esc([...new Set(ev.map(e => e.source))].join(', '))}. Rebuilt Sunday mornings.</p>
     </div>`;
   })();
 
@@ -2958,7 +2968,6 @@ function markets() {
       ${usEquityPanel}
       ${mfiPanel}
       ${riskPanel}
-      ${grp('US equity sectors', [['XLE', 'Energy'], ['XLU', 'Utilities'], ['XLP', 'Consumer staples'], ['XLB', 'Materials'], ['XLF', 'Financials'], ['XLRE', 'Real estate'], ['XLI', 'Industrials'], ['XLV', 'Health care'], ['XLY', 'Consumer discretionary'], ['XLC', 'Communications'], ['XLK', 'Technology']])}
     </div>
     <div class="mkcol">
       ${perfCard}
@@ -2976,6 +2985,7 @@ function markets() {
         ${subhead('Emerging')}${[['MCHI', 'China'], ['INDA', 'India'], ['EWY', 'South Korea'], ['EWT', 'Taiwan'], ['EWZ', 'Brazil'], ['EWW', 'Mexico'], ['EWH', 'Hong Kong'], ['EWS', 'Singapore']].map(([t, l]) => quote(t, l)).join('')}`,
         'Australia and South Africa were removed from this panel for room. Both are still tracked and still in the table below — the geography fits are built from these country indices, so dropping the securities would quietly degrade a different page.')}
       ${grp('Commodities', [['USO', 'Crude oil'], ['DBC', 'Broad commodities'], ['GLD', 'Gold'], ['SLV', 'Silver']])}
+      ${grp('US equity sectors', [['XLE', 'Energy'], ['XLU', 'Utilities'], ['XLP', 'Consumer staples'], ['XLB', 'Materials'], ['XLF', 'Financials'], ['XLRE', 'Real estate'], ['XLI', 'Industrials'], ['XLV', 'Health care'], ['XLY', 'Consumer discretionary'], ['XLC', 'Communications'], ['XLK', 'Technology']])}
     </div>
   </div>
   ${yieldSection}
@@ -6962,15 +6972,17 @@ async function openMacroChart(seriesId) {
     // VIXCLS, T10Y2Y) drew a chart that ended in 2018 and looked perfectly healthy doing it.
     // The most recent 1000 observations is about four years of daily data, which is the useful
     // window here; the full history stays in the table for the jobs that need it.
-    obs = await q(() => sb.from('macro_observations').select('obs_date,value,vintage_date')
-      .eq('series_id', seriesId).order('obs_date', { ascending: false }).order('vintage_date', { ascending: true }).limit(1000));
+    // One row per date from latest_macro_observations, so the 1,000 newest are 1,000 DATES. Read
+    // from the raw table they were 1,000 vintage rows -- about a year and a half of a daily series,
+    // shrinking every night as the loader added another vintage of each recent date.
+    obs = await q(() => sb.from('latest_macro_observations').select('obs_date,value,vintage_date')
+      .eq('series_id', seriesId).order('obs_date', { ascending: false }).range(0, 999));
   } catch (ex) {
     $('#drawer').querySelector('.empty').textContent = `Could not load history: ${ex.message}`;
     return;
   }
   if (!obs.length) { $('#drawer').querySelector('.empty').textContent = 'No history for this series yet.'; return; }
-  // Latest vintage per obs_date (a revised series like GDP can have more than one reading per
-  // date). vintage_date still ascends within a date, so the last write per date wins.
+  // The view already holds one row per date -- its newest vintage.
   const byDate = new Map();
   for (const o of obs) byDate.set(o.obs_date, o.value);
   const dates = [...byDate.keys()].sort();
@@ -8194,8 +8206,14 @@ document.addEventListener('submit', async e => {
   watchAdd = { busy: true, msg: null, tone: null };
   rerender();
   try {
-    const { data: dupe } = await sb.from('securities').select('ticker').eq('ticker', raw).maybeSingle();
-    if (dupe) {
+    const { data: dupe } = await sb.from('securities').select('ticker,on_watchlist').eq('ticker', raw).maybeSingle();
+    if (dupe && dupe.on_watchlist === false) {
+      // Taken off earlier with the ✕: putting it back is a flag, its history never left.
+      const { error } = await sb.from('securities').update({ on_watchlist: true }).eq('ticker', raw);
+      if (error) throw new Error(error.message);
+      D = await load();
+      watchAdd = { busy: false, msg: `${raw} is back on the watchlist, with its price history intact.`, tone: 'ok' };
+    } else if (dupe) {
       watchAdd = { busy: false, msg: `${raw} is already on the watchlist.`, tone: 'bad' };
     } else {
       const { error } = await sb.from('securities').insert({ ticker: raw, name: raw, role: 'watchlist' });
@@ -8210,6 +8228,28 @@ document.addEventListener('submit', async e => {
   }
   rerender();
 });
+// Taking a ticker off the watchlist (the ✕ beside it). A FLAG, NOT A DELETE: the security, its
+// price history and any model's holding of it are untouched -- see the migration
+// 20261114100000_watchlist_flag.sql for why deleting would be wrong. + Add reverses it.
+document.addEventListener('click', async e => {
+  const t = e.target.closest('[data-watchdel]');
+  if (!t) return;
+  e.preventDefault?.(); e.stopPropagation?.();
+  if (watchAdd.busy) return;
+  const id = t.dataset.watchdel, tk = t.dataset.watchtk || 'The ticker';
+  const rerender = () => { if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets(); };
+  watchAdd = { busy: true, msg: null, tone: null };
+  rerender();
+  try {
+    const { error } = await sb.from('securities').update({ on_watchlist: false }).eq('id', id);
+    if (error) throw new Error(error.message);
+    D = await load();
+    watchAdd = { busy: false, msg: `${tk} is off the watchlist. Nothing was deleted — its prices and any model holding it are untouched. Add ${tk} again to bring it back.`, tone: 'ok' };
+  } catch (err) {
+    watchAdd = { busy: false, msg: `Could not remove ${tk}: ${err.message}`, tone: 'bad' };
+  }
+  rerender();
+}, true);
 // The advisory-fee switch. Every figure it touches is recomputed on render, so flipping it is a
 // redraw of the current route, pop-up included.
 document.addEventListener('change', e => {

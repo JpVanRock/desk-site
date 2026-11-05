@@ -2112,7 +2112,7 @@ if (!argRoute) {
     need(/fresh/.test(stKpi), '[speed-limit] the Speed Limit tile does not show how fresh its evidence is');
 
     // ---- decay and the gate ----
-    const sl = await rest('latest_speed_limit_readings', 'category,score,light,raw_light,freshness,conviction,evidence_raw,evidence_live,n_silent,oldest_call,newest_call,n_calls');
+    const sl = await rest('latest_speed_limit_readings', 'category,score,light,raw_light,freshness,conviction,evidence_raw,evidence_live,n_silent,oldest_call,newest_call,n_calls,detail');
     const m = sl.find(r => r.category === 'master');
     need(Boolean(m), '[speed-limit] no master reading');
     need(m.freshness !== null, '[speed-limit] the master carries no freshness — the decay fix is not in effect');
@@ -2126,8 +2126,13 @@ if (!argRoute) {
       // The gate: the light must be reachable at this freshness, and must match the widened cut.
       if (r.score !== null && r.freshness !== null) {
         const cut = 0.33 / +r.freshness;
-        const want = +r.score > cut ? 'green' : +r.score < -cut ? 'red' : 'yellow';
-        if (r.light !== want) sb2.push(`${r.category}: light ${r.light} but the gate at freshness ${(+r.freshness).toFixed(2)} says ${want}`);
+        const gated = +r.score > cut ? 'green' : +r.score < -cut ? 'red' : 'yellow';
+        // And the evidence floor (D6): no green or red on less than one full call of live
+        // confidence -- the lens's own live evidence, or for the master every scoring call summed.
+        const ev = r.category === 'master' ? +(r.detail?.evidence?.live_total ?? NaN) : +r.evidence_live;
+        if (r.category === 'master' && !Number.isFinite(ev)) sb2.push('master: no evidence total recorded, so the evidence floor cannot be checked');
+        const want = gated !== 'yellow' && Number.isFinite(ev) && ev < 1.0 ? 'yellow' : gated;
+        if (r.light !== want) sb2.push(`${r.category}: light ${r.light} but the gate at freshness ${(+r.freshness).toFixed(2)} and live evidence ${Number.isFinite(ev) ? ev.toFixed(2) : '—'} says ${want}`);
         // raw_light is the ungated reading and must never be MORE cautious than the gated one.
         const raw = +r.score > 0.33 ? 'green' : +r.score < -0.33 ? 'red' : 'yellow';
         if (r.raw_light !== raw) sb2.push(`${r.category}: raw_light ${r.raw_light} does not match the ungated rule`);
@@ -2808,10 +2813,10 @@ if (!argRoute) {
 //   nothing on the page would have looked wrong -- a ticker is believed precisely because nobody
 //   cross-checks the dates on it.
 //
-//   EARNINGS COME FROM EODHD ONLY, since 2026-11-04. Every earnings row must carry a ticker, the
-//   EODHD source and its rank by index weight inside the top 30% -- or be the single row saying
-//   the calendar could not be retrieved. Anything else is data from a source this desk does not
-//   have, which is what the old guard here existed to catch.
+//   EARNINGS COME FROM EODHD ONLY. Every earnings row must carry a ticker, the EODHD source and
+//   both of its ranks -- by market cap (widely held) and by dollars traded (popular) -- or be the
+//   single row saying the calendar could not be retrieved. No day may show more than five
+//   (owner's instruction, 2026-11-04), and the day's order must be the score's.
 // -------------------------------------------------------------------------
 currentRoute = 'event-risk';
 await go('#markets');
@@ -2838,9 +2843,7 @@ await go('#markets');
     if (!['economic', 'central_bank', 'earnings'].includes(r.kind)) eb.push(`${r.title} carries kind "${r.kind}"`);
     if (r.kind === 'earnings') {
       if (r.source !== 'EODHD') eb.push(`${r.title}: an earnings row from "${r.source}", not EODHD`);
-      const rk = +((r.detail || '').match(/Number (\d+) of (\d+) S&P 500 companies/) || [])[1];
-      const of = +((r.detail || '').match(/Number \d+ of (\d+) S&P 500 companies/) || [])[1];
-      if (r.symbol && !(rk >= 1 && of > 400 && rk <= Math.ceil(of * 0.3))) eb.push(`${r.title}: rank ${rk} of ${of} is outside the top 30%`);
+      if (r.symbol && !/Widely held: number \d+ by market cap .*popular: number \d+ by dollars traded/.test(r.detail || '')) eb.push(`${r.title}: the row does not carry both its ranks`);
       if (!r.symbol && !/could not be retrieved/.test(r.title)) eb.push(`${r.title}: an earnings row with no ticker`);
     } else if (r.symbol) eb.push(`${r.title}: a ${r.kind} row carrying a ticker`);
     if (!['high', 'medium'].includes(r.importance)) eb.push(`${r.title} carries importance "${r.importance}"`);
@@ -2851,10 +2854,17 @@ await go('#markets');
   }
   // Only the official calendars. If a scraped source ever reappears this catches it.
   const OK = /Bureau of Labor Statistics|Bureau of Economic Analysis|Census|Federal Reserve|^EODHD$/;
+  // At most five earnings a day, in slot order 01..05 carried in the event id.
+  for (const d of new Set(cur.filter(r => r.kind === 'earnings' && r.symbol).map(r => r.event_date))) {
+    const day = cur.filter(r => r.kind === 'earnings' && r.symbol && r.event_date === d);
+    if (day.length > 5) eb.push(`${d} shows ${day.length} earnings, more than five`);
+    const slots = day.map(r => (String(r.event_id).match(/:earnings:(\d{2}):/) || [])[1]).filter(Boolean).sort();
+    if (slots.length !== day.length || slots.some((x, i) => +x !== i + 1)) eb.push(`${d}: earnings slots ${slots.join(',') || 'missing'} are not 01..${String(day.length).padStart(2, '0')}`);
+  }
   for (const r of cur) if (!OK.test(r.source)) eb.push(`${r.title} cites "${r.source}", which is not one of the official calendars`);
 
   need(/Event risks/i.test(mp), '[event-risk] the strip is not on the Markets page');
-  need(/earnings of the largest 30% of the S&amp;P 500|earnings of the largest 30% of the S&P 500/.test(mp), '[event-risk] the strip does not say which earnings it carries');
+  need(/five most widely held or most traded companies reporting/.test(mp), '[event-risk] the strip does not say which earnings it carries');
   need(!/company earnings are not on this strip/i.test(mp), '[event-risk] the strip still says earnings are omitted');
   // Scoped to the strip's own source list, not the page: "Nasdaq 100" is an index name and
   // appears legitimately in the market panels above.
@@ -2963,6 +2973,22 @@ await go('#markets');
     need(new RegExp(`data-watchtab[^>]*>\\s*${t}`).test(wp), `[watchlist] no ${t} tab`);
   need(/data-watchadd/.test(wp), '[watchlist] no add-ticker form');
   need(/\+ Add/.test(wp), '[watchlist] no +Add button');
+
+  // The ✕ beside every ticker: one per row shown, and it takes the ticker OFF the watchlist with a
+  // flag rather than deleting the security. The stub's update() writes nothing, so this exercises
+  // the handler without touching the database.
+  const wtable = (wp.split('>Watchlist<')[1] || '').split('</table>')[0];
+  const wrows = (wtable.match(/<tr class="click" data-go="#markets\//g) || []).length;
+  const wdel = [...wtable.matchAll(/data-watchdel="([^"]+)"/g)].map(m => m[1]);
+  need(wrows > 0 && wdel.length === wrows, `[watchlist] ${wrows} rows but ${wdel.length} remove buttons`);
+  need(/on_watchlist/.test(readFileSync(join(SITE, 'app.js'), 'utf8')) && !/from\('securities'\)\.delete\(\)/.test(readFileSync(join(SITE, 'app.js'), 'utf8')),
+    '[watchlist] removal must flag on_watchlist, never delete the security (a delete cascades to its price history)');
+  if (wdel.length) {
+    await click('[data-watchdel]', { watchdel: wdel[0], watchtk: 'TEST' });
+    // The handler reloads every dataset before confirming, which takes longer than click()'s pause.
+    for (let i = 0; i < 120 && !/TEST is off the watchlist/.test(app()); i++) await sleep(500);
+    need(/TEST is off the watchlist\. Nothing was deleted/.test(app()), '[watchlist] removing a ticker did not confirm, or did not say nothing was deleted');
+  }
 
   // The named proxies must sit where a reader expects them, not in the fallback.
   const WANT = { AGG: 'bonds', SPY: 'equities', BIL: 'cash' };

@@ -319,8 +319,12 @@ select{font:inherit;font-size:12.5px;padding:5px 7px;border-radius:7px;border:1p
    rather than a table so that every panel aligns to the same columns regardless of how many rows
    it holds -- a table per panel would let each one choose its own widths and the wall would read
    as nine unrelated boxes. */
-.mkgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) minmax(0,1fr);gap:14px;align-items:start}
+.mkgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) minmax(0,1fr);gap:14px;align-items:stretch}
 .mkcol{display:flex;flex-direction:column;gap:14px;min-width:0}
+/* The three columns end on one line: each column stretches to the tallest, and its LAST card takes
+   up the slack, so Risk and volatility, Government yields and US equity sectors share a bottom
+   edge. The card grows; its contents stay at the top. */
+.mkcol>:last-child{flex:1 0 auto}
 .panel{padding:12px 14px}
 .phead{font-size:13px;font-weight:700;letter-spacing:.02em;margin:0 0 8px}
 .psub{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:10px 0 4px;padding-top:8px;border-top:1px solid var(--line)}
@@ -432,3 +436,9 @@ select{font:inherit;font-size:12.5px;padding:5px 7px;border-radius:7px;border:1p
 .feeswitch input:checked+.feeknob::after{transform:translateX(16px);background:var(--accent)}
 .feeswitch input:checked~span:last-child{color:var(--text)}
 .feeswitch input:focus-visible+.feeknob{outline:2px solid var(--accent);outline-offset:2px}
+
+/* The Event Risks week. Five equal days that may shrink below their contents (minmax(0,1fr)), so
+   a busy earnings day cannot push the page sideways; on a phone the week stacks a day per row. */
+.evweek{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}
+.evweek>div{min-width:0;overflow-wrap:anywhere}
+@media (max-width:600px){.evweek{grid-template-columns:minmax(0,1fr)}}
