@@ -150,7 +150,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill, quadPit] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill, quadPit, fastCars, fastAside] = await Promise.all([
     qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
     qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
     qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note,on_watchlist'), 'securities'),
@@ -275,6 +275,8 @@ async function load() {
     qAllSoft(() => sb.from('capital_rotation_box').select('box_key,label,numerator,denominator,substitution,sort_order,first_month').order('sort_order', { ascending: true }), 'capital rotation boxes'),
     qAllSoft(() => sb.from('capital_rotation_skill').select('as_of,bucket,n_obs,fwd_spy_12m,fwd_spy_gold_12m,hit_spy,sort_order').order('sort_order', { ascending: true }), 'capital rotation skill'),
     qAllSoft(() => sb.from('macro_quad_pit').select('as_of,regime,growth_z,inflation_z,n_growth,n_inflation,revised_regime,fwd_spy_63d,fwd_spy_maxdd_63d').order('as_of', { ascending: true }), 'quad point in time'),
+    qAllSoft(() => sb.from('latest_fastest_cars').select('as_of,horizon,grp,rank,ticker,name,kind,category,ret,ret_1m,ret_3m,ret_6m,ret_ytd,start_date,vendor_ret,net_assets,dollar_volume,tracked,universe_n').order('horizon', { ascending: true }).order('grp', { ascending: true }).order('rank', { ascending: true }), 'fastest cars'),
+    qAllSoft(() => sb.from('latest_fastest_cars_set_aside').select('as_of,ticker,name,kind,reason').order('ticker', { ascending: true }), 'fastest cars set aside'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -378,7 +380,8 @@ async function load() {
     flowWins: newest(flowWins || []), flowMonths: newest(flowMonths || []), flowMonitor: newest(flowMonitor || []),
     flowHist: newest(flowHist || []), flowNext: newest(flowNext || []),
     eventRisk: newest(eventRisk || []), slHist: slHist || [], insCands: insCands || [],
-    crMonth: crMonth || [], crBox: crBox || [], crSkill: newest(crSkill || []), quadPit: quadPit || [] };
+    crMonth: crMonth || [], crBox: crBox || [], crSkill: newest(crSkill || []), quadPit: quadPit || [],
+    fastCars: fastCars || [], fastAside: fastAside || [] };
 }
 
 // ---------- Views ----------
@@ -889,6 +892,8 @@ const feeSwitch = () => `<label class="feeswitch" title="Deducts a 0.67% annual 
 // Watchlist tab, and the state of an in-flight add. Module scope because the markets page is
 // re-rendered wholesale on every interaction and a local would reset the tab on each keystroke.
 let watchTab = 'equities';
+// Fastest Cars: which horizon, and whether the leveraged and inverse list is showing instead.
+let fastHorizon = '1m', fastLev = false;
 // The volatility card had no window of its own and silently followed the performance chart. It
 // now carries the same buttons, so the two can be read on different windows -- which is the point
 // of asking what six months of vol looks like against a year of price.
@@ -2713,6 +2718,54 @@ function markets() {
         ${breadthRow('1 month', 21)}${breadthRow('3 months', 63)}${breadthRow('Year to date', 'ytd')}`),
     !perfSeries ? '' : 'The breadth lines are the cap-weighted S&P total return minus the equal-weighted one over the same days — two real returns subtracted, nothing modelled. <b>Narrow</b> means the largest names are carrying the index while the average member lags; <b>broad</b> means the advance is shared. A list of index levels cannot show the difference, and the two markets behave differently.');
 
+  // ---- Fastest Cars ----
+  //
+  // THE WHOLE MARKET, NOT THE DESK'S LIST. Every listed US ETF and NASDAQ-quoted mutual fund EODHD
+  // prices, ranked by total return (jobs/compute-fastest-cars.mjs). Screened on the vendor's
+  // adjusted closes; every fund shown here was recomputed from raw closes, distributions and
+  // splits, and that recomputed figure is the one printed. The rules that decide what counts as
+  // investable are chosen, not derived, so they are on the card. Leveraged and inverse funds are a
+  // separate list behind a switch: shown together, they take every place over a month.
+  const FAST_H = [['1m', '1 month', '1M'], ['3m', '1 quarter', '1Q'], ['6m', '6 months', '6M'], ['ytd', 'Year to date', 'YTD']];
+  const fastSection = !(D.fastCars || []).length ? '' : (() => {
+    if (!FAST_H.some(([k]) => k === fastHorizon)) fastHorizon = '1m';
+    const grp = fastLev ? 'leveraged' : 'unlevered';
+    const list = D.fastCars.filter(r => r.horizon === fastHorizon && r.grp === grp);
+    const head = list[0] || D.fastCars.find(r => r.horizon === fastHorizon) || D.fastCars[0];
+    const hLabel = FAST_H.find(([k]) => k === fastHorizon)[1];
+    const sgn = v => `${+v >= 0 ? '+' : ''}${(+v * 100).toFixed(1)}%`;
+    const cell = (k, v) => v === null || v === undefined
+      ? '<td class="num" style="color:var(--muted)">—</td>'
+      : `<td class="num" style="color:${+v >= 0 ? 'var(--pos)' : 'var(--neg)'}${k === fastHorizon ? ';font-weight:700' : ''}">${sgn(v)}</td>`;
+    const size = x => x === null || x === undefined ? '—' : +x >= 1e9 ? `$${(+x / 1e9).toFixed(1)}bn` : `$${Math.round(+x / 1e6)}m`;
+    const tab = (on, attrs, label) => `<button ${attrs} style="padding:5px 12px;border:1px solid ${on ? 'var(--fg)' : 'var(--line)'};border-radius:5px;background:${on ? 'var(--panel2)' : 'transparent'};color:${on ? 'var(--fg)' : 'var(--muted)'};font-size:12px;cursor:pointer">${label}</button>`;
+    const body = list.map(r => {
+      const sec = byTicker[r.ticker];
+      const vendorNote = r.vendor_ret !== null && Math.abs(+r.vendor_ret - +r.ret) > 0.001 ? ` EODHD's adjusted close gives ${sgn(r.vendor_ret)}; the figure shown is recomputed from closes, distributions and splits.` : '';
+      return `<tr${sec ? ` class="click" data-go="#markets/${esc(sec.id)}"` : ''} title="${esc(`${r.ticker}: ${sgn(r.ret)} from the close on ${r.start_date} to ${r.as_of}.${vendorNote}`)}">
+        <td class="num" style="color:var(--muted)">${r.rank}</td>
+        <td><b>${esc(r.ticker)}</b>${r.tracked ? ' <span style="font-size:10px;padding:1px 5px;border:1px solid var(--line);border-radius:4px;color:var(--muted)">on desk</span>' : ''}<br><small style="color:var(--muted)">${esc(r.name)}${r.category ? ` · ${esc(r.category)}` : ''}</small></td>
+        <td>${esc(r.kind)}</td><td class="num">${size(r.net_assets)}</td>
+        ${FAST_H.map(([k]) => cell(k, r[`ret_${k}`])).join('')}</tr>`;
+    }).join('');
+    const aside = D.fastAside || [];
+    return `<div class="card" style="margin-top:14px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div class="phead" style="margin:0">Fastest Cars</div>
+      <label class="feeswitch" title="Leveraged and inverse funds (2x, 3x, Ultra, Bull, Bear, Inverse, Daily Target, or so categorised) are ranked separately. Over a month they would otherwise fill every place.">
+        <input type="checkbox" data-fastlev ${fastLev ? 'checked' : ''}><span class="feeknob" aria-hidden="true"></span><span>Leveraged &amp; inverse</span></label>
+    </div>
+    <div style="display:flex;gap:4px;margin:10px 0 2px;flex-wrap:wrap">
+      ${FAST_H.map(([k, label]) => tab(k === fastHorizon, `data-fasth="${k}"`, label)).join('')}
+    </div>
+    <p class="note" style="margin:8px 0 4px">The ten best ${fastLev ? '<b>leveraged and inverse</b> ' : ''}US-listed ETFs and mutual funds by total return over ${hLabel.toLowerCase()} — from the close on ${esc(head.start_date)} to ${esc(head.as_of)} — of ${list.length ? Number(list[0].universe_n).toLocaleString() : '—'} ranked. Past returns, not a forecast or a recommendation.</p>
+    <div style="overflow-x:auto"><table><thead><tr><th class="num">#</th><th>Fund</th><th>Type</th><th class="num">Net assets</th>${FAST_H.map(([k, , sh]) => `<th class="num"${k === fastHorizon ? ' style="color:var(--fg)"' : ''}>${sh}</th>`).join('')}</tr></thead><tbody>
+    ${body || `<tr><td colspan="8" style="color:var(--muted);padding:10px">No fund cleared the rules on this horizon.</td></tr>`}
+    </tbody></table></div>
+    <p class="note" style="margin-top:8px">The whole market, not the desk's list: every listed US ETF and NASDAQ-quoted mutual fund EODHD prices, screened on its adjusted closes, and every fund shown recomputed here from raw closes, distributions and splits. Three rules decide what counts, and they are chosen rather than derived: <b>net assets of at least $100m</b>; ETFs trading <b>at least $1m a day</b> on a 50-day average; and <b>one share class per mutual fund</b>, the best performing. No ETNs (they are debt), no OTC listings, no offshore fund records. A fund launched after the start date has no return on that horizon and shows —.${aside.length ? ` <b>Set aside for a price fault</b> — a price that doubled or halved in a day and came straight back: ${aside.map(a => `<span title="${esc(a.reason)}" style="border-bottom:1px dotted var(--muted)">${esc(a.ticker)}</span>`).join(', ')}.` : ''}</p>
+  </div>`;
+  })();
+
   // ---- Watchlist ----
   //
   // THREE BUCKETS OVER SIX CLASSES. The desk keeps six asset classes; the watchlist shows three,
@@ -2991,6 +3044,7 @@ function markets() {
   ${yieldSection}
   ${flowsSection}
   ${crSection}
+  ${fastSection}
   ${table}`;
 }
 
@@ -8171,6 +8225,13 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Escape' || !ladderDetail) return;
   ladderDetail = null;
   if ((location.hash || '').startsWith('#stan')) $('#app').innerHTML = stan();
+});
+// Fastest Cars horizon tabs and the leveraged switch.
+document.addEventListener('click', e => {
+  const h = e.target.closest('[data-fasth]'), l = e.target.closest('[data-fastlev]');
+  if (!h && !l) return;
+  if (h) fastHorizon = h.dataset.fasth; else fastLev = !fastLev;
+  if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
 });
 // Watchlist sleeve tabs.
 document.addEventListener('click', e => {

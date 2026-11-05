@@ -3146,6 +3146,69 @@ currentRoute = 'capital-rotation';
 }
 
 // ---------------------------------------------------------------------------
+// [fastest-cars] The ten best US ETFs and mutual funds per horizon, above the watchlist.
+//
+//   THE LISTS MUST KEEP THEIR OWN RULES. Each ranked return is the fund's own column for that
+//   horizon, ranks are contiguous and descending, every fund clears the $100m floor, no ETN is in
+//   the universe, and nothing leveraged or inverse reaches the unlevered list -- over a month a 3x
+//   fund would otherwise take every place and the list would say nothing.
+//
+//   THE RULES MUST STAY ON THE CARD. They are chosen, not derived; a reader of a top-ten list is
+//   entitled to know what was allowed to compete.
+// -------------------------------------------------------------------------
+currentRoute = 'fastest-cars';
+{
+  const probe = await fetch(`${SUPABASE_URL}/rest/v1/latest_fastest_cars?select=ticker&limit=1`, { headers: REST });
+  if (probe.status === 404) {
+    errors.push('[fastest-cars] tables do not exist — migration 20261115100000_fastest_cars.sql has not been applied');
+  } else {
+    const rows = await rest('latest_fastest_cars', 'as_of,horizon,grp,rank,ticker,name,category,ret,ret_1m,ret_3m,ret_6m,ret_ytd,net_assets,universe_n');
+    const LEV_NAME = /\b(?:\d(?:\.\d+)?x|ultra(?:pro)?(?:short)?|ultrashort|leveraged|inverse|bull|bear)\b|daily\s+target/i;
+    let bad = [];
+    for (const h of ['1m', '3m', '6m', 'ytd']) for (const g of ['unlevered', 'leveraged']) {
+      const list = rows.filter(r => r.horizon === h && r.grp === g).sort((a, b) => a.rank - b.rank);
+      if (g === 'unlevered' && list.length !== 10) bad.push(`${h}: ${list.length} unlevered funds, expected 10`);
+      if (new Set(list.map(r => r.ticker)).size !== list.length) bad.push(`${h}/${g}: a ticker listed twice`);
+      list.forEach((r, i) => {
+        if (r.rank !== i + 1) bad.push(`${h}/${g}: ranks are not contiguous`);
+        if (i && +r.ret > +list[i - 1].ret + 1e-12) bad.push(`${h}/${g}: ${r.ticker} ranked below a lower return`);
+        if (Math.abs(+r.ret - +r[`ret_${h}`]) > 1e-9) bad.push(`${h}/${g}: ${r.ticker}'s ranked return is not its own ${h} column`);
+        if (!(+r.net_assets >= 100e6)) bad.push(`${r.ticker}: net assets ${r.net_assets} under the $100m floor`);
+        if (/\bETNs?\b/i.test(r.name)) bad.push(`${r.ticker}: an ETN, which is debt, not a fund`);
+        if (g === 'unlevered' && (LEV_NAME.test(r.name) || /leverag|inverse|trading/i.test(r.category || ''))) bad.push(`${r.ticker}: leveraged or inverse in the unlevered list`);
+        if (!(+r.universe_n >= 1000)) bad.push(`${h}/${g}: ranked from ${r.universe_n} funds -- that is not the market`);
+      });
+    }
+    // grp is not universe-sized for leveraged lists; only the unlevered universe must be the market.
+    bad = bad.filter(b => !/leveraged: ranked from/.test(b));
+    bad = [...new Set(bad)].slice(0, 10);
+    for (const b of bad) errors.push(`[fastest-cars] ${b}`);
+
+    await go('#markets');
+    const mp = app();
+    const fi = mp.indexOf('>Fastest Cars<'), wi = mp.indexOf('>Watchlist<');
+    need(fi > -1, '[fastest-cars] the section is not on the Markets page');
+    need(fi > -1 && wi > -1 && fi < wi, '[fastest-cars] the section is not above the watchlist');
+    need(/chosen rather than derived/.test(mp) && /net assets of at least \$100m/.test(mp), '[fastest-cars] the investability rules are not stated on the card');
+    need(/Past returns, not a forecast/.test(mp), '[fastest-cars] the card does not say a ranking is a past return');
+    const first = (h, g) => (rows.find(r => r.horizon === h && r.grp === g && r.rank === 1) || {}).ticker;
+    const cardOf = () => { const t = app(); const a = t.indexOf('>Fastest Cars<'); return a < 0 ? '' : t.slice(a, t.indexOf('>Watchlist<', a)); };
+    need(first('1m', 'unlevered') && cardOf().includes(`<b>${first('1m', 'unlevered')}</b>`), '[fastest-cars] the one-month leader is not on the default tab');
+    await click('[data-fasth]', { fasth: 'ytd' });
+    need(first('ytd', 'unlevered') && cardOf().includes(`<b>${first('ytd', 'unlevered')}</b>`), '[fastest-cars] the YTD tab does not show the YTD leader');
+    await click('[data-fastlev]', {});
+    const lev = first('ytd', 'leveraged');
+    need(!lev || (cardOf().includes(`<b>${lev}</b>`) && /leveraged and inverse<\/b>/.test(cardOf())), '[fastest-cars] the leveraged switch does not show the leveraged list');
+    // Leave the page as a reader finds it.
+    await click('[data-fastlev]', {});
+    await click('[data-fasth]', { fasth: '1m' });
+    const aside = await rest('latest_fastest_cars_set_aside', 'ticker,reason');
+    if (aside.length) need(cardOf().includes('Set aside for a price fault'), '[fastest-cars] funds were set aside for a price fault and the card does not name them');
+    say(` ok  fastest cars           -> ${rows.length} rows at ${rows[0] ? rows[0].as_of : '—'}, 1M leader ${first('1m', 'unlevered')}, YTD leader ${first('ytd', 'unlevered')}, ${aside.length} set aside`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log('');
 if (errors.length) { console.log(`${errors.length} PROBLEM(S):`); for (const e of errors) console.log('  ' + e); process.exit(1); }
 console.log('No problems found.');
