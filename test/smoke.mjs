@@ -2580,6 +2580,10 @@ if (!argRoute) {
         pb.push(`${r.model}: the new beta floor ${r.beta_floor} is below the old ${r.old_floor}, which is the behaviour this replaces`);
       if (+r.beta_ceiling <= +r.beta_floor) pb.push(`${r.model}: an inverted beta band`);
       if (+r.beta_floor > 1.0 + 1e-9) pb.push(`${r.model}: a beta floor above 1.0 levers past the benchmark`);
+      // THE CEILING NEVER ASKS FOR MORE EQUITY THAN THE SLEEVE WAS MEASURED TO CARRY. The owner's
+      // split-funder sleeve (D8, 2026-11-04) supports 1.08x, below the green light's 1.10x.
+      if (used && r.beta_ceiling !== null && +r.beta_ceiling > +used.iso_equity / 0.70 + 1e-6)
+        pb.push(`${r.model}: a beta ceiling of ${r.beta_ceiling} above the sleeve's measured lift of ${(+used.iso_equity / 0.70).toFixed(3)}x`);
       // The action must follow the gap and the band.
       // THE GAP IS TARGET MINUS THE SLEEVE-COMPARABLE BRAKE, not minus everything defensive the
       // model holds. sleeve_target is the measured plateau of a convexity sleeve; cash, short
