@@ -7480,8 +7480,10 @@ async function rbRunTest() {
   }
   // A BROKEN SERIES IS CUT, NOT MEASURED. Tiingo carried CPAI at $0.002 for two years before the
   // fund launched on 2023-11-29, so its first real close read as a 12,593-fold day and took the 3Y
-  // and 5Y downside capture to -44,753%. No fund in a model moves threefold in a session, so a
-  // series that does is measured only from that day on, and the page names it.
+  // and 5Y downside capture to -44,753%. Those rows were deleted on 2026-11-05 (see the
+  // orchestration repo's docs/data-corrections.md), and the guard stays for the next one: no fund
+  // in a model moves threefold in a session, so a series that does is measured only from that day
+  // on, and the page names it.
   const faults = [];
   for (const id of ids) {
     const p = series[id]; let cutAt = -1, ratio = null;
