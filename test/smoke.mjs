@@ -2194,6 +2194,16 @@ if (!argRoute) {
         if (r.light !== 'yellow' && r.raw_light === 'yellow') sb2.push(`${r.category}: the gate turned a yellow into a ${r.light}`);
       }
     }
+    // THE CADENCE WARNING (owner's decision 2026-11-05): when the nightly says Predictive calls are
+    // overdue, Stan's page says so above the fold; when it does not, the page does not cry wolf.
+    const cad = m.detail && m.detail.cadence;
+    need(Boolean(cad), '[speed-limit] the master reading carries no research-call cadence check');
+    if (cad) {
+      need(cad.warn === (cad.days_since === null || cad.days_since > cad.limit_days), '[speed-limit] the cadence warning does not follow its own ten-day rule');
+      need(/Research calls overdue/.test(stKpi) === !!cad.warn,
+        `[speed-limit] Stan's page ${cad.warn ? 'does not show' : 'shows'} the research-calls-overdue warning while the nightly ${cad.warn ? 'raised' : 'did not raise'} it`);
+      if (!cad.warn) need(/The last Predictive call was logged/.test(st), '[speed-limit] the drawer does not say when the last Predictive call was logged');
+    }
     need(/decay over their own horizon/i.test(st), '[speed-limit] the page does not explain the decay');
     need(/18 readings/.test(st), '[speed-limit] the page does not say the light had been frozen');
     say(` ok  speed limit decay      -> freshness ${(+m.freshness * 100).toFixed(0)}%, conviction ${m.conviction}, a light needs |score| > ${(0.33 / +m.freshness).toFixed(2)}, ${m.n_silent} silent lens(es)`);
