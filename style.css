@@ -8,8 +8,12 @@
   --growth:#3987e5; --inflation:#d95926; --liquidity:#199e70; --unclass:#52514e;
 }
 :root[data-theme="light"]{
-  --bg:#f5f6f8; --panel:#ffffff; --panel2:#f0f2f6; --line:#dfe3ea; --text:#1b2230; --muted:#667085;
-  --accent:#3b62d6; --pos:#1f8f5f; --neg:#c8443f; --flat:#b98a14; --warn:#b7791f; --shadow:0 8px 30px rgba(20,30,50,.12); --bench:#9aa4b2; --winbg:rgba(31,143,95,.24); --losebg:rgba(200,68,63,.26);
+  /* Text colours darkened on 2026-11-05 by the least amount that clears WCAG AA (4.5:1) on all three
+     light surfaces (--bg, --panel, --panel2). Before: --pos #1f8f5f 3.64:1, --neg #c8443f 4.30:1,
+     --warn #b7791f 3.25:1, --flat #b98a14 2.79:1, --muted #667085 4.44:1, at worst. The dark
+     theme already passed everywhere and is unchanged. */
+  --bg:#f5f6f8; --panel:#ffffff; --panel2:#f0f2f6; --line:#dfe3ea; --text:#1b2230; --muted:#656f84;
+  --accent:#3b62d6; --pos:#1b7e54; --neg:#c63e39; --flat:#8d690f; --warn:#966319; --shadow:0 8px 30px rgba(20,30,50,.12); --bench:#9aa4b2; --winbg:rgba(31,143,95,.24); --losebg:rgba(200,68,63,.26);
   --growth:#2a78d6; --inflation:#eb6834; --liquidity:#1baf7a; --unclass:#c3c2b7;
 }
 *{box-sizing:border-box} html{background:var(--bg)}
