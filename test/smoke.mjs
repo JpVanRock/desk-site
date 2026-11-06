@@ -177,6 +177,10 @@ class El {
   }
   set innerHTML(v) {
     this._html = String(v);
+    // An inline event handler never runs: the page's CSP (script-src 'self') refuses it. One did,
+    // silently, for the missing-data banner's Reload button until 2026-11-05.
+    const inline = /<[^>]*\son(click|change|input|submit|load|error|focus|blur|key\w+|mouse\w+|pointer\w+)\s*=/i.exec(this._html);
+    if (inline) errors.push(`[${currentRoute}] #${this.id} rendered an inline on${inline[1]} handler, which the page's CSP blocks: …${this._html.slice(Math.max(0, inline.index - 80), inline.index + 120).replace(/\s+/g, ' ')}…`);
     for (const bad of ['undefined', 'NaN', '[object Object]']) {
       const at = this._html.indexOf('>' + bad + '<') >= 0 ? this._html.indexOf('>' + bad + '<') : this._html.indexOf('"' + bad + '"');
       if (at >= 0) errors.push(`[${currentRoute}] #${this.id} rendered a literal ${bad}: …${this._html.slice(Math.max(0, at - 160), at + 40).replace(/\s+/g, ' ')}…`);

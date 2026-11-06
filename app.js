@@ -448,7 +448,7 @@ function route() {
     <h2 style="margin:0">Some of this page is missing its data</h2>
     <p class="sub" style="margin:6px 0 0">${coreGone.length === 1 ? 'A table the dashboard is built on' : `${coreGone.length} tables the dashboard is built on`} could not be read, so panels below may be empty or wrong rather than simply quiet. <b>This is usually the nightly job running</b> — it reads the whole price history several times and the database is busy for a few minutes. Each query was already retried twice.</p>
     <ul style="margin:8px 0 10px 18px;color:var(--muted);font-size:12px">${coreGone.map(f => `<li>${esc(f)}</li>`).join('')}</ul>
-    <button class="btn" onclick="location.reload()">Reload</button></div>`;
+    <button class="btn" data-action="reload">Reload</button></div>`;
   $('#app').innerHTML = banner + (page === 'gail' ? gail(arg) : page === 'sandbox' ? sandbox(arg || '') : (pages[page] || sisyphus)());
   if (page === 'stan' && arg) {
     // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
@@ -8351,6 +8351,12 @@ function status(embed) {
 
 // ---------- Wiring ----------
 document.addEventListener('click', e => { const t = e.target.closest('[data-go]'); if (t) location.hash = t.dataset.go; });
+// A button names its action instead of carrying onclick. The page's Content-Security-Policy is
+// script-src 'self' with no 'unsafe-inline', so the browser refuses inline handlers: the Reload
+// button on the missing-data banner, the one control offered when the core tables fail to load,
+// did nothing from the day it was added until 2026-11-05. test/smoke.mjs now fails any page that
+// renders an inline handler.
+document.addEventListener('click', e => { if (e.target.closest('[data-action="reload"]')) location.reload(); });
 // Chart layer toggles re-render from the already-fetched history — no refetch, no hash change.
 // Scatter period tabs, on the Stan page.
 document.addEventListener('click', e => {
