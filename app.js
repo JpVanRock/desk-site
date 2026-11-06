@@ -453,19 +453,19 @@ function route() {
   if (page === 'stan' && arg) {
     // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
     // button all close them the same way a model drawer closes.
-    if (arg === 'speed-limit') { $('#drawer').innerHTML = speedLimitDrawer(); $('#drawer').hidden = false; $('#scrim').hidden = false; }
-    else if (arg.startsWith('snr-')) { $('#drawer').innerHTML = snrDrawer(arg.slice(4)); $('#drawer').hidden = false; $('#scrim').hidden = false; }
-    else if (arg.startsWith('top3-')) { $('#drawer').innerHTML = top3Drawer(arg.slice(5)); $('#drawer').hidden = false; $('#scrim').hidden = false; }
+    if (arg === 'speed-limit') { $('#drawer').innerHTML = speedLimitDrawer(); showDrawer(); }
+    else if (arg.startsWith('snr-')) { $('#drawer').innerHTML = snrDrawer(arg.slice(4)); showDrawer(); }
+    else if (arg.startsWith('top3-')) { $('#drawer').innerHTML = top3Drawer(arg.slice(5)); showDrawer(); }
     else openModel(arg);
   }
   if (page === 'annie' && arg && arg.startsWith('steel-')) {
-    $('#drawer').innerHTML = steelManDrawer(arg.slice(6)); $('#drawer').hidden = false; $('#scrim').hidden = false;
+    $('#drawer').innerHTML = steelManDrawer(arg.slice(6)); showDrawer();
   }
   if (page === 'sven' && arg) {
     // Two drawers on one route. The flow breakdown is prefixed rather than given its own page,
     // so it closes the same way every other drawer on this site closes.
     $('#drawer').innerHTML = arg.startsWith('flow-') ? newsFlowDrawer(arg.slice(5)) : svenDrawer(arg);
-    $('#drawer').hidden = false; $('#scrim').hidden = false;
+    showDrawer();
   }
   if (page === 'markets' && arg) openChart(arg);
   if (page === 'sisyphus' && arg) openExposureChart(arg);
@@ -6702,9 +6702,84 @@ function openModel(id) {
    ${m.holdings.map(h => `<tr><td><b>${esc(h.ticker)}</b><br><small style="color:var(--muted)">${esc(h.name)}</small></td><td>${esc(D.classNames[h.cls] || h.cls)}</td><td class="num">${pct(h.weight)}</td>
     ${h.loading ? h.loading.map(v => v === null ? '<td class="num" style="color:var(--muted)">–</td>' : `<td class="num" style="color:${v > 0 ? 'var(--pos)' : v < 0 ? 'var(--neg)' : 'var(--muted)'}">${sgn(v)}</td>`).join('') : `<td class="num" colspan="${D.factors.length}" style="color:var(--muted)">not scored</td>`}</tr>`).join('')}
    </tbody></table><p class="note">G = growth, I = inflation, L = cost of liquidity. Subjective loadings; overrides are drafts.</p></div>`;
-  $('#drawer').hidden = false; $('#scrim').hidden = false;
+  showDrawer();
 }
-function closeDrawer() { $('#drawer').hidden = true; $('#scrim').hidden = true; }
+// ---------- The drawer as a modal dialog ----------
+//
+// Until 2026-11-05 the drawer was only unhidden: it was not announced as a dialog, focus stayed on
+// the page behind it, Tab walked the dashboard underneath, and closing it left focus nowhere. A
+// keyboard or screen-reader user opened a model and kept reading the page beneath it. Every drawer
+// now opens through showDrawer(): it is labelled by its own heading, the page behind becomes inert
+// (not clickable, focusable or read), focus moves to the heading, Tab stays inside, and on close
+// focus goes back to what opened it. Escape, the scrim and the back button still close it, as before.
+//
+// Most drawers open from a clickable row or card that re-renders with the page, so the opener is
+// remembered by its data-go or href as well as by element, and found again after the re-render.
+const DRAWER_BEHIND = ['header.top', '#app', 'footer'];
+let drawerReturn = null;
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-go], a[href^="#"], button');
+  if (t && !t.closest('#drawer')) drawerReturn = { el: t, go: t.dataset?.go || t.getAttribute?.('href') || null, tag: t.tagName, text: (t.textContent || '').trim(), at: Date.now() };
+}, true);
+function focusGently(el) {
+  if (!el || !el.isConnected) return false;
+  if (!el.matches?.('a[href], button, input, select, textarea, summary, [tabindex]')) el.setAttribute('tabindex', '-1');
+  el.focus();
+  return true;
+}
+function restoreDrawerFocus(r) {
+  // Opening one drawer from another closes and reopens it in one route: keep the original opener
+  // for the drawer that is open now, rather than moving focus behind it.
+  if (!$('#drawer').hidden) { drawerReturn = r; return; }
+  if (focusGently(r.el)) return;
+  // Several controls can lead to the same place (a row and a button both opening one model), so the
+  // successor is the one that matches the opener's kind and words, and only failing that the first.
+  const same = r.go ? [...document.querySelectorAll('[data-go], a[href]')].filter(x => (x.dataset.go || x.getAttribute('href')) === r.go) : [];
+  focusGently(same.find(x => x.tagName === r.tag && (x.textContent || '').trim() === r.text) || same[0]);
+}
+function showDrawer() {
+  const d = $('#drawer'), opening = d.hidden;
+  d.hidden = false; $('#scrim').hidden = false;
+  const h = d.querySelector('h1, h2');
+  if (h) { if (!h.id) h.id = 'drawer-title'; h.setAttribute('tabindex', '-1'); d.setAttribute('aria-labelledby', h.id); }
+  for (const sel of DRAWER_BEHIND) { const x = $(sel); if (x) x.inert = true; }
+  if (!opening) return;
+  // A click recorded more than a few seconds ago did not open this drawer (a hash typed or pasted did).
+  if (drawerReturn && Date.now() - drawerReturn.at > 4000) drawerReturn = null;
+  if (!drawerReturn && document.activeElement && document.activeElement !== document.body) drawerReturn = { el: document.activeElement, go: null, at: Date.now() };
+  (h || d.querySelector('.close') || d).focus?.();
+}
+function closeDrawer() {
+  const d = $('#drawer'), wasOpen = !d.hidden;
+  d.hidden = true; $('#scrim').hidden = true;
+  for (const sel of DRAWER_BEHIND) { const x = $(sel); if (x) x.inert = false; }
+  // route() closes the drawer before it re-renders the page, so focus is restored after it finishes.
+  if (wasOpen && drawerReturn) { const r = drawerReturn; drawerReturn = null; setTimeout(() => restoreDrawerFocus(r), 0); }
+}
+// Some drawers open with a loading line and re-render when their data arrives (the market, exposure
+// and macro charts). A re-render removes the heading that had focus, which would drop focus to the
+// page behind, so after any re-render of an open drawer it is labelled again and, if focus was
+// lost, the new heading takes it. (Guarded: the smoke harness's DOM has no MutationObserver.)
+if (typeof MutationObserver === 'function') {
+  new MutationObserver(() => {
+    const d = $('#drawer');
+    if (d.hidden) return;
+    const h = d.querySelector('h1, h2');
+    if (h) { if (!h.id) h.id = 'drawer-title'; h.setAttribute('tabindex', '-1'); d.setAttribute('aria-labelledby', h.id); }
+    if (!d.contains(document.activeElement)) (h || d.querySelector('.close') || d).focus();
+  }).observe($('#drawer'), { childList: true });
+}
+// Tab stays inside the open drawer, wrapping at both ends.
+document.addEventListener('keydown', e => {
+  const d = $('#drawer');
+  if (e.key !== 'Tab' || d.hidden) return;
+  const f = [...d.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select, textarea, summary, [tabindex]:not([tabindex="-1"])')]
+    .filter(x => x.getClientRects().length && !x.closest('[hidden]'));
+  if (!f.length) return;
+  const i = f.indexOf(document.activeElement);
+  if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); }
+  else if (!e.shiftKey && (i === -1 || i === f.length - 1)) { e.preventDefault(); f[0].focus(); }
+});
 
 // ---------- Chart (hand-rolled SVG: price, Layer 2 overlays, RSI panel) ----------
 //
@@ -6958,7 +7033,7 @@ async function openChart(securityId) {
   $('#drawer').innerHTML = `<button class="close" data-go="#markets">Close</button>
    <span class="eyebrow">${esc(D.classNames[row.cls] || row.cls)}</span><h1>${esc(row.ticker)}</h1>
    <p class="sub">${esc(row.name)}</p><div class="empty">Loading chart…</div>`;
-  $('#drawer').hidden = false; $('#scrim').hidden = false;
+  showDrawer();
 
   // Both outcomes re-render the drawer rather than reaching in and editing the node that happens
   // to hold the loading text. Mutating textContent left the state invisible to anything that
@@ -6996,7 +7071,7 @@ async function openExposureChart(strategyId) {
   $('#drawer').innerHTML = `<button class="close" data-go="#sisyphus">Close</button>
    <span class="eyebrow">Model · ${esc(m.label)}</span><h1>${esc(m.name)}</h1>
    <p class="sub">Net exposure over time, computed at each historical allocation snapshot.</p><div class="empty">Loading chart…</div>`;
-  $('#drawer').hidden = false; $('#scrim').hidden = false;
+  showDrawer();
 
   let hist;
   try {
@@ -7027,7 +7102,7 @@ async function openMacroChart(seriesId) {
   const row = rows.find(r => r.series_id === seriesId); if (!row) return;
   $('#drawer').innerHTML = `<button class="close" data-go="#views">Close</button>
    <span class="eyebrow">${esc(row.fred_code)}</span><h1>${esc(row.name)}</h1><div class="empty">Loading chart…</div>`;
-  $('#drawer').hidden = false; $('#scrim').hidden = false;
+  showDrawer();
 
   let obs;
   try {

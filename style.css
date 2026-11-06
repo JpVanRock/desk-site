@@ -147,6 +147,8 @@ tbody tr.click{cursor:pointer}tbody tr.click:hover{background:var(--panel2)}
 .empty{color:var(--muted);border:1px dashed var(--line);border-radius:8px;padding:14px;margin-top:10px}
 #scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9}
 #drawer{position:fixed;right:0;top:0;bottom:0;width:min(1060px,96vw);background:var(--bg);border-left:1px solid var(--line);z-index:10;overflow:auto;padding:24px;box-shadow:var(--shadow)}
+/* The drawer's heading takes focus when it opens, so a screen reader starts there; it is not a control, so no ring. */
+#drawer [tabindex="-1"]:focus{outline:none}
 .close{float:right;background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px 10px;cursor:pointer}
 .stack{display:flex;height:14px;border-radius:99px;overflow:hidden;margin:10px 0 6px}.stack i{display:block}
 .legend{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--muted);font-size:12px}.legend b{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px}
