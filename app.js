@@ -157,7 +157,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill, quadPit, fastCars, fastAside, liveQuotes, discounting] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill, quadPit, fastCars, fastAside, liveQuotes, discounting, dispatchFail] = await Promise.all([
     qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
     qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
     qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note,on_watchlist'), 'securities'),
@@ -290,6 +290,10 @@ async function load() {
     qSoft(sb.from('live_quotes').select('symbol,security_id,quote_ts,last,prev_close,change_pct'), 'live quotes'),
     // What is the market discounting? Five answers and a headline, nightly (compute-market-discounting).
     qSoft(sb.from('latest_market_discounting').select('as_of,component,sort_order,label,verdict,statement,measures,data_as_of,stale').order('sort_order', { ascending: true }), 'market discounting'),
+    // GitHub refusing Supabase's scheduled starts (private.check_dispatches, hourly). One open row
+    // while it lasts; closed by the first accepted start. Its own query so the ten newest runs above
+    // never push a days-old failure off the page.
+    qSoft(sb.from('data_runs').select('started_at,detail').eq('job', 'github_dispatch').eq('status', 'failed').is('finished_at', null).order('started_at', { ascending: false }).limit(1), 'dispatch failures'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -403,7 +407,7 @@ async function load() {
     flowHist: newest(flowHist || []), flowNext: newest(flowNext || []),
     eventRisk: newest(eventRisk || []), slHist: slHist || [], insCands: insCands || [],
     crMonth: crMonth || [], crBox: crBox || [], crSkill: newest(crSkill || []), quadPit: quadPit || [],
-    fastCars: fastCars || [], fastAside: fastAside || [], liveQuotes: liveQuotes || [], discounting: discounting || [],
+    fastCars: fastCars || [], fastAside: fastAside || [], liveQuotes: liveQuotes || [], discounting: discounting || [], dispatchFail: (dispatchFail || [])[0] || null,
     // The desk's own macro loadings, per security with the asset class as fallback -- the same
     // lookup the models' net exposure uses -- so the rebalance factor map can weigh a ticker the
     // model does not hold yet.
@@ -473,7 +477,15 @@ function route() {
     <p class="sub" style="margin:6px 0 0">${coreGone.length === 1 ? 'A table the dashboard is built on' : `${coreGone.length} tables the dashboard is built on`} could not be read, so panels below may be empty or wrong rather than simply quiet. <b>This is usually the nightly job running</b> — it reads the whole price history several times and the database is busy for a few minutes. Each query was already retried twice.</p>
     <ul style="margin:8px 0 10px 18px;color:var(--muted);font-size:12px">${coreGone.map(f => `<li>${esc(f)}</li>`).join('')}</ul>
     <button class="btn" data-action="reload">Reload</button></div>`;
-  $('#app').innerHTML = banner + (page === 'gail' ? gail(arg) : page === 'sandbox' ? sandbox(arg || '') : (pages[page] || sisyphus)());
+  // THE SCHEDULER STOPPED. When GitHub refuses Supabase's scheduled starts -- almost always an
+  // expired dispatch token -- the 15-minute quotes stop and the nightly waits for GitHub's 03:00 UTC
+  // fallback, and nothing else on the page would say so. Shown on every page until a start is
+  // accepted again (bug review 2026-11-06).
+  const df = D.dispatchFail, dd = df ? (df.detail || {}) : null;
+  const dispatchBanner = !df ? '' : `<div class="card" style="margin-bottom:14px;border-left:3px solid var(--warn)">
+    <h2 style="margin:0">GitHub is not accepting the scheduled runs</h2>
+    <p class="sub" style="margin:6px 0 0">Since ${esc(nyStamp(df.started_at))}, ${esc(String(dd.count ?? 'some'))} scheduled start${+dd.count === 1 ? ' was' : 's were'} refused${dd.last_status ? ` (last: HTTP ${esc(String(dd.last_status))}${dd.last_workflow ? ` for ${esc(dd.last_workflow === 'intraday.yml' ? 'the 15-minute quotes' : 'the nightly')}` : ''})` : dd.last_error ? ` (last: ${esc(String(dd.last_error).slice(0, 80))})` : ''}. ${+dd.last_status === 401 || /token/i.test(dd.last_error || '') ? '<b>The dispatch token in Supabase\'s Vault has most likely expired.</b> Regenerate it on GitHub and store it again; ' : ''}Until then the Markets quotes are not refreshed every 15 minutes and the nightly waits for GitHub's 03:00 UTC fallback.</p></div>`;
+  $('#app').innerHTML = banner + dispatchBanner + (page === 'gail' ? gail(arg) : page === 'sandbox' ? sandbox(arg || '') : (pages[page] || sisyphus)());
   if (page === 'stan' && arg) {
     // One route, three drawers. Keeping them on the hash means Escape, the scrim and the back
     // button all close them the same way a model drawer closes.
@@ -6672,6 +6684,14 @@ function modelDashboard(m) {
 
       const anyGap = all.some(r => r.in_gap && r.month > 0);
       const anyPartial = all.some(r => r.is_partial && r.month > 0);
+      // TWO TABLES, POSSIBLY TWO NIGHTS. This grid and the trailing table above are written by
+      // different steps of the nightly, so a page read while it runs can pair this year's annual
+      // figure from last night with a YTD from tonight -- 7.52% against 5.68% on 2026-11-06 (bug
+      // review). Said plainly when their dates differ rather than left to look like a contradiction.
+      const monthlyAsOf = all.map(r => r.as_of).filter(Boolean).sort().at(-1) || null;
+      const trailingAsOf = (D.trailing || []).filter(r => r.strategy_id === m.id).map(r => r.as_of).filter(Boolean).sort().at(-1) || null;
+      const runSplit = monthlyAsOf && trailingAsOf && monthlyAsOf !== trailingAsOf
+        ? `<p class="note" style="color:var(--warn)"><b>These two tables are from different nights:</b> the monthly grid from the ${esc(monthlyAsOf)} run, the trailing returns above from ${esc(trailingAsOf)}. The nightly is probably part-way through, so this year's annual figure and the YTD can disagree until it finishes.</p>` : '';
 
       return `<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-top:26px">
           <h2 style="margin:0">Monthly returns</h2>${tabs}</div>
@@ -6679,7 +6699,7 @@ function modelDashboard(m) {
           <th>Year</th><th class="num">Annual</th>${MON.map(x => `<th class="num">${x}</th>`).join('')}
         </tr></thead><tbody>
         ${years.map(y => `<tr><td><b>${y}</b></td>${cell(at(y, 0), true)}${MON.map((_, i) => cell(at(y, i + 1), false)).join('')}</tr>`).join('')}
-        </tbody></table></div>
+        </tbody></table></div>${runSplit}
         <p class="note"><b>Every box is coloured by the sign of the figure in it</b> — green positive, red negative — on all three tabs. To see which months the model beat ${esc(benchLabel)}, use the Vs. Benchmark tab, where green is a month it came out ahead.${advisoryFee ? ' <b>Model figures are net of the 0.67% advisory fee</b>: the quarterly 0.1675% charge lands in January, April, July and October.' : ''} Annual is that year's own months compounded, and a year missing any month is withheld rather than compounded over the hole.${anyPartial ? ' Italic figures are part-months, where the series begins or ends inside them.' : ''}${anyGap ? ` Months marked <sup style="color:var(--warn)">·</sup> fell inside the stretch with no holdings snapshot — the prices are real, but the weights were carried forward unchanged, so a run of green there is a book nobody rebalanced rather than a decision that worked.` : ''} Hover any cell for its margin over the benchmark.</p>`;
     })();
 
@@ -7877,8 +7897,11 @@ async function rbRunTest() {
       if (left <= 1e-9) return;
       const take = Math.min(r.current * shares[i] / S, left);
       const b = take * (+l.cost_price) / now.v;
-      const days = Math.round((Date.parse(latest) - Date.parse(l.lot_date)) / 864e5);
-      if (days > 365) lt += take - b; else st += take - b;
+      // Long term is held MORE than one year: after the first anniversary, not after 365 days,
+      // which miscounts across a 29 February (bug review 2026-11-06). The same rule as
+      // jobs/lib/fifo.mjs isLongTerm(); a 29 February lot's anniversary rolls to 1 March.
+      const ann = new Date(`${String(l.lot_date).slice(0, 10)}T00:00:00Z`); ann.setUTCFullYear(ann.getUTCFullYear() + 1);
+      if (String(latest).slice(0, 10) > ann.toISOString().slice(0, 10)) lt += take - b; else st += take - b;
       basis += b; left -= take;
       if (!oldest) oldest = l.lot_date;
       if (l.from_opening_book) opening = true;
