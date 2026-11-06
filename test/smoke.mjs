@@ -2144,6 +2144,21 @@ if (!argRoute) {
   await click('[data-newswin]', { newswin: '90' });
   need(app() !== s0, '[sven] switching the news window did not change the table');
 
+  // The NYSE TICK card under the rule matrix: there before the history is, and once it is, its
+  // printed last session is the newest row on file and the chart draws.
+  {
+    const tickCard = s0.includes('NYSE TICK range');
+    need(tickCard, '[sven] the NYSE TICK range card is missing');
+    const ticks = await rest('nyse_tick_daily', 'session_date,high,low,close', '&order=session_date.desc&limit=1').catch(() => null);
+    if (tickCard && Array.isArray(ticks) && ticks.length) {
+      const seg = s0.slice(s0.indexOf('NYSE TICK range'), s0.indexOf('NYSE TICK range') + 6000);
+      need(seg.includes(ticks[0].session_date), `[sven] the TICK card does not show the newest session on file, ${ticks[0].session_date}`);
+      need(seg.includes('<svg'), '[sven] the TICK card has history but drew no chart');
+      need(!/class="(sig|signal)/.test(seg), '[sven] the TICK card marks signals before a rule has been checked');
+      say(` ok  sven tick            -> newest ${ticks[0].session_date}: high ${ticks[0].high}, low ${ticks[0].low}`);
+    } else say(`     sven tick: ${ticks === null ? 'table not readable yet (the collector migration has not run)' : 'no sessions on file yet'}`);
+  }
+
   // -------------------------------------------------------------------------
   // 13. Sven, from Reminiscences of a Stock Operator: the fourth state, the market comparison,
   //     "acting right", the precedent-break flag and the quiet tape.
