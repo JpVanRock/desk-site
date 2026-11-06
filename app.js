@@ -4,6 +4,10 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pct = (x, d = 1) => (x * 100).toFixed(d) + '%';
+// New York's calendar date and clock time for a moment: a delayed quote belongs to the US session
+// it was struck in, whatever time zone the reader is in.
+const nyDate = ts => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ts));
+const nyClock = ts => new Date(ts).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' });
 const sgn = x => (x > 0 ? '+' : '') + x.toFixed(2);
 const CLASS_COLORS = { equities: '#7aa2f7', bonds: '#e0605e', cash: '#3fb27f', commodities_real_assets: '#d6a93b', gold: '#e8c96a', alternatives: '#b28cf0', unclassified: '#5b6577' };
 const cfg = window.DESK_CONFIG;
@@ -150,7 +154,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill, quadPit, fastCars, fastAside] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill, quadPit, fastCars, fastAside, liveQuotes] = await Promise.all([
     qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
     qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
     qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note,on_watchlist'), 'securities'),
@@ -277,6 +281,8 @@ async function load() {
     qAllSoft(() => sb.from('macro_quad_pit').select('as_of,regime,growth_z,inflation_z,n_growth,n_inflation,revised_regime,fwd_spy_63d,fwd_spy_maxdd_63d').order('as_of', { ascending: true }), 'quad point in time'),
     qAllSoft(() => sb.from('latest_fastest_cars').select('as_of,horizon,grp,rank,ticker,name,kind,category,ret,ret_1m,ret_3m,ret_6m,ret_ytd,start_date,vendor_ret,net_assets,dollar_volume,tracked,universe_n').order('horizon', { ascending: true }).order('grp', { ascending: true }).order('rank', { ascending: true }), 'fastest cars'),
     qAllSoft(() => sb.from('latest_fastest_cars_set_aside').select('as_of,ticker,name,kind,reason').order('ticker', { ascending: true }), 'fastest cars set aside'),
+    // Delayed quotes for the Markets grid, replaced every intraday run (jobs/load-live-quotes.mjs).
+    qSoft(sb.from('live_quotes').select('symbol,security_id,quote_ts,last,prev_close,change_pct'), 'live quotes'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -381,7 +387,7 @@ async function load() {
     flowHist: newest(flowHist || []), flowNext: newest(flowNext || []),
     eventRisk: newest(eventRisk || []), slHist: slHist || [], insCands: insCands || [],
     crMonth: crMonth || [], crBox: crBox || [], crSkill: newest(crSkill || []), quadPit: quadPit || [],
-    fastCars: fastCars || [], fastAside: fastAside || [],
+    fastCars: fastCars || [], fastAside: fastAside || [], liveQuotes: liveQuotes || [],
     // The desk's own macro loadings, per security with the asset class as fallback -- the same
     // lookup the models' net exposure uses -- so the rebalance factor map can weigh a ticker the
     // model does not hold yet.
@@ -2236,7 +2242,27 @@ function markets() {
   const withPrice = rows.filter(r => r.price).length;
   const macro = Object.values(D.macroByFactor || {}).flat();
   const mac = code => macro.find(m => m.fred_code === code) || null;
-  const macV = code => { const m = mac(code); return m && m.value !== null ? +m.value : null; };
+  // ---- Delayed quotes (owner's decision, 2026-11-05: everything above the Bond King updates
+  // every 15 minutes in market hours). EODHD's quote, about 15 minutes behind, is shown whenever it
+  // is from a LATER session than the official close the nightly stored -- through the session, and
+  // in the evening until the nightly lands -- and the close otherwise. Each figure says which. The
+  // volatility indices map from their FRED series; yields, spreads and the dollar index have no
+  // live source and stay on FRED's daily figures.
+  const liveBy = Object.fromEntries((D.liveQuotes || []).map(q => [q.symbol, q]));
+  const live = (symbol, closeDate) => { const q = liveBy[symbol]; return q && nyDate(q.quote_ts) > (closeDate || '') ? q : null; };
+  const LIVE_INDEX = { VIXCLS: 'VIX', VXVCLS: 'VIX3M', VXNCLS: 'VXN', GVZCLS: 'GVZ', OVXCLS: 'OVX' };
+  const liveMac = code => { const m = mac(code); return LIVE_INDEX[code] ? live(LIVE_INDEX[code], m && m.obs_date) : null; };
+  const macV = code => { const q = liveMac(code); if (q) return +q.last; const m = mac(code); return m && m.value !== null ? +m.value : null; };
+  const liveUsed = [];
+  // The stamp the page prints is the newest STOCK-MARKET quote: Bitcoin trades through the night,
+  // and its time would make a closed session's grid look as if it had been quoted at 9 pm.
+  const sessionStamp = (() => {
+    const t = (D.liveQuotes || []).filter(q => q.symbol !== 'BTCUSD' && q.symbol !== 'ETHUSD')
+      .filter(q => { const r = rows.find(x => x.ticker === q.symbol); const m = Object.keys(LIVE_INDEX).find(k => LIVE_INDEX[k] === q.symbol);
+        return live(q.symbol, r ? r.price && r.price.as_of : m ? (mac(m) || {}).obs_date : null); })
+      .map(q => q.quote_ts).sort().pop();
+    return t ? nyClock(t) : null;
+  })();
 
   const chg = v => v === null || v === undefined ? '<span style="color:var(--muted)">–</span>'
     : `<span style="color:${v > 0 ? 'var(--pos)' : v < 0 ? 'var(--neg)' : 'var(--muted)'}">${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%</span>`;
@@ -2247,11 +2273,16 @@ function markets() {
   const quote = (tkr, label) => {
     const r = byTicker[tkr];
     if (!r) return '';
+    const q = live(tkr, r.price && r.price.as_of);
+    if (q) liveUsed.push(q);
+    const last = q ? Number(q.last) : r.price ? Number(r.price.close) : null;
+    const day = q ? (q.change_pct === null ? null : +q.change_pct / 100) : r.price ? r.price.day_change_pct : null;
+    const when = q ? `Delayed quote, ${nyClock(q.quote_ts)} ET (EODHD)` : r.price ? `Close ${r.price.as_of}` : 'No price';
     return `<div class="prow click" data-go="#markets/${esc(r.id)}">
       <span class="pname">${esc(label || r.name || tkr)}</span>
       <span class="ptkr">${esc(tkr)}</span>
-      <span class="pval">${r.price ? Number(r.price.close).toFixed(2) : '–'}</span>
-      <span class="pchg">${r.price ? chg(r.price.day_change_pct) : '<span style="color:var(--muted)">–</span>'}</span></div>`;
+      <span class="pval" title="${esc(when)}">${last === null ? '–' : last.toFixed(2)}</span>
+      <span class="pchg">${r.price || q ? chg(day) : '<span style="color:var(--muted)">–</span>'}</span></div>`;
   };
   const panel = (title, body, note) => `<div class="card panel">
     <div class="phead">${esc(title)}</div>${body}${note ? `<p class="note" style="margin:8px 0 0">${note}</p>` : ''}</div>`;
@@ -2264,10 +2295,13 @@ function markets() {
   const iefVol = realisedVol(perfSeries && perfSeries.IEF, 30);
   const spyVol = realisedVol(perfSeries && perfSeries.SPY, 30);
   const mrow = (label, code, fmt = v => v.toFixed(2), tone = null) => {
-    const m = mac(code);
-    const v = m && m.value !== null ? +m.value : null;
+    const m = mac(code), q = liveMac(code);
+    if (q) liveUsed.push(q);
+    const v = macV(code);
+    const stamp = q ? nyClock(q.quote_ts) : m ? m.obs_date.slice(5) : '–';
+    const stampTitle = q ? `Delayed quote, ${nyClock(q.quote_ts)} ET (EODHD)` : m ? `FRED, ${m.obs_date}` : 'not loaded';
     return `<div class="prow"><span class="pname">${esc(label)}</span>
-      <span class="ptkr" title="${esc(m ? m.obs_date : 'not loaded')}">${esc(m ? m.obs_date.slice(5) : '–')}</span>
+      <span class="ptkr" title="${esc(stampTitle)}">${esc(stamp)}</span>
       <span class="pval"${tone ? ` style="color:${tone(v)}"` : ''}>${v === null ? '–' : fmt(v)}</span><span class="pchg"></span></div>`;
   };
   const vrow = (label, v, suffix = '', title = '') => `<div class="prow"><span class="pname"${title ? ` title="${esc(title)}"` : ''}>${esc(label)}</span>
@@ -3027,7 +3061,9 @@ function markets() {
   })();
 
   return `<span class="eyebrow">Allocation model</span><h1>Markets</h1>
-  <p class="sub">The shape of the day — indices, volatility, the curve, sectors and the world — then the watchlist underneath. Prices from the daily job as of ${esc(D.run ? D.run.latest_price_date || '—' : '—')}; ${withPrice} of ${rows.length} carry a close. Click anything for its chart.</p>
+  <p class="sub">The shape of the day — indices, volatility, the curve, sectors and the world — then the watchlist underneath. ${sessionStamp
+    ? `<b>Above the Bond King: delayed quotes, newest ${esc(sessionStamp)} ET</b> (EODHD, about 15 minutes behind; refreshed every 15 minutes in market hours). Yields, spreads and the dollar index are FRED's daily figures. Below, and on every other page: `
+    : ''}prices from the daily job as of ${esc(D.run ? D.run.latest_price_date || '—' : '—')}; ${withPrice} of ${rows.length} carry a close. Click anything for its chart.</p>
   ${eventStrip}${bigOverlay}
   <div class="mkgrid">
     <div class="mkcol">
@@ -9110,6 +9146,24 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#drawe
 $('#theme').addEventListener('click', () => { const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = t; try { localStorage.setItem('theme', t); } catch (e) {} });
 try { const t = localStorage.getItem('theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
 window.addEventListener('hashchange', route);
+// The Markets grid refreshes itself while it is on screen in market hours: every five minutes it
+// asks for the delayed quotes, and redraws only when a newer one has arrived (they land every 15
+// minutes). It never redraws under an open drawer or a sub-route. unref() lets the smoke harness,
+// which runs this file in Node, exit; a browser has no unref and ignores it.
+{
+  const t = setInterval(async () => {
+    if (!D || document.hidden || location.hash !== '#markets') return;
+    const now = new Date(), day = now.getUTCDay(), hour = now.getUTCHours();
+    if (day === 0 || day === 6 || hour < 13 || hour > 22) return;
+    const { data, error } = await sb.from('live_quotes').select('symbol,security_id,quote_ts,last,prev_close,change_pct');
+    if (error || !data) return;
+    const newest = list => list.map(q => q.quote_ts).sort().pop() || '';
+    if (newest(data) === newest(D.liveQuotes || [])) return;
+    D.liveQuotes = data;
+    route();
+  }, 5 * 60 * 1000);
+  t.unref?.();
+}
 
 (async () => {
   const { data: { session } } = await sb.auth.getSession();
