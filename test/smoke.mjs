@@ -98,11 +98,12 @@ const { mkdirSync: mkdirC } = await import('node:fs');
 if (CASSETTE) mkdirC(CASSETTE, { recursive: true });
 const cassetteKey = (url, opts) => createHash('sha1').update(`${url}\n${(opts.headers && (opts.headers.Range || opts.headers.range)) || ''}`).digest('hex');
 let cassetteMisses = 0;
+const cassetteMissed = [];
 async function cassetteFetch(url, opts = {}) {
   if (!CASSETTE || !String(url).startsWith(SUPABASE_URL)) return realFetch(url, opts);
   const file = join(CASSETTE, cassetteKey(url, opts) + '.json');
   if (CASSETTE_MODE === 'replay') {
-    if (!existsSync(file)) { cassetteMisses++; return new Response(JSON.stringify({ message: 'not in the recording' }), { status: 599 }); }
+    if (!existsSync(file)) { cassetteMisses++; if (cassetteMissed.length < 5) cassetteMissed.push(`${String(url).slice(SUPABASE_URL.length).slice(0, 160)}${opts.headers && (opts.headers.Range || opts.headers.range) ? ` [Range ${opts.headers.Range || opts.headers.range}]` : ''}`); return new Response(JSON.stringify({ message: 'not in the recording' }), { status: 599 }); }
     const r = JSON.parse(readFileSync(file, 'utf8'));
     return new Response(r.body, { status: r.status, headers: r.headers });
   }
@@ -3028,6 +3029,32 @@ await go('#markets');
   const srcLine = (mp.match(/Sources: ([^<.]+)/) || [])[1] || '';
   need(!/nasdaq/i.test(srcLine), `[event-risk] the strip cites Nasdaq as a source: "${srcLine}"`);
 
+  // THE REDESIGN (2026-11-06): a time, the consensus and the result beside each event, the next
+  // high-importance event in the header, and a panel with every figure when an event is opened.
+  // What is checked is that the page shows the database's figures and nothing else: the panel
+  // for an event carries its consensus as stored, and an event with no figures shows none.
+  need(/Next( high-importance)?:|Everything on this week's calendar is out/.test(mp), '[event-risk] the strip has no "next event" line');
+  {
+    const latest = await rest('latest_event_risk', '*').catch(e => { eb.push(`latest_event_risk could not be read: ${e.message}`); return []; });
+    const shown = f => Math.abs(+f).toLocaleString('en-US', { maximumFractionDigits: Math.abs(+f) >= 100 ? 1 : Math.abs(+f) >= 10 ? 2 : 3 });
+    const withFigs = latest.filter(r => Array.isArray(r.figures) && r.figures.some(f => !f.withheld && f.estimate !== null && f.estimate !== undefined));
+    if (withFigs.length) {
+      const pick = withFigs.find(r => r.kind !== 'earnings') || withFigs[0];
+      const f = pick.figures.find(x => !x.withheld && x.estimate !== null && x.estimate !== undefined);
+      await click('[data-ev]', { ev: pick.event_id });
+      const opened = app();
+      need(/class="evpanel"/.test(opened), `[event-risk] opening ${pick.title} shows no panel`);
+      need(/Consensus<\/th>/.test(opened), `[event-risk] the panel for ${pick.title} has no consensus column though the row carries figures`);
+      need(opened.includes(shown(f.estimate)), `[event-risk] the panel for ${pick.title} does not show the stored consensus ${f.estimate}`);
+      await click('[data-ev]', { ev: pick.event_id });
+      need(!/class="evpanel"/.test(app()), '[event-risk] the event panel did not close');
+      say(` ok  event figures          -> ${withFigs.length} events carry a consensus; ${pick.title} opens with ${f.label} ${f.estimate}`);
+    } else say('     event figures: none on file yet (the refresh has not run since the migration)');
+    // An arrow compares an actual with a consensus, so there must be events with both for any arrow to be drawn.
+    const both = latest.filter(r => Array.isArray(r.figures) && r.figures.some(x => x.actual !== null && x.actual !== undefined && x.estimate !== null && x.estimate !== undefined && !x.withheld)).length;
+    if (!both && /class="evarr"/.test(mp)) eb.push('an above/below-consensus arrow is drawn, but no event has both an actual and a consensus on file');
+  }
+
   eb = [...new Set(eb)];
   for (const b of eb) errors.push(`[event-risk] ${b}`);
   need(eb.length === 0, `[event-risk] ${eb.length} problem(s) above`);
@@ -3363,7 +3390,7 @@ currentRoute = 'fastest-cars';
 
 // ---------------------------------------------------------------------------
 if (SNAPSHOT) { writeFileSync(SNAPSHOT, JSON.stringify(snapshot, null, 1)); console.log(`Number snapshot: ${Object.values(snapshot).reduce((n, f) => n + f.length, 0)} figures on ${Object.keys(snapshot).length} routes -> ${SNAPSHOT}`); }
-if (cassetteMisses) errors.push(`[cassette] ${cassetteMisses} request(s) were not in the recording: the change asked the database for something new.`);
+if (cassetteMisses) errors.push(`[cassette] ${cassetteMisses} request(s) were not in the recording: the change asked the database for something new. First: ${cassetteMissed.join(' ; ')}`);
 console.log('');
 if (errors.length) {
   console.log(`${errors.length} PROBLEM(S):`); for (const e of errors) console.log('  ' + e);

@@ -275,7 +275,9 @@ async function load() {
     qAllSoft(() => sb.from('flows_calendar_monitor').select('as_of,metric,reading,baseline,t_stat,status,headline,detail').order('metric', { ascending: true }), 'flows monitor'),
     qAllSoft(() => sb.from('flows_calendar_history').select('as_of,value_date,roll_hit,roll_mean,conc_in,conc_out').order('value_date', { ascending: true }), 'flows history'),
     qAllSoft(() => sb.from('flows_calendar_upcoming').select('as_of,seq,window_key,entry_date,exit_date,days_held,month_num,hist_hit,hist_mean,recent_hit').order('seq', { ascending: true }), 'flows upcoming'),
-    qAllSoft(() => sb.from('event_risk').select('as_of,event_id,week_start,week_end,event_date,kind,importance,title,source,detail,symbol,session').order('event_date', { ascending: true }).order('event_id', { ascending: true }), 'event risk'),
+    // The newest week only, every column: '*' rather than a list so the page works on either side of
+    // the migration that added event_time, figures and refreshed_at (20261121100000).
+    qAllSoft(() => sb.from('latest_event_risk').select('*').order('event_date', { ascending: true }).order('event_id', { ascending: true }), 'event risk'),
     qAllSoft(() => sb.from('speed_limit_readings').select('as_of,category,score,light,weight,freshness,n_calls').order('as_of', { ascending: true }), 'speed limit history'),
     qAllSoft(() => sb.from('insurance_candidates').select('ticker,label,sort_order,in_sleeve,note').order('sort_order', { ascending: true }), 'insurance candidates'),
     qAllSoft(() => sb.from('capital_rotation_month').select('month,box_key,label,drawdown,n_months,state').order('month', { ascending: true }).order('box_key', { ascending: true }), 'capital rotation'),
@@ -926,6 +928,32 @@ let bigChart = null;                   // 'perf' | 'vol' -- which chart is open 
 let ladderDetail = null;               // "<strategy_id>|<ticker>" -- the open position detail
 let insEdit = { busy: false, msg: null, tone: null };
 let watchAdd = { busy: false, msg: null, tone: null };
+let evSel = null;                      // the event_id open below the Event Risks week, or null
+// Short names for the strip; the full title is in the open panel and the tooltip.
+const EV_SHORT = {
+  'Employment Situation (payrolls)': 'Payrolls', 'Consumer Price Index': 'CPI', 'Personal Income and Outlays (PCE)': 'PCE and spending',
+  'Gross Domestic Product': 'GDP', 'Retail Sales': 'Retail sales', 'Producer Price Index': 'PPI', 'Job Openings and Labor Turnover (JOLTS)': 'JOLTS',
+  'Employment Cost Index': 'Employment cost', 'Productivity and Costs': 'Productivity', 'Import and Export Price Indexes': 'Import prices',
+  'International Trade in Goods and Services': 'Trade balance', 'New Residential Construction (housing starts)': 'Housing starts',
+  'Durable Goods Orders': 'Durable goods', 'Construction Spending': 'Construction spending', "Manufacturers' Shipments, Inventories and Orders": 'Factory orders',
+  'Advance Economic Indicators (trade)': 'Advance goods trade', 'FOMC decision': 'FOMC decision', 'FOMC minutes': 'FOMC minutes',
+  'ISM Manufacturing PMI': 'ISM manufacturing', 'ISM Services PMI': 'ISM services', 'Initial Jobless Claims': 'Jobless claims', 'Fed speakers': 'Fed speakers',
+};
+const EV_FIG_SHORT = { 'Payrolls': 'NFP', 'Core CPI m/m': 'core m/m', 'Core PCE m/m': 'core m/m', 'GDP q/q annualised': 'q/q ann.', 'Retail sales m/m': 'm/m',
+  'PPI m/m': 'm/m', 'Openings': 'openings', 'ECI q/q': 'q/q', 'Productivity q/q': 'q/q', 'Import prices m/m': 'm/m', 'Trade balance': '',
+  'Starts': 'starts', 'Orders m/m': 'm/m', 'Construction m/m': 'm/m', 'Factory orders m/m': 'm/m', 'Goods trade balance': '', 'Fed funds, upper bound': 'upper',
+  'Initial claims': '', 'PMI': '' };
+// Releases EODHD's calendar would normally carry figures for; their absence is said in the panel.
+const FIGS_EXPECTED = e => e.kind === 'economic' && !/could not be retrieved/.test(e.title);
+// A figure in its unit: 0.3%, 65k, 7.52m, −$105bn. A true minus sign, and no more decimals than
+// the size of the number calls for.
+const evNum = (v, unit) => {
+  if (v === null || v === undefined || !Number.isFinite(+v)) return '–';
+  const n = +v, a = Math.abs(n);
+  const body = a.toLocaleString('en-US', { maximumFractionDigits: a >= 100 ? 1 : a >= 10 ? 2 : 3 });
+  const sg = n < 0 ? '−' : '';
+  return unit === '$bn' ? `${sg}$${body}bn` : unit === '%' ? `${sg}${body}%` : unit === 'k' ? `${sg}${body}k` : unit === 'm' ? `${sg}${body}m` : `${sg}${body}`;
+};
 const SCATTER_PERIODS = ['YTD', '1Y', '3Y', '5Y'];
 
 function positionScatter() {
@@ -2907,10 +2935,22 @@ function markets() {
 
   // ---- Event Risks: the week ahead, across the top of the page ----
   //
+  // REDESIGNED 2026-11-06 (owner's request). An event is a risk because of the distance between
+  // what the market expects and what arrives, and the strip used to show neither: names and dates
+  // only, no time of day, no consensus, no result. Each event now reads on two lines -- when and
+  // what, then the consensus and prior, or once it is out the actual against the consensus -- and
+  // the week's next high-importance event sits in the header with its consensus. Clicking an event
+  // opens every figure for it below the week (hover alone does nothing on a phone).
+  //
+  // THE FIGURES ARE EODHD'S, and only as fresh as the last read: jobs/compute-event-risk.mjs
+  // --refresh rereads them on every intraday run and every nightly, and the header prints when.
+  // Arrows compare the actual with the consensus and say nothing about good or bad: a payrolls
+  // number above consensus and a CPI number above consensus mean different things to different
+  // books. Nothing is coloured as a win or a loss.
+  //
   // EARNINGS: each day's five most widely held or most traded reporters among the 1,000 largest
-  // companies listed on a US exchange (jobs/compute-event-risk.mjs), strongest first, each with its
-  // timing -- before the open, after the close -- because a report after Thursday's close is
-  // Friday's risk.
+  // companies listed on a US exchange, strongest first, each with its timing -- before the open,
+  // after the close -- because a report after Thursday's close is Friday's risk.
   const eventStrip = (() => {
     const ev = D.eventRisk || [];
     if (!ev.length) return '';
@@ -2925,34 +2965,115 @@ function markets() {
       const d = new Date(w.week_start + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + i);
       return d.toISOString().slice(0, 10);
     });
-    const KIND = { central_bank: 'var(--neg)', economic: 'var(--fg)', earnings: 'var(--accent)' };
     const SESS = { 'before the open': 'pre', 'after the close': 'post' };
     const MAX_EARN = 5;
-    return `<div class="card" style="margin-bottom:14px;padding:12px 14px">
-      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px">
-        <span class="eyebrow">Event risks · week of ${esc(w.week_start)}</span>
-        <span style="font-size:11px;color:var(--muted)">${ev.filter(e => e.importance === 'high').length} high · built ${esc(String(w.as_of))}</span></div>
+    const isEarn = e => e.kind === 'earnings' && e.symbol;
+    const short = e => EV_SHORT[e.title] || e.title;
+    const clock = e => e.event_time ? nyClock(e.event_time).replace(/ ([AP])M$/, (m, x) => x === 'A' ? 'a' : 'p') : '';
+    // When an event is over, for ordering and for "next": its published time; an earnings report by
+    // its session (the open, or 4 pm); otherwise the end of its day. Used to sort, never printed.
+    const moment = e => {
+      if (e.event_time) return Date.parse(e.event_time);
+      const base = Date.parse(e.event_date + 'T00:00:00Z');
+      const off = e.session === 'before the open' ? 14.5 : e.session === 'after the close' ? 21 : 23.99;   // hours UTC, near enough in either season
+      return base + off * 3600e3;
+    };
+    const fig = e => (Array.isArray(e.figures) && e.figures.length ? e.figures : null);
+    const released = f => f && f.actual !== null && f.actual !== undefined;
+    const arrow = f => {
+      if (!released(f) || f.estimate === null || f.estimate === undefined) return '';
+      const a = +f.actual, x = +f.estimate;
+      return a > x ? '<span class="evarr" title="above consensus">▲</span>' : a < x ? '<span class="evarr" title="below consensus">▼</span>' : '<span class="evarr" title="in line with consensus">=</span>';
+    };
+    // The second line of an event: the result against consensus once out, else what is expected.
+    const figLine = e => {
+      const fs = fig(e);
+      if (!fs) {
+        if (e.title === 'Fed speakers' && e.detail) return esc(e.detail.replace(/^.*?: /, '').replace(/ ET/g, '').replace(/\.$/, ''));
+        return '';
+      }
+      const f = fs[0];
+      if (f.withheld) return '<span title="' + esc(f.withheld) + '">figures withheld</span>';
+      const l = isEarn(e) ? 'EPS' : (EV_FIG_SHORT[f.label] ?? f.label);
+      const lab = l ? esc(l) + ' ' : '';
+      if (released(f)) return `${lab}<b>${esc(evNum(f.actual, f.unit))}</b>${f.estimate !== null && f.estimate !== undefined ? ` vs ${esc(evNum(f.estimate, f.unit))} ${arrow(f)}` : f.previous !== null && f.previous !== undefined ? ` <span class="evmute">prev ${esc(evNum(f.previous, f.unit))}</span>` : ''}`;
+      const bits = [];
+      if (f.estimate !== null && f.estimate !== undefined) bits.push(`est ${esc(evNum(f.estimate, f.unit))}`);
+      if (f.previous !== null && f.previous !== undefined) bits.push(`<span class="evmute">prev ${esc(evNum(f.previous, f.unit))}</span>`);
+      return bits.length ? lab + bits.join(' · ') : '';
+    };
+    const row = e => {
+      const sel = evSel === e.event_id;
+      const warn = /could not be retrieved/.test(e.title);
+      return `<button class="evrow${sel ? ' sel' : ''}${warn ? ' warn' : ''}${e.kind === 'central_bank' ? ' fed' : ''}" data-ev="${esc(e.event_id)}" aria-expanded="${sel}" title="${esc(`${e.title}${e.detail ? '\n' + e.detail : ''}\nSource: ${e.source}`)}">
+        <span class="evl1">${isEarn(e) ? `${e.importance === 'high' ? '<span class="evdot" aria-label="high importance">●</span>' : ''}<span class="evtk">${esc(e.symbol)}</span>${SESS[e.session] ? ` <span class="evmute">${SESS[e.session]}</span>` : ''}`
+          : `<span class="evt">${esc(clock(e))}</span>${e.importance === 'high' ? '<span class="evdot" aria-label="high importance">●</span>' : ''}<span class="evn${e.importance === 'high' ? ' hi' : ''}">${esc(short(e))}</span>`}</span>
+        ${(() => { const l2 = figLine(e); return l2 ? `<span class="evl2">${l2}</span>` : ''; })()}</button>`;
+    };
+
+    // The week's next high-importance event, from now; failing that, the next of any.
+    const now = Date.now();
+    const ahead = ev.filter(e => !/could not be retrieved/.test(e.title) && moment(e) > now).sort((a, b) => moment(a) - moment(b));
+    const nextUp = ahead.find(e => e.importance === 'high' && !isEarn(e)) || ahead.find(e => e.importance === 'high') || ahead[0] || null;
+    const nextHtml = !nextUp ? `<span class="evmute">Everything on this week's calendar is out.</span>` : (() => {
+      const f = (fig(nextUp) || [])[0];
+      const when = `${DW[dnum(nextUp.event_date)]}${nextUp.event_date === today ? ' (today)' : ''}${nextUp.event_time ? ' ' + nyClock(nextUp.event_time) + ' ET' : isEarn(nextUp) && nextUp.session ? ' ' + nextUp.session : ''}`;
+      const exp = f && !f.withheld && f.estimate !== null && f.estimate !== undefined
+        ? ` · consensus ${esc(isEarn(nextUp) ? 'EPS' : (EV_FIG_SHORT[f.label] || f.label))} ${esc(evNum(f.estimate, f.unit))}${f.previous !== null && f.previous !== undefined ? `, prior ${esc(evNum(f.previous, f.unit))}` : ''}` : '';
+      return `Next${nextUp.importance === 'high' ? ' high-importance' : ''}: <button class="evlink" data-ev="${esc(nextUp.event_id)}">${esc(isEarn(nextUp) ? nextUp.symbol + ' earnings' : short(nextUp))}</button> · ${esc(when)}${exp}`;
+    })();
+
+    // The open event, below the week: every figure, the source and the detail line.
+    const open = evSel ? ev.find(e => e.event_id === evSel) : null;
+    const panel = !open ? '' : (() => {
+      const fs = fig(open) || [];
+      const rowsHtml = fs.filter(f => !f.withheld).map(f => `<tr><td>${esc(isEarn(open) ? 'EPS' : f.label)}${f.period ? ` <span class="evmute">${esc(isEarn(open) ? 'quarter to ' + f.period : f.period)}</span>` : ''}</td>
+        <td class="num">${f.estimate === null || f.estimate === undefined ? '–' : esc(evNum(f.estimate, f.unit))}</td>
+        <td class="num">${f.previous === null || f.previous === undefined ? '–' : esc(evNum(f.previous, f.unit))}</td>
+        <td class="num">${released(f) ? '<b>' + esc(evNum(f.actual, f.unit)) + '</b> ' + arrow(f) : '<span class="evmute">not yet</span>'}</td>
+        ${isEarn(open) ? `<td class="num">${f.surprise_pct === null || f.surprise_pct === undefined ? '–' : (f.surprise_pct > 0 ? '+' : '') + (+f.surprise_pct).toFixed(1) + '%'}</td>` : ''}</tr>`).join('');
+      const withheld = fs.find(f => f.withheld);
+      const when = `${DW[dnum(open.event_date)]} ${open.event_date}${open.event_time ? ', ' + nyClock(open.event_time) + ' ET' : open.session ? ', ' + open.session : ''}`;
+      return `<div class="evpanel" role="region" aria-label="${esc(open.title)}">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap">
+          <b>${esc(open.title)}</b><span class="evmute">${esc(when)} · ${open.importance} importance · source ${esc(open.source)}</span>
+          <button class="evclose" data-ev="${esc(open.event_id)}" aria-label="Close">Close ✕</button></div>
+        ${rowsHtml ? `<table class="evtab"><thead><tr><th></th><th class="num">Consensus</th><th class="num">Prior</th><th class="num">Actual</th>${isEarn(open) ? '<th class="num">Surprise</th>' : ''}</tr></thead><tbody>${rowsHtml}</tbody></table>` : ''}
+        ${withheld ? `<p class="note" style="margin:8px 0 0">${esc(withheld.withheld)}</p>` : ''}
+        ${open.detail ? `<p class="note" style="margin:8px 0 0">${esc(open.detail)}</p>` : ''}
+        ${!fs.length && FIGS_EXPECTED(open) ? `<p class="note" style="margin:8px 0 0">EODHD's calendar carries no consensus or result for this release, so none is shown.</p>` : ''}
+      </div>`;
+    })();
+
+    const refreshed = ev.map(e => e.refreshed_at).filter(Boolean).sort().pop();
+    return `<div class="card evr" style="margin-bottom:14px;padding:12px 14px">
+      <div class="evhead">
+        <div style="min-width:0">
+          <span class="eyebrow">Event risks · week of ${esc(w.week_start)}</span>
+          <div class="evnext">${nextHtml}</div></div>
+        <div class="evmeta">${ev.filter(e => e.importance === 'high').length} high importance<br>${refreshed ? `figures as of ${esc(nyStamp(refreshed))} ET` : 'no figures read yet'} · built ${esc(String(w.as_of))}</div></div>
       <div class="evweek">
         ${days.map(d => {
-          const list = (byDay.get(d) || []);
-          const isToday = d === today;
-          return `<div style="border:1px solid ${isToday ? 'var(--fg)' : 'var(--line)'};border-radius:5px;padding:6px 8px;min-height:62px">
-            <div style="font-size:10px;color:${isToday ? 'var(--fg)' : 'var(--muted)'};text-transform:uppercase;letter-spacing:.04em">${DW[dnum(d)]} ${esc(d.slice(8))}${isToday ? ' · today' : ''}</div>
-            ${!list.length ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">—</div>'
-              : (() => {
-                  const macro = list.filter(e => e.kind !== 'earnings' || !e.symbol);
-                  const earn = list.filter(e => e.kind === 'earnings' && e.symbol);
-                  // The job keeps each day's five most widely held or most traded reporters and puts
-                  // their order in the event id, so the day reads strongest first.
-                  const shown = earn.slice().sort((a, b) => String(a.event_id).localeCompare(String(b.event_id))).slice(0, MAX_EARN);
-                  const rest = earn.slice().filter(e => !shown.includes(e));
-                  const line = e => `<div style="font-size:11px;margin-top:4px;line-height:1.3;color:${KIND[e.kind] || 'var(--fg)'}" title="${esc(`${e.title}\n${e.source}${e.detail ? '\n' + e.detail : ''}`)}">
-                    ${e.importance === 'high' ? '<b>' : ''}${esc(e.symbol ? e.symbol : e.title)}${e.importance === 'high' ? '</b>' : ''}${e.symbol && SESS[e.session] ? ` <span style="color:var(--muted);font-size:10px">${SESS[e.session]}</span>` : ''}</div>`;
-                  return macro.map(line).join('') + shown.map(line).join('')
-                    + (rest.length ? `<div style="font-size:10.5px;margin-top:4px;color:var(--muted)" title="${esc(rest.map(e => `${e.symbol} ${e.session || ''} — ${e.title}`).join('\n'))}">+${rest.length} more report${rest.length === 1 ? '' : 's'}</div>` : '');
-                })()}</div>`;
+          const list = byDay.get(d) || [];
+          const isToday = d === today, past = d < today;
+          const macro = list.filter(e => !isEarn(e)).sort((a, b) => moment(a) - moment(b) || (a.importance === 'high' ? -1 : 1) - (b.importance === 'high' ? -1 : 1));
+          // The job keeps each day's five strongest reporters and puts their order in the event id.
+          const earn = list.filter(isEarn).sort((a, b) => String(a.event_id).localeCompare(String(b.event_id)));
+          const shown = earn.slice(0, MAX_EARN), rest = earn.slice(MAX_EARN);
+          return `<section class="evday${isToday ? ' today' : ''}${past ? ' past' : ''}${!list.length ? ' empty' : ''}" aria-label="${DW[dnum(d)]} ${d}">
+            <h3>${DW[dnum(d)]} ${esc(String(+d.slice(8)))}${isToday ? ' · today' : ''}</h3>
+            ${!list.length ? '<div class="evmute" style="font-size:11px">nothing scheduled</div>' : ''}
+            ${macro.map(row).join('')}
+            ${shown.length ? `<div class="evsub">Earnings</div>${shown.map(row).join('')}` : ''}
+            ${rest.length ? `<div class="evmute" style="font-size:10.5px;margin-top:4px" title="${esc(rest.map(e => `${e.symbol} ${e.session || ''} — ${e.title}`).join('\n'))}">+${rest.length} more report${rest.length === 1 ? '' : 's'}</div>` : ''}
+          </section>`;
         }).join('')}</div>
-      <p class="note" style="margin-top:10px;font-size:11px"><b>Economic releases, central-bank decisions, and each day's five most widely held or most traded companies reporting</b> — ranked among the 1,000 largest companies listed on a US exchange by market cap (how widely held) or dollars traded a day (how popular), whichever is higher. In <span style="color:var(--accent)">blue</span> by ticker, marked pre (before the open) or post (after the close); bold are the week's ten highest. Hover any line for both ranks. Sources: ${esc([...new Set(ev.map(e => e.source))].join(', '))}. Rebuilt Sunday mornings.</p>
+      ${panel}
+      <div class="evkey"><span><span class="evdot">●</span> high importance</span><span>est = consensus · prev = prior</span><span>▲ ▼ = the actual above or below consensus, not better or worse</span><span>pre / post = before the open / after the close</span><span>times New York</span></div>
+      <details class="evhow"><summary>What is on this strip, and from where</summary>
+        <p class="note" style="margin:8px 0 0"><b>Economic releases, central-bank decisions, and each day's five most widely held or most traded companies reporting</b> — ranked among the 1,000 largest companies listed on a US exchange by market cap (how widely held) or dollars traded a day (how popular), whichever is higher. Which releases appear, and on which day, comes from the agencies' own calendars (BLS, BEA, Census, the Federal Reserve); the time, the consensus, the prior and the actual come from EODHD's economic calendar, as do the ISM surveys, weekly jobless claims, the FOMC minutes and the Fed's scheduled speakers, which none of those calendars carries. Earnings and their EPS figures are EODHD's; where a listing's EPS is not in dollars (some foreign shares are quoted in their home currency) the figures are withheld rather than shown wrong.</p>
+        <p class="note" style="margin:6px 0 0">The week is rebuilt Sunday mornings; the figures are reread every fifteen minutes in market hours and again after the close, and the time of the last read is in the header. Sources: ${esc([...new Set(ev.map(e => e.source))].join(', '))}</p>
+      </details>
     </div>`;
   })();
 
@@ -8625,6 +8746,16 @@ document.addEventListener('click', e => {
   if (h) fastHorizon = h.dataset.fasth; else fastLev = !fastLev;
   if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
 });
+// Event Risks: open or close an event's figures below the week.
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-ev]');
+  if (!t) return;
+  const id = t.dataset.ev;
+  evSel = evSel === id ? null : id;
+  if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
+  // Keep the keyboard where it was: the redraw replaced the button that had focus.
+  try { const again = document.querySelector(`.evrow[data-ev="${CSS.escape(id)}"]`); if (again) again.focus({ preventScroll: true }); } catch (_) {}
+});
 // Watchlist sleeve tabs.
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-watchtab]');
@@ -9202,12 +9333,18 @@ window.addEventListener('hashchange', route);
     if (active && active.closest && active.closest('#app input, #app select, #app textarea')) return;
     const now = new Date(), day = now.getUTCDay(), hour = now.getUTCHours();
     if (day === 0 || day === 6 || hour < 13 || hour > 22) return;
-    const { data, error } = await sb.from('live_quotes').select('symbol,security_id,quote_ts,last,prev_close,change_pct');
-    if (error || !data) return;
-    const newest = list => list.map(q => q.quote_ts).sort().pop() || '';
-    if (newest(data) === newest(D.liveQuotes || [])) return;
-    D.liveQuotes = data;
-    route();
+    // The quotes, and the Event Risks figures (consensus revisions, and each release's actual once
+    // it is out): both are rewritten by the intraday run, so both are asked for, and the page is
+    // redrawn once if either has moved.
+    const [quotes, events] = await Promise.all([
+      sb.from('live_quotes').select('symbol,security_id,quote_ts,last,prev_close,change_pct'),
+      sb.from('latest_event_risk').select('*').order('event_date', { ascending: true }).order('event_id', { ascending: true }),
+    ]);
+    let moved = false;
+    const newest = (list, k) => list.map(q => q[k]).filter(Boolean).sort().pop() || '';
+    if (!quotes.error && quotes.data && newest(quotes.data, 'quote_ts') !== newest(D.liveQuotes || [], 'quote_ts')) { D.liveQuotes = quotes.data; moved = true; }
+    if (!events.error && events.data && events.data.length && newest(events.data, 'refreshed_at') !== newest(D.eventRisk || [], 'refreshed_at')) { D.eventRisk = events.data; moved = true; }
+    if (moved) route();
   }, 5 * 60 * 1000);
   t.unref?.();
 }
