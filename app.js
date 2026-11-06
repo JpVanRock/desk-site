@@ -423,6 +423,8 @@ function route() {
   // Briefs and the Inbox are shelves in Gail's Library now. Both were header tabs for months, so
   // these are among the likeliest hashes to be sitting in a note.
   if (page === 'briefs' || page === 'inbox') { location.replace('#gail/' + page); return; }
+  // Brakes was renamed Brembo on the owner's instruction, 2026-11-05. The old hash still lands.
+  if (page === 'brakes') { location.replace('#brembo' + (arg ? '/' + arg : '')); return; }
   document.querySelectorAll('#nav a, .tools a.navlink').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   // The collapsed menu names the tab it is standing in for, and closes itself on every navigation
   // -- including a hash change the user made some other way, which is why it lives here and not
@@ -433,7 +435,7 @@ function route() {
   closeDrawer();
   // Keyed lookup, so this order is cosmetic rather than load-bearing — but it is kept in step
   // with the nav in index.html so the two read the same way.
-  const pages = { markets, sisyphus, stan, brakes, annie, adam, neil, sven, kate, gail, sandbox, admin };
+  const pages = { markets, sisyphus, stan, annie, adam, neil, sven, kate, gail, brembo: brakes, sandbox, admin };
   // A HOLLOW DASHBOARD MUST NOT LOOK LIKE A REAL ONE.
   //
   // Making the core tables soft stopped one busy minute in the database from blanking the whole
@@ -1913,7 +1915,7 @@ function stan(mode = 'dashboard') {
 
   // ---- the Speed Limit's own history ----
   //
-  // THE FLAT LINE IS THE POINT. This is on Brakes rather than Stan because it is a diagnostic
+  // THE FLAT LINE IS THE POINT. This is on Brembo rather than Stan because it is a diagnostic
   // about the signal, not an instruction: for the first twenty recorded days the master score was
   // -0.1303 to four decimal places, every day, and a current value shown without this history
   // reads as a reading when it was a constant. The cause was structural -- nine standing analyst
@@ -1952,7 +1954,7 @@ function stan(mode = 'dashboard') {
     </div>`;
   })();
 
-  if (mode === 'brakes') return `<span class="eyebrow">Risk</span><h1>Brakes</h1>
+  if (mode === 'brakes') return `<span class="eyebrow">Risk</span><h1>Brembo</h1>
    <p class="sub">Everything behind the brake, kept off Stan's dashboard because none of it is a decision for today: the cost the old caution rule actually carried, the sleeve candidates and how each was chosen, the stress programme including the tests the brake failed, and what every instrument paid at past troughs. <b>Every window here is a past one</b> — read it to understand why the prescription says what it says, not to decide what to do this morning. The prescription itself, and whether the book is in line with it, is on <a href="#stan">Stan</a>.</p>
    ${slTrend}${cautionCard}${sleeveCard}${stressCard}${insCard}${docsCard}`;
 
@@ -2069,7 +2071,7 @@ function stan(mode = 'dashboard') {
   })();
 
   return `<span class="eyebrow">Risk</span><h1>Stan</h1>
-   <p class="sub">Where the risk sits across the eight models, what is flagged, and what the risk figures cannot say. The backtests and episode studies behind the brake live on <a href="#brakes">Brakes</a>.</p>
+   <p class="sub">Where the risk sits across the eight models, what is flagged, and what the risk figures cannot say. The backtests and episode studies behind the brake live on <a href="#brembo">Brembo</a>.</p>
    <div class="kpis" style="grid-template-columns:repeat(5,1fr)">
     <div class="card kpi click" data-go="#stan/speed-limit" style="cursor:pointer" title="Open the master Speed Limit and how each model sits against it">
       <span class="eyebrow">Speed Limit</span>
@@ -8478,7 +8480,7 @@ document.addEventListener('keydown', e => {
 // so the next run stops measuring it; every insurance_value row already computed stays where it
 // is. Adding the ticker back restores it without recomputing the episode record, which is the
 // expensive part.
-const insRerender = () => { if ((location.hash || '').startsWith('#brakes')) $('#app').innerHTML = brakes(); };
+const insRerender = () => { if ((location.hash || '').startsWith('#brembo')) $('#app').innerHTML = brakes(); };
 document.addEventListener('click', async e => {
   const t = e.target.closest('[data-insdel]');
   if (!t || insEdit.busy) return;

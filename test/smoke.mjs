@@ -346,7 +346,7 @@ function figuresOf(html) {
   return out;
 }
 const routes = argRoute ? [argRoute] : [
-  '#markets', '#sisyphus', '#stan', '#annie', '#adam', '#neil', '#sven', '#kate', '#gail', '#gail/inbox', '#gail/briefs', '#sandbox', '#admin',
+  '#markets', '#sisyphus', '#stan', '#annie', '#adam', '#neil', '#sven', '#kate', '#gail', '#gail/inbox', '#gail/briefs', '#brembo', '#sandbox', '#admin',
   strat ? `#sisyphus/${strat.id}` : null,
   strat ? `#stan/${strat.id}` : null,
   sec ? `#markets/${sec.id}` : null,
@@ -394,7 +394,7 @@ if (!argRoute) {
   //    sitting in a bookmark, and without the redirect every stale link looks like a deleted page.
   // -------------------------------------------------------------------------
   currentRoute = 'legacy-hashes';
-  for (const [from, to, h1] of [['#overview', '#sisyphus', 'Sisyphus'], ['#decisions', '#annie', 'Decision Coach'], ['#playground', '#admin', 'Admin'], ['#views', '#admin', 'Admin'], ['#sources', '#admin', 'Admin'], ['#agents', '#admin', 'Admin'], ['#status', '#admin', 'Admin'], ['#briefs', '#gail/briefs', 'Gail'], ['#inbox', '#gail/inbox', 'Gail'], ['#signals', '#admin', 'Admin']]) {
+  for (const [from, to, h1] of [['#brakes', '#brembo', 'Brembo'], ['#overview', '#sisyphus', 'Sisyphus'], ['#decisions', '#annie', 'Decision Coach'], ['#playground', '#admin', 'Admin'], ['#views', '#admin', 'Admin'], ['#sources', '#admin', 'Admin'], ['#agents', '#admin', 'Admin'], ['#status', '#admin', 'Admin'], ['#briefs', '#gail/briefs', 'Gail'], ['#inbox', '#gail/inbox', 'Gail'], ['#signals', '#admin', 'Admin']]) {
     await go(from);
     const ok = location.hash === to && new RegExp(`<h1>${h1}</h1>`).test(app());
     say(` ok  ${from} -> ${location.hash}${ok ? '' : '  DID NOT REDIRECT'}`);
@@ -1246,7 +1246,7 @@ if (!argRoute) {
     // Stan's dashboard, and the order matters because the nav doubles as the mobile menu.
     // Signals is a section of Admin now, and Admin sits at the far right beside the theme toggle,
     // outside the centred tab row.
-    const want = ['markets', 'sisyphus', 'stan', 'brakes', 'annie', 'adam', 'neil', 'sven', 'kate', 'gail', 'sandbox'];
+    const want = ['markets', 'sisyphus', 'stan', 'annie', 'adam', 'neil', 'sven', 'kate', 'gail', 'brembo', 'sandbox'];
     need(/<div class="tools"><a href="#admin" class="navlink">Admin<\/a><button id="theme"/.test(nav), '[nav] Admin is not beside the theme toggle');
     need(!/#signals/.test(nav), '[nav] a Signals tab is still in the header');
     say(` ok  nav order              -> ${order.join(' · ')}`);
@@ -2278,7 +2278,7 @@ if (!argRoute) {
     need(firm.length > 12, `[scoreboard] only ${firm.length} firm months — the record should span years`);
     // The scoreboard moved to Research with the other backtests: it prices a rule the desk has
     // already replaced, which is worth auditing and is not a decision for this morning.
-    await go('#brakes');
+    await go('#brembo');
     need(/What has caution cost\?/.test(app()), '[scoreboard] the card is not on the Brakes page');
     await go('#stan');
     for (const r of bd.filter(x => x.scope === 'posture')) {
@@ -2335,7 +2335,7 @@ if (!argRoute) {
   // -------------------------------------------------------------------------
   currentRoute = 'insurance';
   // Moved to the Research tab: this is a backtest, not a decision for today.
-  await go('#brakes');
+  await go('#brembo');
   {
     const iv = app();
     const rows = await rest('latest_insurance_value', 'instrument,label,window_key,n_days,n_stress,drawdowns_seen,crash_1pct,carry_annual,free_carry,payoff_per_carry,corr_calm,corr_stress,corr_shift,episodes,episodes_helped,verdict');
@@ -2406,7 +2406,7 @@ if (!argRoute) {
   // -------------------------------------------------------------------------
   currentRoute = 'sleeve-mix';
   // Moved to the Research tab: this is a backtest, not a decision for today.
-  await go('#brakes');
+  await go('#brembo');
   {
     const sv2 = app();
     const rows = await rest('latest_sleeve_candidates', 'sleeve_key,label,composition,window_from,n_days,episodes_covered,sleeve_carry,funding_ratio,iso_weight,iso_equity,iso_real_cagr,iso_max_dd,baseline_dd,baseline_real_cagr,uplift,curve,plateau_from,plateau_to,episodes,episodes_helped,loo_rank,loo_chosen,verdict');
@@ -2475,7 +2475,7 @@ if (!argRoute) {
   // -------------------------------------------------------------------------
   currentRoute = 'stress';
   // Moved to the Research tab: this is a backtest, not a decision for today.
-  await go('#brakes');
+  await go('#brembo');
   {
     const sp = app();
     const rows = await rest('latest_stress_results', 'family,scenario,subject,value,value_kind,baseline,delta,p05,p50,p95,fit_r2,extrapolated,extrapolation,verdict,headline');
@@ -3215,7 +3215,7 @@ currentRoute = 'brake-candidates';
   if (probe.status === 404) {
     errors.push('[brake-candidates] insurance_candidates does not exist — migration 20261109100000_insurance_candidates.sql has not been applied');
   } else {
-    await go('#brakes');
+    await go('#brembo');
     const bp = app();
     const cands = await rest('insurance_candidates', 'ticker,label,sort_order,in_sleeve');
     need(cands.length > 0, '[brake-candidates] the table exists but is empty, so the job silently falls back to its built-in list');
