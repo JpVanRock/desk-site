@@ -1788,10 +1788,20 @@ if (!argRoute) {
       if (!(+r.crowd_score >= 0 && +r.crowd_score <= 100)) bad.push(`${r.crowd_rank} scores ${r.crowd_score}, outside 0-100`);
       if (r.loop_state === 'cold' && +r.stretch_pctile >= 0.70) bad.push(`rank ${r.crowd_rank} is cold at the ${(+r.stretch_pctile * 100).toFixed(0)}% stretch mark`);
       if ((r.loop_state === 'running' || r.loop_state === 'crowding') && !(+r.up_down_volume > 1)) bad.push(`rank ${r.crowd_rank} is ${r.loop_state} with volume favouring down days`);
-      // A cash substitute scoring high is how the first version of this job ranked BIL among the
-      // ten most crowded names on the desk: six-month return over volatility is enormous for a
-      // bill fund and means nothing. The vol floor is meant to keep them out entirely.
-      if (Math.abs(+r.momentum_6m) < 0.005 && +r.crowd_score > 60) bad.push(`rank ${r.crowd_rank} is crowded on a six-month move of ${(+r.momentum_6m * 100).toFixed(2)}%`);
+    }
+    // A cash substitute scoring high is how the first version of this job ranked BIL among the ten
+    // most crowded names on the desk: six-month return over volatility is enormous for a bill fund
+    // and means nothing. The vol floor is meant to keep them out entirely, so that is what is
+    // checked: no security in the cash class is ranked at all. (This used to be "a flat six-month
+    // move with a score above 60", which on 2026-11-06 flagged two real, volatile funds that happened
+    // to be flat over six months and scored on attention. Such names are listed below, as
+    // information, not as a failure.)
+    {
+      const cashIds = new Set((await rest('securities', 'id,asset_class_id,asset_classes(slug)', ''))
+        .filter(x => x.asset_classes && x.asset_classes.slug === 'cash').map(x => x.id));
+      for (const r of rows) if (cashIds.has(r.security_id)) bad.push(`rank ${r.crowd_rank} is a cash-class security, which the volatility floor should have excluded`);
+      const flat = rows.filter(r => Math.abs(+r.momentum_6m) < 0.005 && +r.crowd_score > 60);
+      if (flat.length) say(`     kate flat but high      -> ${flat.map(r => `rank ${r.crowd_rank} (${(+r.momentum_6m * 100).toFixed(2)}% over six months, score ${(+r.crowd_score).toFixed(0)})`).join(', ')}`);
     }
     bad = [...new Set(bad)];
     for (const b of bad) errors.push(`[kate] ${b}`);
@@ -1893,11 +1903,26 @@ if (!argRoute) {
     }
     // A failing classification with a workable blend must arrive with that blend already
     // selected, and must still be waiting on Update rather than saved.
+    //
+    // Read in the drawer of a model that HOLDS such a fund. It was read in the default model's drawer
+    // whatever the fund, so on 2026-11-06, when the only fund needing a blend was held by another
+    // model alone, it failed without the page being wrong.
     {
-      const needsFix = fits.filter(f => f.passes !== true && f.suggested_mix);
-      const selectedSuggestions = (d.match(/<option value="custom:[^"]*" selected>Suggested —/g) || []).length;
-      const banner = /suggested blend(s)? have been selected for you|suggested blend has been selected for you/.test(d);
-      say(` ok  blend auto-select      -> ${needsFix.length} funds need a blend, ${selectedSuggestions} pre-selected in this drawer`);
+      const needsFixAll = fits.filter(f => f.passes !== true && f.suggested_mix);
+      let dd = d, holder = strat.name;
+      if (needsFixAll.length) {
+        const held = await rest('current_holdings', 'strategy_id,security_id', `&security_id=in.(${needsFixAll.map(f => f.security_id).join(',')})`);
+        const here = new Set(held.filter(h => h.strategy_id === strat.id).map(h => h.security_id));
+        if (!here.size && held.length) {
+          const other = (await rest('strategies', 'id,name', `&id=eq.${held[0].strategy_id}`))[0];
+          if (other) { await go('#stan/' + other.id); dd = drawer(); holder = other.name; }
+        }
+      }
+      const heldHere = new Set((await rest('current_holdings', 'security_id', `&strategy_id=eq.${(await rest('strategies', 'id', `&name=eq.${encodeURIComponent(holder)}`))[0]?.id}`)).map(h => h.security_id));
+      const needsFix = needsFixAll.filter(f => heldHere.has(f.security_id));
+      const selectedSuggestions = (dd.match(/<option value="custom:[^"]*" selected>Suggested —/g) || []).length;
+      const banner = /suggested blend(s)? have been selected for you|suggested blend has been selected for you/.test(dd);
+      say(` ok  blend auto-select      -> ${needsFixAll.length} funds need a blend, ${needsFix.length} held by ${holder}, ${selectedSuggestions} pre-selected in its drawer`);
       if (needsFix.length) {
         need(selectedSuggestions > 0, '[classify-vol] a suggested blend exists but none is pre-selected');
         need(banner, '[classify-vol] blends were pre-selected without saying so');
