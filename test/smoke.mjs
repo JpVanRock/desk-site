@@ -98,11 +98,12 @@ const { mkdirSync: mkdirC } = await import('node:fs');
 if (CASSETTE) mkdirC(CASSETTE, { recursive: true });
 const cassetteKey = (url, opts) => createHash('sha1').update(`${url}\n${(opts.headers && (opts.headers.Range || opts.headers.range)) || ''}`).digest('hex');
 let cassetteMisses = 0;
+const cassetteMissed = [];
 async function cassetteFetch(url, opts = {}) {
   if (!CASSETTE || !String(url).startsWith(SUPABASE_URL)) return realFetch(url, opts);
   const file = join(CASSETTE, cassetteKey(url, opts) + '.json');
   if (CASSETTE_MODE === 'replay') {
-    if (!existsSync(file)) { cassetteMisses++; return new Response(JSON.stringify({ message: 'not in the recording' }), { status: 599 }); }
+    if (!existsSync(file)) { cassetteMisses++; if (cassetteMissed.length < 5) cassetteMissed.push(`${String(url).slice(SUPABASE_URL.length).slice(0, 160)}${opts.headers && (opts.headers.Range || opts.headers.range) ? ` [Range ${opts.headers.Range || opts.headers.range}]` : ''}`); return new Response(JSON.stringify({ message: 'not in the recording' }), { status: 599 }); }
     const r = JSON.parse(readFileSync(file, 'utf8'));
     return new Response(r.body, { status: r.status, headers: r.headers });
   }
@@ -982,6 +983,34 @@ if (!argRoute) {
   }
 
   // -------------------------------------------------------------------------
+  // 9b. What is the market discounting? The caption under the Speed Limit and the field beneath
+  //     the row (owner's request, 2026-11-05). What the page says must be what the job wrote: the
+  //     headline's short answer in the caption, every question's answer in the field. Until the
+  //     first reading exists the caption is the Speed Limit's own wording, and there is no field.
+  // -------------------------------------------------------------------------
+  currentRoute = 'stan-discounting';
+  await go('#stan');
+  {
+    const page = app();
+    const h = s_ => String(s_ ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const rows = await rest('latest_market_discounting', 'as_of,component,verdict,statement,stale').catch(e => { errors.push(`[stan-discounting] latest_market_discounting could not be read: ${e.message}`); return []; });
+    const head = rows.find(r => r.component === 'headline');
+    if (rows.length) {
+      need(page.includes('What is the market discounting?'), '[stan-discounting] the field is missing though a reading exists');
+      if (head && head.verdict) need(page.includes(`discounting <strong class=\"kcap\">${h(head.verdict)}</strong>`), `[stan-discounting] the Speed Limit caption does not carry the headline answer "${head.verdict}"`);
+      for (const r of rows.filter(x => x.component !== 'headline')) {
+        need(page.includes(h(r.statement)), `[stan-discounting] the ${r.component} answer on the page is not the one stored`);
+        if (r.verdict) need(page.includes(`<b>${h(r.verdict)}</b>`), `[stan-discounting] the ${r.component} verdict "${r.verdict}" is not shown`);
+      }
+      say(` ok  stan discounting       -> ${head && head.verdict ? `"${head.verdict}"` : 'no headline'} as of ${rows[0].as_of}; ${rows.filter(r => r.stale).length} stale of ${rows.length}`);
+    } else {
+      need(!page.includes('What is the market discounting?'), '[stan-discounting] the field is drawn with nothing stored');
+      need(!/discounting <strong/.test(page), '[stan-discounting] the caption claims a discounting answer with nothing stored');
+      say('     stan discounting: no reading stored yet (the migration or the first nightly has not run)');
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // 9c. Scatter: a position that lost money is red, in the dot and the ticker.
   // -------------------------------------------------------------------------
   currentRoute = 'scatter-colour';
@@ -1610,12 +1639,21 @@ if (!argRoute) {
     const panelNames = [...app().split('Every tracked security')[0].matchAll(/<span class="pname"[^>]*>([^<]+)</g)].map(m => m[1]);
     need(!panelNames.includes('Australia') && !panelNames.includes('South Africa'), '[markets] Australia or South Africa is still quoted in a panel');
     need(/EWA/.test(app()) && /EZA/.test(app()), '[markets] EWA or EZA has been dropped from the universe table, which would degrade the geography fits');
-    // The risk block, and the honesty about MOVE.
+    // The risk block. MOVE is quoted now that EODHD carries it (2026-11-06), and only ever as the
+    // database holds it: the delayed quote when there is one, else the newest daily close, else a dash.
     need(/CBOE VIX/.test(app()), '[markets] the VIX is missing from the risk panel');
     for (const want of ['VIX, 3-month', 'VIX / VIX3M', 'Nasdaq 100 (VXN)', 'Russell 2000 (RVX)', 'Crude oil (OVX)', 'Gold (GVZ)', 'High yield OAS'])
       need(app().includes(want), `[markets] the risk panel is missing ${want}`);
-    need(/MOVE is not here/.test(app()), '[markets] the page does not say why MOVE is absent');
-    need(!panelNames.some(x => /\bMOVE\b/.test(x)), '[markets] something is being quoted under the MOVE name, which no connected source publishes');
+    {
+      need(app().includes('ICE BofA MOVE (Treasuries)'), '[markets] the risk panel has no MOVE row');
+      const shownMove = (app().match(/ICE BofA MOVE \(Treasuries\)<\/span>[\s\S]*?<span class="pval"[^>]*>([^<]+)</) || [])[1];
+      const mvDaily = (await rest('current_macro_readings', 'fred_code,value,obs_date', '&fred_code=eq.MOVE'))[0] || null;
+      const mvLive = (await rest('live_quotes', 'symbol,last,quote_ts', '&symbol=eq.MOVE'))[0] || null;
+      const allowed = ['–', mvDaily && mvDaily.value !== null ? (+mvDaily.value).toFixed(1) : null, mvLive ? (+mvLive.last).toFixed(1) : null].filter(Boolean);
+      need(shownMove !== undefined && allowed.includes(shownMove.trim()), `[markets] MOVE shows "${shownMove}", which is neither the stored close (${mvDaily ? mvDaily.value : 'none'}), the delayed quote (${mvLive ? mvLive.last : 'none'}) nor a dash`);
+      if (!mvDaily && !mvLive) need(shownMove && shownMove.trim() === '–', '[markets] MOVE shows a number though none is on file');
+      say(` ok  MOVE                     -> panel ${shownMove}; stored close ${mvDaily ? `${mvDaily.value} on ${mvDaily.obs_date}` : 'none yet'}, delayed quote ${mvLive ? mvLive.last : 'none'}`);
+    }
     // 2-year yields were asked for in place of 5-year.
     need(/<th class="num">2Y<\/th>/.test(app()), '[markets] the yield table has no 2Y column');
     need(!/<th class="num">5Y<\/th>/.test(app()), '[markets] the yield table still shows 5Y');
@@ -1629,7 +1667,7 @@ if (!argRoute) {
     need(/Could not load price history/.test(m2) === false, '[markets] the performance chart failed to load its history');
     const labelled = ['SPY', 'QQQ', 'IWM', 'DIA'].filter(t => new RegExp(`>${t} [+-]?[\\d.]+%<`).test(m2));
     need(labelled.length >= 3, `[markets] only ${labelled.length} index lines are drawn on the performance chart`);
-    // Realised Treasury volatility is the stand-in for MOVE and has to be a real number.
+    // Realised Treasury volatility sits beside MOVE, and has to be a real number.
     const rv = (m2.match(/Long Treasuries \(TLT\)<\/span>\s*<span class="ptkr"><\/span><span class="pval">([\d.]+)%/) || [])[1];
     need(rv !== undefined, '[markets] realised Treasury volatility did not compute');
     if (rv !== undefined) need(+rv > 2 && +rv < 60, `[markets] realised Treasury volatility of ${rv}% is not a bond fund`);
@@ -1678,7 +1716,9 @@ if (!argRoute) {
     const volLines = ['VIX', 'OVX · oil', 'GVZ · gold', 'VXN · Nasdaq'].filter(l => vol.includes(l));
     need(volLines.length === 4, `[markets] only ${volLines.length} of 4 volatility indices are drawn`);
     need(/TLT realised/.test(vol), '[markets] the realised Treasury line is missing from the volatility panel');
-    need(/MOVE is not here/.test(vol), '[markets] the volatility panel does not say why MOVE is absent');
+    need(/MOVE has its own axis/.test(vol), '[markets] the volatility panel does not explain the MOVE axis');
+    // A MOVE line only where the history is on file; otherwise the panel says it is not loaded yet.
+    need(/MOVE · Treasury implied volatility/.test(vol) || /MOVE · (no history on file yet|not enough closes)/.test(vol), '[markets] the volatility panel neither draws MOVE nor says why it cannot');
     // Levels, not rebased: a line labelled VIX must carry a plausible index level.
     const vixEnd = (vol.match(/>VIX ([\d.]+)</) || [])[1];
     need(vixEnd !== undefined, '[markets] the VIX line has no end label');
@@ -3028,6 +3068,32 @@ await go('#markets');
   const srcLine = (mp.match(/Sources: ([^<.]+)/) || [])[1] || '';
   need(!/nasdaq/i.test(srcLine), `[event-risk] the strip cites Nasdaq as a source: "${srcLine}"`);
 
+  // THE REDESIGN (2026-11-06): a time, the consensus and the result beside each event, the next
+  // high-importance event in the header, and a panel with every figure when an event is opened.
+  // What is checked is that the page shows the database's figures and nothing else: the panel
+  // for an event carries its consensus as stored, and an event with no figures shows none.
+  need(/Next( high-importance)?:|Everything on this week's calendar is out/.test(mp), '[event-risk] the strip has no "next event" line');
+  {
+    const latest = await rest('latest_event_risk', '*').catch(e => { eb.push(`latest_event_risk could not be read: ${e.message}`); return []; });
+    const shown = f => Math.abs(+f).toLocaleString('en-US', { maximumFractionDigits: Math.abs(+f) >= 100 ? 1 : Math.abs(+f) >= 10 ? 2 : 3 });
+    const withFigs = latest.filter(r => Array.isArray(r.figures) && r.figures.some(f => !f.withheld && f.estimate !== null && f.estimate !== undefined));
+    if (withFigs.length) {
+      const pick = withFigs.find(r => r.kind !== 'earnings') || withFigs[0];
+      const f = pick.figures.find(x => !x.withheld && x.estimate !== null && x.estimate !== undefined);
+      await click('[data-ev]', { ev: pick.event_id });
+      const opened = app();
+      need(/class="evpanel"/.test(opened), `[event-risk] opening ${pick.title} shows no panel`);
+      need(/Consensus<\/th>/.test(opened), `[event-risk] the panel for ${pick.title} has no consensus column though the row carries figures`);
+      need(opened.includes(shown(f.estimate)), `[event-risk] the panel for ${pick.title} does not show the stored consensus ${f.estimate}`);
+      await click('[data-ev]', { ev: pick.event_id });
+      need(!/class="evpanel"/.test(app()), '[event-risk] the event panel did not close');
+      say(` ok  event figures          -> ${withFigs.length} events carry a consensus; ${pick.title} opens with ${f.label} ${f.estimate}`);
+    } else say('     event figures: none on file yet (the refresh has not run since the migration)');
+    // An arrow compares an actual with a consensus, so there must be events with both for any arrow to be drawn.
+    const both = latest.filter(r => Array.isArray(r.figures) && r.figures.some(x => x.actual !== null && x.actual !== undefined && x.estimate !== null && x.estimate !== undefined && !x.withheld)).length;
+    if (!both && /class="evarr"/.test(mp)) eb.push('an above/below-consensus arrow is drawn, but no event has both an actual and a consensus on file');
+  }
+
   eb = [...new Set(eb)];
   for (const b of eb) errors.push(`[event-risk] ${b}`);
   need(eb.length === 0, `[event-risk] ${eb.length} problem(s) above`);
@@ -3363,7 +3429,7 @@ currentRoute = 'fastest-cars';
 
 // ---------------------------------------------------------------------------
 if (SNAPSHOT) { writeFileSync(SNAPSHOT, JSON.stringify(snapshot, null, 1)); console.log(`Number snapshot: ${Object.values(snapshot).reduce((n, f) => n + f.length, 0)} figures on ${Object.keys(snapshot).length} routes -> ${SNAPSHOT}`); }
-if (cassetteMisses) errors.push(`[cassette] ${cassetteMisses} request(s) were not in the recording: the change asked the database for something new.`);
+if (cassetteMisses) errors.push(`[cassette] ${cassetteMisses} request(s) were not in the recording: the change asked the database for something new. First: ${cassetteMissed.join(' ; ')}`);
 console.log('');
 if (errors.length) {
   console.log(`${errors.length} PROBLEM(S):`); for (const e of errors) console.log('  ' + e);

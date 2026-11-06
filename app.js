@@ -157,7 +157,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill, quadPit, fastCars, fastAside, liveQuotes] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill, quadPit, fastCars, fastAside, liveQuotes, discounting] = await Promise.all([
     qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
     qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
     qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note,on_watchlist'), 'securities'),
@@ -275,7 +275,9 @@ async function load() {
     qAllSoft(() => sb.from('flows_calendar_monitor').select('as_of,metric,reading,baseline,t_stat,status,headline,detail').order('metric', { ascending: true }), 'flows monitor'),
     qAllSoft(() => sb.from('flows_calendar_history').select('as_of,value_date,roll_hit,roll_mean,conc_in,conc_out').order('value_date', { ascending: true }), 'flows history'),
     qAllSoft(() => sb.from('flows_calendar_upcoming').select('as_of,seq,window_key,entry_date,exit_date,days_held,month_num,hist_hit,hist_mean,recent_hit').order('seq', { ascending: true }), 'flows upcoming'),
-    qAllSoft(() => sb.from('event_risk').select('as_of,event_id,week_start,week_end,event_date,kind,importance,title,source,detail,symbol,session').order('event_date', { ascending: true }).order('event_id', { ascending: true }), 'event risk'),
+    // The newest week only, every column: '*' rather than a list so the page works on either side of
+    // the migration that added event_time, figures and refreshed_at (20261121100000).
+    qAllSoft(() => sb.from('latest_event_risk').select('*').order('event_date', { ascending: true }).order('event_id', { ascending: true }), 'event risk'),
     qAllSoft(() => sb.from('speed_limit_readings').select('as_of,category,score,light,weight,freshness,n_calls').order('as_of', { ascending: true }), 'speed limit history'),
     qAllSoft(() => sb.from('insurance_candidates').select('ticker,label,sort_order,in_sleeve,note').order('sort_order', { ascending: true }), 'insurance candidates'),
     qAllSoft(() => sb.from('capital_rotation_month').select('month,box_key,label,drawdown,n_months,state').order('month', { ascending: true }).order('box_key', { ascending: true }), 'capital rotation'),
@@ -286,6 +288,8 @@ async function load() {
     qAllSoft(() => sb.from('latest_fastest_cars_set_aside').select('as_of,ticker,name,kind,reason').order('ticker', { ascending: true }), 'fastest cars set aside'),
     // Delayed quotes for the Markets grid, replaced every intraday run (jobs/load-live-quotes.mjs).
     qSoft(sb.from('live_quotes').select('symbol,security_id,quote_ts,last,prev_close,change_pct'), 'live quotes'),
+    // What is the market discounting? Five answers and a headline, nightly (compute-market-discounting).
+    qSoft(sb.from('latest_market_discounting').select('as_of,component,sort_order,label,verdict,statement,measures,data_as_of,stale').order('sort_order', { ascending: true }), 'market discounting'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -399,7 +403,7 @@ async function load() {
     flowHist: newest(flowHist || []), flowNext: newest(flowNext || []),
     eventRisk: newest(eventRisk || []), slHist: slHist || [], insCands: insCands || [],
     crMonth: crMonth || [], crBox: crBox || [], crSkill: newest(crSkill || []), quadPit: quadPit || [],
-    fastCars: fastCars || [], fastAside: fastAside || [], liveQuotes: liveQuotes || [],
+    fastCars: fastCars || [], fastAside: fastAside || [], liveQuotes: liveQuotes || [], discounting: discounting || [],
     // The desk's own macro loadings, per security with the asset class as fallback -- the same
     // lookup the models' net exposure uses -- so the rebalance factor map can weigh a ticker the
     // model does not hold yet.
@@ -926,6 +930,32 @@ let bigChart = null;                   // 'perf' | 'vol' -- which chart is open 
 let ladderDetail = null;               // "<strategy_id>|<ticker>" -- the open position detail
 let insEdit = { busy: false, msg: null, tone: null };
 let watchAdd = { busy: false, msg: null, tone: null };
+let evSel = null;                      // the event_id open below the Event Risks week, or null
+// Short names for the strip; the full title is in the open panel and the tooltip.
+const EV_SHORT = {
+  'Employment Situation (payrolls)': 'Payrolls', 'Consumer Price Index': 'CPI', 'Personal Income and Outlays (PCE)': 'PCE and spending',
+  'Gross Domestic Product': 'GDP', 'Retail Sales': 'Retail sales', 'Producer Price Index': 'PPI', 'Job Openings and Labor Turnover (JOLTS)': 'JOLTS',
+  'Employment Cost Index': 'Employment cost', 'Productivity and Costs': 'Productivity', 'Import and Export Price Indexes': 'Import prices',
+  'International Trade in Goods and Services': 'Trade balance', 'New Residential Construction (housing starts)': 'Housing starts',
+  'Durable Goods Orders': 'Durable goods', 'Construction Spending': 'Construction spending', "Manufacturers' Shipments, Inventories and Orders": 'Factory orders',
+  'Advance Economic Indicators (trade)': 'Advance goods trade', 'FOMC decision': 'FOMC decision', 'FOMC minutes': 'FOMC minutes',
+  'ISM Manufacturing PMI': 'ISM manufacturing', 'ISM Services PMI': 'ISM services', 'Initial Jobless Claims': 'Jobless claims', 'Fed speakers': 'Fed speakers',
+};
+const EV_FIG_SHORT = { 'Payrolls': 'NFP', 'Core CPI m/m': 'core m/m', 'Core PCE m/m': 'core m/m', 'GDP q/q annualised': 'q/q ann.', 'Retail sales m/m': 'm/m',
+  'PPI m/m': 'm/m', 'Openings': 'openings', 'ECI q/q': 'q/q', 'Productivity q/q': 'q/q', 'Import prices m/m': 'm/m', 'Trade balance': '',
+  'Starts': 'starts', 'Orders m/m': 'm/m', 'Construction m/m': 'm/m', 'Factory orders m/m': 'm/m', 'Goods trade balance': '', 'Fed funds, upper bound': 'upper',
+  'Initial claims': '', 'PMI': '' };
+// Releases EODHD's calendar would normally carry figures for; their absence is said in the panel.
+const FIGS_EXPECTED = e => e.kind === 'economic' && !/could not be retrieved/.test(e.title);
+// A figure in its unit: 0.3%, 65k, 7.52m, −$105bn. A true minus sign, and no more decimals than
+// the size of the number calls for.
+const evNum = (v, unit) => {
+  if (v === null || v === undefined || !Number.isFinite(+v)) return '–';
+  const n = +v, a = Math.abs(n);
+  const body = a.toLocaleString('en-US', { maximumFractionDigits: a >= 100 ? 1 : a >= 10 ? 2 : 3 });
+  const sg = n < 0 ? '−' : '';
+  return unit === '$bn' ? `${sg}$${body}bn` : unit === '%' ? `${sg}${body}%` : unit === 'k' ? `${sg}${body}k` : unit === 'm' ? `${sg}${body}m` : `${sg}${body}`;
+};
 const SCATTER_PERIODS = ['YTD', '1Y', '3Y', '5Y'];
 
 function positionScatter() {
@@ -1194,8 +1224,9 @@ function stan(mode = 'dashboard') {
   // ---- Which brake is worth owning ----
   //
   // THE WHITEPAPER'S INSURANCE VALUE INDEX, BUILT FROM PRICES INSTEAD OF GREEKS. It asks for skew,
-  // the volatility risk premium and payoff per premium dollar. The desk holds no option chains, no
-  // skew surface and no MOVE, so that index cannot be computed from real data -- and a modelled one
+  // the volatility risk premium and payoff per premium dollar. The desk holds no option chains and no
+  // skew surface (MOVE is now on file, from EODHD, but it is one input of three, and not a price of
+  // any brake the desk can own), so that index cannot be computed from real data -- and a modelled one
   // would put invented greeks on a page about real money. The question underneath it is answerable
   // from prices already held, and better, because it is then asked about instruments actually
   // ownable: what has this paid when the book fell, what does it cost the rest of the time, and
@@ -2092,13 +2123,38 @@ function stan(mode = 'dashboard') {
       </div></div>`;
   })();
 
+  // THE CAPTION UNDER THE SPEED LIMIT (owner's decision, 2026-11-05: "only the caption"). It used
+  // to describe the Speed Limit itself -- "neutral · 10 calls · 83% fresh". It now says, in a few
+  // words, what the market is discounting, and the field under the row says it in full. The old
+  // wording is kept in the card's tooltip, and stays as the caption until a discounting reading exists.
+  const slCaption = `${master && master.light ? esc(LIGHT_MEANING[master.light]) : 'no reading'}${master && master.n_calls ? ` · ${master.n_calls} call${master.n_calls === 1 ? '' : 's'}` : ''}${master && master.freshness !== null && master.freshness !== undefined ? ` · <span style="color:${+master.freshness < 0.34 ? 'var(--neg)' : +master.freshness < 0.66 ? 'var(--warn)' : 'inherit'}">${(+master.freshness * 100).toFixed(0)}% fresh</span>` : ''}`;
+  const slCaptionText = slCaption.replace(/<[^>]+>/g, '');
+  const disc = D.discounting || [];
+  const discHead = disc.find(r => r.component === 'headline') || null;
+  // WHAT IS THE MARKET DISCOUNTING? Five questions answered from prices by stated rules
+  // (orchestration jobs/lib/discounting.mjs) and a headline that combines them. Broad and high
+  // level by request; the figures each answer rests on are in its sentence, and an answer whose
+  // inputs are more than ten days old is marked stale and left out of the headline.
+  const discCard = !disc.length ? '' : `<div class="card disc" style="margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
+      <span class="eyebrow" style="margin:0">What is the market discounting?</span>
+      <span style="font-size:11px;color:var(--muted)">from market prices, as of ${esc(String(disc[0].as_of))}</span></div>
+    <p class="dischead">${esc(discHead ? discHead.statement.replace(/ In its parts:.*$/, '') : '')}</p>
+    <div class="discgrid">
+      ${disc.filter(r => r.component !== 'headline').map(r => `<div class="discq${r.stale ? ' stale' : ''}">
+        <span class="eyebrow">${esc(r.label)}</span>
+        <b>${esc(r.verdict || '—')}</b>${r.stale ? ` <span class="evmute" title="Its newest input is from ${esc(String(r.data_as_of || 'no date'))}: more than ten days old, so it does not count toward the headline.">· stale</span>` : ''}
+        <p>${esc(r.statement)}</p></div>`).join('')}</div>
+    <p class="note" style="margin:10px 0 0">A reading of what is priced, not a forecast. Each answer comes from prices by a rule stated in the job: the 2-year against fed funds for the Fed's path, breakevens for inflation, sector and size leadership and the S&amp;P's trend for growth, spreads, the VIX and the MOVE against their own history for stress, real yields and the dollar for conditions. The headline combines the five. Rebuilt nightly.</p>
+  </div>`;
+
   return `<span class="eyebrow">Risk</span><h1>Stan</h1>
    <p class="sub">Where the risk sits across the eight models, what is flagged, and what the risk figures cannot say. The backtests and episode studies behind the brake live on <a href="#brembo">Brembo</a>.</p>
    <div class="kpis" style="grid-template-columns:repeat(5,1fr)">
-    <div class="card kpi click" data-go="#stan/speed-limit" style="cursor:pointer" title="Open the master Speed Limit and how each model sits against it">
+    <div class="card kpi click" data-go="#stan/speed-limit" style="cursor:pointer" title="${esc(slCaptionText)}. Open the master Speed Limit and how each model sits against it">
       <span class="eyebrow">Speed Limit</span>
       <b style="font-size:26px;color:${master && master.light ? LIGHT_COLOR[master.light] : 'var(--muted)'}">${master && master.sign_label ? esc(master.sign_label.replace(/^Speed Limit\s*/i, '')) : '—'}</b>
-      <small>${master && master.light ? esc(LIGHT_MEANING[master.light]) : 'no reading'}${master && master.n_calls ? ` · ${master.n_calls} call${master.n_calls === 1 ? '' : 's'}` : ''}${master && master.freshness !== null && master.freshness !== undefined ? ` · <span style="color:${+master.freshness < 0.34 ? 'var(--neg)' : +master.freshness < 0.66 ? 'var(--warn)' : 'inherit'}">${(+master.freshness * 100).toFixed(0)}% fresh</span>` : ''}</small></div>
+      <small>${discHead && discHead.verdict ? `discounting <strong class="kcap">${esc(discHead.verdict)}</strong>` : slCaption}</small></div>
     ${LENSES.map(l => {
       const r = (D.lensSnr || []).find(x => x.category === l.key && x.window_label === 'YTD');
       const v = r && r.signal_to_noise !== null ? +r.signal_to_noise : null;
@@ -2108,6 +2164,7 @@ function stan(mode = 'dashboard') {
         <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
     }).join('')}
    </div>
+   ${discCard}
    ${(() => {
      // RESEARCH CALLS OVERDUE (owner's decision, 2026-11-05). The nightly flags it when no Predictive
      // call has been logged for ten days; Predictive is 60% of the light and decays without them.
@@ -2125,11 +2182,11 @@ function stan(mode = 'dashboard') {
 // of the day -- where equities are, what volatility is saying, what the curve is doing, which
 // sectors led -- in one screen, with the full table underneath for when a specific name matters.
 //
-// RISK SITS BESIDE THE VIX, which is what was asked for. The MOVE index is ICE BofA's and no
-// connected source publishes it, so it is NOT here under its own name and nothing is dressed up
-// as it. What fills that gap is realised Treasury volatility computed from the desk's own TLT and
-// IEF closes, labelled realised rather than implied, because implied and realised are different
-// quantities and the gap between them is the thing a volatility desk is actually looking at.
+// RISK SITS BESIDE THE VIX, which is what was asked for, and the MOVE index beside it: ICE BofA's
+// Treasury implied volatility, which no connected source carried until EODHD (MOVE.INDX, loaded
+// from 2026-11-06 into macro_observations as the series MOVE, with a delayed quote in market
+// hours). Realised Treasury volatility from the desk's own TLT and IEF closes stays under it,
+// labelled realised, because implied against realised is what a volatility desk actually reads.
 //
 // Australia and South Africa were removed from the country list at the owner's request, to give
 // the panel room. They remain in the universe and in the table below: the geography fits are
@@ -2200,10 +2257,10 @@ async function loadPerfIntraday() {
 // levels rather than rebased to zero -- a VIX of 16 means something on its own, where SPY at 763
 // does not, and normalising them would throw away the only thing they say.
 //
-// MOVE IS NOT HERE, and it is the one the owner asked for first. It is ICE BofA's index, no
-// connected source publishes it, and there is no honest way to draw a line labelled MOVE. What
-// stands in its place is realised Treasury volatility computed from the desk's own TLT closes --
-// labelled realised, dashed rather than solid, so it never reads as another implied index.
+// MOVE HAS ITS OWN AXIS, under the main chart. It is quoted in basis points of yield a year, not
+// in percent of price, so at ~100 on this axis it would flatten every other line to the floor.
+// The dashed TLT line stays on the main axis: realised Treasury volatility in the same units as
+// the VIX family, drawn dashed so it never reads as another implied index.
 const VOL_SERIES = [
   ['VIXCLS', 'VIX', '#4ea1ff'],
   ['OVXCLS', 'OVX · oil', '#fb923c'],
@@ -2216,7 +2273,7 @@ async function loadVolSeries() {
   if (volSeries || volLoading) return;
   volLoading = true;
   try {
-    const codes = VOL_SERIES.map(v => v[0]);
+    const codes = [...VOL_SERIES.map(v => v[0]), 'MOVE'];
     const meta = await q(() => sb.from('macro_series').select('id,series_id').in('series_id', codes), { label: 'macro series' });
     const out = {};
     for (const m of meta) {
@@ -2240,8 +2297,8 @@ async function loadVolSeries() {
   if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
 }
 
-// Annualised volatility of the last n daily returns. Used for the bond-volatility line that
-// stands in for MOVE, and said out loud to be realised rather than implied.
+// Annualised volatility of the last n daily returns: realised Treasury volatility, drawn beside
+// the implied indices and said out loud to be realised rather than implied.
 function realisedVol(series, n = 30) {
   if (!series || series.length < n + 2) return null;
   const px = series.slice(-(n + 1)).map(x => x.px);
@@ -2275,7 +2332,7 @@ function markets() {
     if (ALWAYS_OPEN.has(symbol)) return new Date(q.quote_ts).toISOString().slice(0, 10) >= (closeDate || '') ? q : null;
     return nyDate(q.quote_ts) > (closeDate || '') ? q : null;
   };
-  const LIVE_INDEX = { VIXCLS: 'VIX', VXVCLS: 'VIX3M', VXNCLS: 'VXN', GVZCLS: 'GVZ', OVXCLS: 'OVX' };
+  const LIVE_INDEX = { VIXCLS: 'VIX', VXVCLS: 'VIX3M', VXNCLS: 'VXN', GVZCLS: 'GVZ', OVXCLS: 'OVX', MOVE: 'MOVE' };
   const liveMac = code => { const m = mac(code); return LIVE_INDEX[code] ? live(LIVE_INDEX[code], m && m.obs_date) : null; };
   const macV = code => { const q = liveMac(code); if (q) return +q.last; const m = mac(code); return m && m.value !== null ? +m.value : null; };
   const liveUsed = [];
@@ -2578,12 +2635,13 @@ function markets() {
     ${mrow('CBOE VIX', 'VIXCLS', v => v.toFixed(2), v => v === null ? 'var(--muted)' : v >= 25 ? 'var(--neg)' : v <= 14 ? 'var(--pos)' : 'var(--text)')}
     ${mrow('VIX, 3-month', 'VXVCLS')}
     ${vrow('VIX / VIX3M', term === null ? null : term.toFixed(2), term !== null && term > 1 ? '  inverted' : '', 'One-month implied against three-month. Above 1 means the market is paying more for protection now than later, which is the shape that only appears under stress.')}
+    ${mrow('ICE BofA MOVE (Treasuries)', 'MOVE', v => v.toFixed(1))}
     ${mrow('Nasdaq 100 (VXN)', 'VXNCLS')}
     ${mrow('Russell 2000 (RVX)', 'RVXCLS')}
     ${mrow('Crude oil (OVX)', 'OVXCLS')}
     ${mrow('Gold (GVZ)', 'GVZCLS')}
     ${subhead('Realised volatility, 30 sessions')}
-    ${vrow('Long Treasuries (TLT)', tltVol === null ? null : (tltVol * 100).toFixed(1), '%', 'The MOVE index is ICE BofA\'s and no connected source publishes it. This is realised volatility computed from the desk\'s own TLT closes — a different quantity from implied, and labelled as one.')}
+    ${vrow('Long Treasuries (TLT)', tltVol === null ? null : (tltVol * 100).toFixed(1), '%', 'Realised volatility computed from the desk\'s own TLT closes — what Treasuries have actually done, against the MOVE above, which is what the options market charges for what they might do.')}
     ${vrow('7-10 year (IEF)', iefVol === null ? null : (iefVol * 100).toFixed(1), '%')}
     ${vrow('S&P 500 (SPY)', spyVol === null ? null : (spyVol * 100).toFixed(1), '%')}
     ${subhead('Credit and conditions')}
@@ -2591,7 +2649,7 @@ function markets() {
     ${mrow('Investment grade OAS', 'BAMLC0A0CM', v => v.toFixed(2) + '%')}
     ${mrow('Financial conditions (NFCI)', 'NFCI', v => v.toFixed(2), v => v === null ? 'var(--muted)' : v > 0 ? 'var(--neg)' : 'var(--pos)')}
     ${mrow('Financial stress (STLFSI4)', 'STLFSI4', v => v.toFixed(2), v => v === null ? 'var(--muted)' : v > 0 ? 'var(--neg)' : 'var(--pos)')}`,
-    `<b>MOVE is not here.</b> It is ICE BofA's index and no connected source publishes it, so rather than approximate it under its own name the panel shows <b>realised</b> Treasury volatility from the desk's own closes. Implied and realised are different quantities. The euro FX volatility index was left out too: FRED discontinued it in March 2025, and a stale number on a risk panel is worse than a missing one. Each FRED line carries its own observation date, because they do not all update daily.`);
+    `<b>MOVE</b> is ICE BofA's Treasury implied volatility, from EODHD: a delayed quote in market hours, the daily close otherwise, in basis points of yield a year. Below it, <b>realised</b> Treasury volatility from the desk's own closes, in percent: implied against realised is the comparison, and the two are different quantities. The euro FX volatility index was left out too: FRED discontinued it in March 2025, and a stale number on a risk panel is worse than a missing one. Each FRED line carries its own observation date, because they do not all update daily.`);
 
   // ---- normalised performance ----
   // Captured so the enlarged view redraws the identical chart rather than a second implementation
@@ -2723,6 +2781,29 @@ function markets() {
       let lastY = -99;
       for (const e of ends) { let y = Y(e.v); if (y - lastY < 13) y = lastY + 13; e.y = y; lastY = y; }
       const vbar = `<div class="perfbar">${PERF_WINDOWS.map(([k]) => `<button class="pill${k === volWin ? ' on' : ''}" data-vol="${k}">${k}</button>`).join('')}</div>`;
+      // MOVE, on its own axis and over the same window. Its percentile is printed only once five
+      // years of closes are on file, the same rule Adam's MOVE leg uses: a level ranked "against
+      // five years" needs the five years.
+      const moveAll = volSeries.MOVE || [];
+      const movePts = moveAll.filter(x => x.d >= startD);
+      const moveChart = movePts.length < 2 ? `<div class="evmute" style="font-size:11px;margin:6px 0 2px">MOVE · ${moveAll.length ? 'not enough closes in this window' : 'no history on file yet: the nightly loads it from EODHD, back to 2002, the first night the series exists'}.</div>` : (() => {
+        const W2 = 820, H2 = 96, p2 = { l: 10, r: 112, t: 10, b: 20 };
+        const vs = movePts.map(p => p.v), lo2 = Math.min(...vs) * 0.96, hi2 = Math.max(...vs) * 1.04;
+        const X2 = i => p2.l + (i / Math.max(1, movePts.length - 1)) * (W2 - p2.l - p2.r);
+        const Y2 = v => p2.t + (1 - (v - lo2) / Math.max(1e-6, hi2 - lo2)) * (H2 - p2.t - p2.b);
+        const last = movePts.at(-1);
+        const from5 = `${+last.d.slice(0, 4) - 5}${last.d.slice(4)}`;
+        const win5 = moveAll.filter(x => x.d >= from5 && x.d < last.d).map(x => x.v);
+        const pct = moveAll[0].d <= from5 && win5.length >= 1000 ? Math.round(100 * win5.filter(v => v <= last.v).length / win5.length) : null;
+        return `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-top:8px;font-size:11.5px"><b style="color:#2dd4bf">MOVE · Treasury implied volatility</b>
+          <span class="evmute">${esc(last.v.toFixed(1))} on ${esc(last.d)}${pct === null ? '' : ` · ${pct}th percentile of five years`}</span></div>
+          <svg viewBox="0 0 ${W2} ${H2}" style="width:100%;height:auto" role="img" aria-label="MOVE index over the window">
+          <line x1="${p2.l}" y1="${(H2 - p2.b).toFixed(1)}" x2="${W2 - p2.r}" y2="${(H2 - p2.b).toFixed(1)}" stroke="var(--line)"/>
+          <path d="${movePts.map((p, i) => `${i ? 'L' : 'M'}${X2(i).toFixed(1)} ${Y2(p.v).toFixed(1)}`).join('')}" fill="none" stroke="#2dd4bf" stroke-width="1.6"/>
+          <text x="${(W2 - 2).toFixed(1)}" y="${(Y2(last.v) + 3.5).toFixed(1)}" font-size="10.5" font-weight="600" text-anchor="end" fill="#2dd4bf">MOVE ${esc(last.v.toFixed(1))}</text>
+          <text x="${W2 - p2.r + 6}" y="${(Y2(hi2 / 1.04) + 3.5).toFixed(1)}" font-size="10" fill="var(--muted)">${esc((hi2 / 1.04).toFixed(0))}</text>
+          <text x="${W2 - p2.r + 6}" y="${(Y2(lo2 / 0.96) + 3.5).toFixed(1)}" font-size="10" fill="var(--muted)">${esc((lo2 / 0.96).toFixed(0))}</text></svg>`;
+      })();
       return `${vbar}<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto" role="img" aria-label="Implied volatility indices">
           ${ticks}
           ${lines.map(l => `<path d="${path(l.pts)}" fill="none" stroke="${l.tone}" stroke-width="1.7"/>`).join('')}
@@ -2731,8 +2812,9 @@ function markets() {
           <text x="${pad.l}" y="${Hh - 6}" font-size="10" fill="var(--muted)">${esc(dates[0])}</text>
           <text x="${(W - pad.r).toFixed(1)}" y="${Hh - 6}" font-size="10" text-anchor="end" fill="var(--muted)">${esc(dates.at(-1))}</text>
         </svg>
+        ${moveChart}
         <p class="note"><b>Levels, not rebased.</b> A VIX of 16 means something on its own where an index level does not, so these are drawn as they are — normalising them would throw away the only thing they say. This card now carries <b>its own window</b> and starts on whatever the chart above is showing until you move it${volWin === '1D' ? '. One day is the exception: these are daily series and a single session would be one point per line, so the last two weeks are drawn instead' : ''}.
-        <b>MOVE is not here.</b> It is ICE BofA's index and no connected source publishes it, so rather than draw a line under its name the dashed grey is <b>realised</b> volatility of TLT over 30 sessions, annualised — a different quantity from an implied index, which is why it is dashed and why it is labelled realised.</p>`;
+        <b>MOVE has its own axis</b>, under the main chart: ICE BofA's Treasury implied volatility, from EODHD, is quoted in basis points of yield a year rather than in percent, so on the main axis it would flatten every other line. The dashed grey on the main chart is <b>realised</b> volatility of TLT over 30 sessions, annualised — a different quantity from an implied index, which is why it is dashed and labelled realised.</p>`;
     })();
     volInner = inner;
     return `<div class="card panel" data-bigchart="vol" style="cursor:zoom-in" title="Click to enlarge"><div class="phead" style="display:flex;align-items:center;justify-content:space-between;gap:8px">Volatility <span style="color:var(--muted);font-size:11px;font-weight:400">⤢ enlarge</span></div>${inner}</div>`;
@@ -2907,10 +2989,22 @@ function markets() {
 
   // ---- Event Risks: the week ahead, across the top of the page ----
   //
+  // REDESIGNED 2026-11-06 (owner's request). An event is a risk because of the distance between
+  // what the market expects and what arrives, and the strip used to show neither: names and dates
+  // only, no time of day, no consensus, no result. Each event now reads on two lines -- when and
+  // what, then the consensus and prior, or once it is out the actual against the consensus -- and
+  // the week's next high-importance event sits in the header with its consensus. Clicking an event
+  // opens every figure for it below the week (hover alone does nothing on a phone).
+  //
+  // THE FIGURES ARE EODHD'S, and only as fresh as the last read: jobs/compute-event-risk.mjs
+  // --refresh rereads them on every intraday run and every nightly, and the header prints when.
+  // Arrows compare the actual with the consensus and say nothing about good or bad: a payrolls
+  // number above consensus and a CPI number above consensus mean different things to different
+  // books. Nothing is coloured as a win or a loss.
+  //
   // EARNINGS: each day's five most widely held or most traded reporters among the 1,000 largest
-  // companies listed on a US exchange (jobs/compute-event-risk.mjs), strongest first, each with its
-  // timing -- before the open, after the close -- because a report after Thursday's close is
-  // Friday's risk.
+  // companies listed on a US exchange, strongest first, each with its timing -- before the open,
+  // after the close -- because a report after Thursday's close is Friday's risk.
   const eventStrip = (() => {
     const ev = D.eventRisk || [];
     if (!ev.length) return '';
@@ -2925,34 +3019,115 @@ function markets() {
       const d = new Date(w.week_start + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + i);
       return d.toISOString().slice(0, 10);
     });
-    const KIND = { central_bank: 'var(--neg)', economic: 'var(--fg)', earnings: 'var(--accent)' };
     const SESS = { 'before the open': 'pre', 'after the close': 'post' };
     const MAX_EARN = 5;
-    return `<div class="card" style="margin-bottom:14px;padding:12px 14px">
-      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px">
-        <span class="eyebrow">Event risks · week of ${esc(w.week_start)}</span>
-        <span style="font-size:11px;color:var(--muted)">${ev.filter(e => e.importance === 'high').length} high · built ${esc(String(w.as_of))}</span></div>
+    const isEarn = e => e.kind === 'earnings' && e.symbol;
+    const short = e => EV_SHORT[e.title] || e.title;
+    const clock = e => e.event_time ? nyClock(e.event_time).replace(/ ([AP])M$/, (m, x) => x === 'A' ? 'a' : 'p') : '';
+    // When an event is over, for ordering and for "next": its published time; an earnings report by
+    // its session (the open, or 4 pm); otherwise the end of its day. Used to sort, never printed.
+    const moment = e => {
+      if (e.event_time) return Date.parse(e.event_time);
+      const base = Date.parse(e.event_date + 'T00:00:00Z');
+      const off = e.session === 'before the open' ? 14.5 : e.session === 'after the close' ? 21 : 23.99;   // hours UTC, near enough in either season
+      return base + off * 3600e3;
+    };
+    const fig = e => (Array.isArray(e.figures) && e.figures.length ? e.figures : null);
+    const released = f => f && f.actual !== null && f.actual !== undefined;
+    const arrow = f => {
+      if (!released(f) || f.estimate === null || f.estimate === undefined) return '';
+      const a = +f.actual, x = +f.estimate;
+      return a > x ? '<span class="evarr" title="above consensus">▲</span>' : a < x ? '<span class="evarr" title="below consensus">▼</span>' : '<span class="evarr" title="in line with consensus">=</span>';
+    };
+    // The second line of an event: the result against consensus once out, else what is expected.
+    const figLine = e => {
+      const fs = fig(e);
+      if (!fs) {
+        if (e.title === 'Fed speakers' && e.detail) return esc(e.detail.replace(/^.*?: /, '').replace(/ ET/g, '').replace(/\.$/, ''));
+        return '';
+      }
+      const f = fs[0];
+      if (f.withheld) return '<span title="' + esc(f.withheld) + '">figures withheld</span>';
+      const l = isEarn(e) ? 'EPS' : (EV_FIG_SHORT[f.label] ?? f.label);
+      const lab = l ? esc(l) + ' ' : '';
+      if (released(f)) return `${lab}<b>${esc(evNum(f.actual, f.unit))}</b>${f.estimate !== null && f.estimate !== undefined ? ` vs ${esc(evNum(f.estimate, f.unit))} ${arrow(f)}` : f.previous !== null && f.previous !== undefined ? ` <span class="evmute">prev ${esc(evNum(f.previous, f.unit))}</span>` : ''}`;
+      const bits = [];
+      if (f.estimate !== null && f.estimate !== undefined) bits.push(`est ${esc(evNum(f.estimate, f.unit))}`);
+      if (f.previous !== null && f.previous !== undefined) bits.push(`<span class="evmute">prev ${esc(evNum(f.previous, f.unit))}</span>`);
+      return bits.length ? lab + bits.join(' · ') : '';
+    };
+    const row = e => {
+      const sel = evSel === e.event_id;
+      const warn = /could not be retrieved/.test(e.title);
+      return `<button class="evrow${sel ? ' sel' : ''}${warn ? ' warn' : ''}${e.kind === 'central_bank' ? ' fed' : ''}" data-ev="${esc(e.event_id)}" aria-expanded="${sel}" title="${esc(`${e.title}${e.detail ? '\n' + e.detail : ''}\nSource: ${e.source}`)}">
+        <span class="evl1">${isEarn(e) ? `${e.importance === 'high' ? '<span class="evdot" aria-label="high importance">●</span>' : ''}<span class="evtk">${esc(e.symbol)}</span>${SESS[e.session] ? ` <span class="evmute">${SESS[e.session]}</span>` : ''}`
+          : `<span class="evt">${esc(clock(e))}</span>${e.importance === 'high' ? '<span class="evdot" aria-label="high importance">●</span>' : ''}<span class="evn${e.importance === 'high' ? ' hi' : ''}">${esc(short(e))}</span>`}</span>
+        ${(() => { const l2 = figLine(e); return l2 ? `<span class="evl2">${l2}</span>` : ''; })()}</button>`;
+    };
+
+    // The week's next high-importance event, from now; failing that, the next of any.
+    const now = Date.now();
+    const ahead = ev.filter(e => !/could not be retrieved/.test(e.title) && moment(e) > now).sort((a, b) => moment(a) - moment(b));
+    const nextUp = ahead.find(e => e.importance === 'high' && !isEarn(e)) || ahead.find(e => e.importance === 'high') || ahead[0] || null;
+    const nextHtml = !nextUp ? `<span class="evmute">Everything on this week's calendar is out.</span>` : (() => {
+      const f = (fig(nextUp) || [])[0];
+      const when = `${DW[dnum(nextUp.event_date)]}${nextUp.event_date === today ? ' (today)' : ''}${nextUp.event_time ? ' ' + nyClock(nextUp.event_time) + ' ET' : isEarn(nextUp) && nextUp.session ? ' ' + nextUp.session : ''}`;
+      const exp = f && !f.withheld && f.estimate !== null && f.estimate !== undefined
+        ? ` · consensus ${esc(isEarn(nextUp) ? 'EPS' : (EV_FIG_SHORT[f.label] || f.label))} ${esc(evNum(f.estimate, f.unit))}${f.previous !== null && f.previous !== undefined ? `, prior ${esc(evNum(f.previous, f.unit))}` : ''}` : '';
+      return `Next${nextUp.importance === 'high' ? ' high-importance' : ''}: <button class="evlink" data-ev="${esc(nextUp.event_id)}">${esc(isEarn(nextUp) ? nextUp.symbol + ' earnings' : short(nextUp))}</button> · ${esc(when)}${exp}`;
+    })();
+
+    // The open event, below the week: every figure, the source and the detail line.
+    const open = evSel ? ev.find(e => e.event_id === evSel) : null;
+    const panel = !open ? '' : (() => {
+      const fs = fig(open) || [];
+      const rowsHtml = fs.filter(f => !f.withheld).map(f => `<tr><td>${esc(isEarn(open) ? 'EPS' : f.label)}${f.period ? ` <span class="evmute">${esc(isEarn(open) ? 'quarter to ' + f.period : f.period)}</span>` : ''}</td>
+        <td class="num">${f.estimate === null || f.estimate === undefined ? '–' : esc(evNum(f.estimate, f.unit))}</td>
+        <td class="num">${f.previous === null || f.previous === undefined ? '–' : esc(evNum(f.previous, f.unit))}</td>
+        <td class="num">${released(f) ? '<b>' + esc(evNum(f.actual, f.unit)) + '</b> ' + arrow(f) : '<span class="evmute">not yet</span>'}</td>
+        ${isEarn(open) ? `<td class="num">${f.surprise_pct === null || f.surprise_pct === undefined ? '–' : (f.surprise_pct > 0 ? '+' : '') + (+f.surprise_pct).toFixed(1) + '%'}</td>` : ''}</tr>`).join('');
+      const withheld = fs.find(f => f.withheld);
+      const when = `${DW[dnum(open.event_date)]} ${open.event_date}${open.event_time ? ', ' + nyClock(open.event_time) + ' ET' : open.session ? ', ' + open.session : ''}`;
+      return `<div class="evpanel" role="region" aria-label="${esc(open.title)}">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap">
+          <b>${esc(open.title)}</b><span class="evmute">${esc(when)} · ${open.importance} importance · source ${esc(open.source)}</span>
+          <button class="evclose" data-ev="${esc(open.event_id)}" aria-label="Close">Close ✕</button></div>
+        ${rowsHtml ? `<table class="evtab"><thead><tr><th></th><th class="num">Consensus</th><th class="num">Prior</th><th class="num">Actual</th>${isEarn(open) ? '<th class="num">Surprise</th>' : ''}</tr></thead><tbody>${rowsHtml}</tbody></table>` : ''}
+        ${withheld ? `<p class="note" style="margin:8px 0 0">${esc(withheld.withheld)}</p>` : ''}
+        ${open.detail ? `<p class="note" style="margin:8px 0 0">${esc(open.detail)}</p>` : ''}
+        ${!fs.length && FIGS_EXPECTED(open) ? `<p class="note" style="margin:8px 0 0">EODHD's calendar carries no consensus or result for this release, so none is shown.</p>` : ''}
+      </div>`;
+    })();
+
+    const refreshed = ev.map(e => e.refreshed_at).filter(Boolean).sort().pop();
+    return `<div class="card evr" style="margin-bottom:14px;padding:12px 14px">
+      <div class="evhead">
+        <div style="min-width:0">
+          <span class="eyebrow">Event risks · week of ${esc(w.week_start)}</span>
+          <div class="evnext">${nextHtml}</div></div>
+        <div class="evmeta">${ev.filter(e => e.importance === 'high').length} high importance<br>${refreshed ? `figures as of ${esc(nyStamp(refreshed))} ET` : 'no figures read yet'} · built ${esc(String(w.as_of))}</div></div>
       <div class="evweek">
         ${days.map(d => {
-          const list = (byDay.get(d) || []);
-          const isToday = d === today;
-          return `<div style="border:1px solid ${isToday ? 'var(--fg)' : 'var(--line)'};border-radius:5px;padding:6px 8px;min-height:62px">
-            <div style="font-size:10px;color:${isToday ? 'var(--fg)' : 'var(--muted)'};text-transform:uppercase;letter-spacing:.04em">${DW[dnum(d)]} ${esc(d.slice(8))}${isToday ? ' · today' : ''}</div>
-            ${!list.length ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">—</div>'
-              : (() => {
-                  const macro = list.filter(e => e.kind !== 'earnings' || !e.symbol);
-                  const earn = list.filter(e => e.kind === 'earnings' && e.symbol);
-                  // The job keeps each day's five most widely held or most traded reporters and puts
-                  // their order in the event id, so the day reads strongest first.
-                  const shown = earn.slice().sort((a, b) => String(a.event_id).localeCompare(String(b.event_id))).slice(0, MAX_EARN);
-                  const rest = earn.slice().filter(e => !shown.includes(e));
-                  const line = e => `<div style="font-size:11px;margin-top:4px;line-height:1.3;color:${KIND[e.kind] || 'var(--fg)'}" title="${esc(`${e.title}\n${e.source}${e.detail ? '\n' + e.detail : ''}`)}">
-                    ${e.importance === 'high' ? '<b>' : ''}${esc(e.symbol ? e.symbol : e.title)}${e.importance === 'high' ? '</b>' : ''}${e.symbol && SESS[e.session] ? ` <span style="color:var(--muted);font-size:10px">${SESS[e.session]}</span>` : ''}</div>`;
-                  return macro.map(line).join('') + shown.map(line).join('')
-                    + (rest.length ? `<div style="font-size:10.5px;margin-top:4px;color:var(--muted)" title="${esc(rest.map(e => `${e.symbol} ${e.session || ''} — ${e.title}`).join('\n'))}">+${rest.length} more report${rest.length === 1 ? '' : 's'}</div>` : '');
-                })()}</div>`;
+          const list = byDay.get(d) || [];
+          const isToday = d === today, past = d < today;
+          const macro = list.filter(e => !isEarn(e)).sort((a, b) => moment(a) - moment(b) || (a.importance === 'high' ? -1 : 1) - (b.importance === 'high' ? -1 : 1));
+          // The job keeps each day's five strongest reporters and puts their order in the event id.
+          const earn = list.filter(isEarn).sort((a, b) => String(a.event_id).localeCompare(String(b.event_id)));
+          const shown = earn.slice(0, MAX_EARN), rest = earn.slice(MAX_EARN);
+          return `<section class="evday${isToday ? ' today' : ''}${past ? ' past' : ''}${!list.length ? ' empty' : ''}" aria-label="${DW[dnum(d)]} ${d}">
+            <h3>${DW[dnum(d)]} ${esc(String(+d.slice(8)))}${isToday ? ' · today' : ''}</h3>
+            ${!list.length ? '<div class="evmute" style="font-size:11px">nothing scheduled</div>' : ''}
+            ${macro.map(row).join('')}
+            ${shown.length ? `<div class="evsub">Earnings</div>${shown.map(row).join('')}` : ''}
+            ${rest.length ? `<div class="evmute" style="font-size:10.5px;margin-top:4px" title="${esc(rest.map(e => `${e.symbol} ${e.session || ''} — ${e.title}`).join('\n'))}">+${rest.length} more report${rest.length === 1 ? '' : 's'}</div>` : ''}
+          </section>`;
         }).join('')}</div>
-      <p class="note" style="margin-top:10px;font-size:11px"><b>Economic releases, central-bank decisions, and each day's five most widely held or most traded companies reporting</b> — ranked among the 1,000 largest companies listed on a US exchange by market cap (how widely held) or dollars traded a day (how popular), whichever is higher. In <span style="color:var(--accent)">blue</span> by ticker, marked pre (before the open) or post (after the close); bold are the week's ten highest. Hover any line for both ranks. Sources: ${esc([...new Set(ev.map(e => e.source))].join(', '))}. Rebuilt Sunday mornings.</p>
+      ${panel}
+      <div class="evkey"><span><span class="evdot">●</span> high importance</span><span>est = consensus · prev = prior</span><span>▲ ▼ = the actual above or below consensus, not better or worse</span><span>pre / post = before the open / after the close</span><span>times New York</span></div>
+      <details class="evhow"><summary>What is on this strip, and from where</summary>
+        <p class="note" style="margin:8px 0 0"><b>Economic releases, central-bank decisions, and each day's five most widely held or most traded companies reporting</b> — ranked among the 1,000 largest companies listed on a US exchange by market cap (how widely held) or dollars traded a day (how popular), whichever is higher. Which releases appear, and on which day, comes from the agencies' own calendars (BLS, BEA, Census, the Federal Reserve); the time, the consensus, the prior and the actual come from EODHD's economic calendar, as do the ISM surveys, weekly jobless claims, the FOMC minutes and the Fed's scheduled speakers, which none of those calendars carries. Earnings and their EPS figures are EODHD's; where a listing's EPS is not in dollars (some foreign shares are quoted in their home currency) the figures are withheld rather than shown wrong.</p>
+        <p class="note" style="margin:6px 0 0">The week is rebuilt Sunday mornings; the figures are reread every fifteen minutes in market hours and again after the close, and the time of the last read is in the header. Sources: ${esc([...new Set(ev.map(e => e.source))].join(', '))}</p>
+      </details>
     </div>`;
   })();
 
@@ -3633,7 +3808,7 @@ function adam() {
       <div style="flex:1;min-width:220px">
         <div class="eyebrow" style="margin-bottom:4px">Collateral multiplier</div>
         <div style="font-size:33px;font-weight:700;line-height:1">${(+gliNums.collateral_multiplier).toFixed(2)}×</div>
-        <div style="font-size:12.5px;color:var(--muted);margin-top:3px">${howell && howell.move_quoted ? `MOVE quoted at ${howell.move_quoted}` : 'bond volatility sets the haircut'}</div>
+        <div style="font-size:12.5px;color:var(--muted);margin-top:3px">${(() => { const mv = mac('MOVE'); return mv && mv.value !== null ? `MOVE ${(+mv.value).toFixed(1)} on ${esc(mv.obs_date)}${howell && howell.move_quoted ? ` · the note quoted ${esc(String(howell.move_quoted))}` : ''}` : howell && howell.move_quoted ? `MOVE quoted at ${esc(String(howell.move_quoted))} in the note` : 'bond volatility sets the haircut'; })()}</div>
         ${spark(gliAll, 'collateral_multiplier', 'var(--flat)')}</div>
     </div>
     <p class="note" style="margin-top:12px"><b>The index is the base times the multiplier.</b> The shadow monetary base is central bank liquidity plus collateral — what Howell calls the bedrock — and the multiplier is how much broad liquidity that base supports. It moves with bond volatility through haircuts: <b>volatility down → haircuts down → multiplier up → liquidity up.</b> At the latest reading $${(+gliNums.smb).toFixed(2)}tn × ${(+gliNums.collateral_multiplier).toFixed(2)} = $${(+gliNums.smb * +gliNums.collateral_multiplier).toFixed(2)}tn against a published $${(+gliNums.gli_full).toFixed(2)}tn, and that identity is checked on every row before it is stored — a row that fails it has a transcription error, which is the real risk when figures are read off a PDF by hand. <b>The base is falling while the multiplier sits at a record</b>, which is this week's whole message: the index is being held up by haircuts that have not yet adjusted to higher volatility.</p>
@@ -8625,6 +8800,16 @@ document.addEventListener('click', e => {
   if (h) fastHorizon = h.dataset.fasth; else fastLev = !fastLev;
   if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
 });
+// Event Risks: open or close an event's figures below the week.
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-ev]');
+  if (!t) return;
+  const id = t.dataset.ev;
+  evSel = evSel === id ? null : id;
+  if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
+  // Keep the keyboard where it was: the redraw replaced the button that had focus.
+  try { const again = document.querySelector(`.evrow[data-ev="${CSS.escape(id)}"]`); if (again) again.focus({ preventScroll: true }); } catch (_) {}
+});
 // Watchlist sleeve tabs.
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-watchtab]');
@@ -9202,12 +9387,18 @@ window.addEventListener('hashchange', route);
     if (active && active.closest && active.closest('#app input, #app select, #app textarea')) return;
     const now = new Date(), day = now.getUTCDay(), hour = now.getUTCHours();
     if (day === 0 || day === 6 || hour < 13 || hour > 22) return;
-    const { data, error } = await sb.from('live_quotes').select('symbol,security_id,quote_ts,last,prev_close,change_pct');
-    if (error || !data) return;
-    const newest = list => list.map(q => q.quote_ts).sort().pop() || '';
-    if (newest(data) === newest(D.liveQuotes || [])) return;
-    D.liveQuotes = data;
-    route();
+    // The quotes, and the Event Risks figures (consensus revisions, and each release's actual once
+    // it is out): both are rewritten by the intraday run, so both are asked for, and the page is
+    // redrawn once if either has moved.
+    const [quotes, events] = await Promise.all([
+      sb.from('live_quotes').select('symbol,security_id,quote_ts,last,prev_close,change_pct'),
+      sb.from('latest_event_risk').select('*').order('event_date', { ascending: true }).order('event_id', { ascending: true }),
+    ]);
+    let moved = false;
+    const newest = (list, k) => list.map(q => q[k]).filter(Boolean).sort().pop() || '';
+    if (!quotes.error && quotes.data && newest(quotes.data, 'quote_ts') !== newest(D.liveQuotes || [], 'quote_ts')) { D.liveQuotes = quotes.data; moved = true; }
+    if (!events.error && events.data && events.data.length && newest(events.data, 'refreshed_at') !== newest(D.eventRisk || [], 'refreshed_at')) { D.eventRisk = events.data; moved = true; }
+    if (moved) route();
   }, 5 * 60 * 1000);
   t.unref?.();
 }
