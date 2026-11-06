@@ -25,6 +25,14 @@
 //   node test/smoke.mjs --dump                 write the rendered page to preview/_page.html
 //   node test/smoke.mjs --empties              list every empty state it rendered
 //
+// For changes that must not move a figure (UI phase C, 2026-11-05): record the database once, then
+// render before and after the change against the same responses, and compare every figure:
+//   SMOKE_CASSETTE=/tmp/c SMOKE_CASSETTE_MODE=record SMOKE_SNAPSHOT=/tmp/before.json node test/smoke.mjs
+//   (make the change)
+//   SMOKE_CASSETTE=/tmp/c SMOKE_CASSETTE_MODE=replay SMOKE_SNAPSHOT=/tmp/after.json node test/smoke.mjs
+//   node test/snapshot-diff.mjs /tmp/before.json /tmp/after.json
+// Replay needs no credentials and touches no network: every response comes from the recording.
+//
 // The key is read from the environment and never from a file in this repo. It lives in the
 // orchestration repo's .env, which is gitignored there:
 //   export $(grep -E '^SUPABASE_(URL|SERVICE_ROLE_KEY)=' ../family-office-agentic-orchestration/.env | xargs)
@@ -53,7 +61,11 @@ if (!SUPABASE_URL) { console.error('No Supabase URL in config.js and none in SUP
 // public repository, so its CI holds that read-only sign-in, never the service-role key. Locally
 // the service-role key still works.
 let KEY, REST, AS;
-if (process.env.SMOKE_EMAIL && process.env.SMOKE_PASSWORD) {
+const CASSETTE = process.env.SMOKE_CASSETTE || null, CASSETTE_MODE = process.env.SMOKE_CASSETTE_MODE || null;
+if (CASSETTE && !['record', 'replay'].includes(CASSETTE_MODE)) { console.error('SMOKE_CASSETTE needs SMOKE_CASSETTE_MODE=record or replay.'); process.exit(2); }
+if (CASSETTE_MODE === 'replay') {
+  KEY = PUBLISHABLE; REST = { apikey: PUBLISHABLE }; AS = `a recording (${CASSETTE})`;
+} else if (process.env.SMOKE_EMAIL && process.env.SMOKE_PASSWORD) {
   const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
     method: 'POST', headers: { apikey: PUBLISHABLE, 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: process.env.SMOKE_EMAIL, password: process.env.SMOKE_PASSWORD }),
@@ -79,6 +91,28 @@ if (process.env.SMOKE_EMAIL && process.env.SMOKE_PASSWORD) {
 }
 console.log(`Reading ${SUPABASE_URL} as ${AS}.`);
 
+// The recording: every database response saved under a hash of its URL and Range, and served back
+// on replay, so two renders of the site -- before and after a change -- see exactly the same data.
+const { createHash } = await import('node:crypto');
+const { mkdirSync: mkdirC } = await import('node:fs');
+if (CASSETTE) mkdirC(CASSETTE, { recursive: true });
+const cassetteKey = (url, opts) => createHash('sha1').update(`${url}\n${(opts.headers && (opts.headers.Range || opts.headers.range)) || ''}`).digest('hex');
+let cassetteMisses = 0;
+async function cassetteFetch(url, opts = {}) {
+  if (!CASSETTE || !String(url).startsWith(SUPABASE_URL)) return realFetch(url, opts);
+  const file = join(CASSETTE, cassetteKey(url, opts) + '.json');
+  if (CASSETTE_MODE === 'replay') {
+    if (!existsSync(file)) { cassetteMisses++; return new Response(JSON.stringify({ message: 'not in the recording' }), { status: 599 }); }
+    const r = JSON.parse(readFileSync(file, 'utf8'));
+    return new Response(r.body, { status: r.status, headers: r.headers });
+  }
+  const res = await realFetch(url, opts);
+  const body = await res.text();
+  const headers = {}; for (const h of ['content-type', 'content-range']) { const v = res.headers.get(h); if (v) headers[h] = v; }
+  writeFileSync(file, JSON.stringify({ status: res.status, headers, body }));
+  return new Response(body, { status: res.status, headers });
+}
+
 // NO WRITE LEAVES THE HARNESS, WHATEVER IT HOLDS. The client below stubs every write; this refuses
 // anything but a read at the network layer too, so a new code path cannot write by accident.
 const realFetch = globalThis.fetch;
@@ -91,7 +125,7 @@ globalThis.fetch = async (url, opts = {}) => {
     return Promise.reject(new Error(`smoke harness refused a ${method} to ${String(url).split('?')[0]}: it never writes`));
   }
   const t0 = Date.now();
-  const res = await realFetch(url, opts);
+  const res = await cassetteFetch(url, opts);
   if (String(url).startsWith(SUPABASE_URL)) timings.push({ path: String(url).slice(SUPABASE_URL.length).split('&')[0].slice(0, 90), ms: Date.now() - t0, status: res.status, route: (() => { try { return currentRoute; } catch { return 'boot'; } })() });
   return res;
 };
@@ -298,6 +332,19 @@ const series = await pick('current_macro_readings', 'series_id,fred_code');
 // ---------------------------------------------------------------------------
 // 1. Every route renders something that is not an error or a loading state.
 // ---------------------------------------------------------------------------
+// THE NUMBER SNAPSHOT. Every text fragment on the page that contains a digit, with the text just
+// before it as its label. snapshot-diff.mjs compares two of these: a change that only restyles the
+// page must leave every figure where a reader finds it.
+const SNAPSHOT = process.env.SMOKE_SNAPSHOT || null;
+const snapshot = {};
+function figuresOf(html) {
+  const texts = html.replace(/<(script|style)[\s\S]*?<\/\1>/g, '').split(/<[^>]*>/)
+    .map(t => t.replace(/&nbsp;|\u00a0/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  const out = [];
+  texts.forEach((t, i) => { if (/\d/.test(t)) out.push({ label: (texts.slice(Math.max(0, i - 2), i).filter(x => !/\d/.test(x)).pop() || '').slice(0, 60), text: t.slice(0, 160) }); });
+  return out;
+}
 const routes = argRoute ? [argRoute] : [
   '#markets', '#sisyphus', '#stan', '#annie', '#adam', '#neil', '#sven', '#kate', '#gail', '#gail/inbox', '#gail/briefs', '#sandbox', '#admin',
   strat ? `#sisyphus/${strat.id}` : null,
@@ -330,6 +377,7 @@ for (const r of routes) {
   const svgs = (body.match(/<svg/g) || []).length, empties = (body.match(/class="empty"/g) || []).length;
   say(`${problems.length ? 'FAIL' : ' ok '} ${r.padEnd(44)} ${String(body.length).padStart(7)}b  svg:${svgs} empty:${empties}${problems.length ? '  << ' + problems.join('; ') : ''}`);
   problems.forEach(p => errors.push(`[${r}] ${p}`));
+  if (SNAPSHOT) snapshot[r] = figuresOf(body);
   if (wantEmpties) for (const m of body.match(/class="empty"[^>]*>([^<]*)</g) || []) say('        empty: ' + m.replace(/class="empty"[^>]*>/, '').replace(/<$/, '').trim());
   if (wantDump) {
     const out = join(SITE, '..', 'family-office-agentic-orchestration', 'preview', '_page.html');
@@ -3289,6 +3337,8 @@ currentRoute = 'fastest-cars';
 }
 
 // ---------------------------------------------------------------------------
+if (SNAPSHOT) { writeFileSync(SNAPSHOT, JSON.stringify(snapshot, null, 1)); console.log(`Number snapshot: ${Object.values(snapshot).reduce((n, f) => n + f.length, 0)} figures on ${Object.keys(snapshot).length} routes -> ${SNAPSHOT}`); }
+if (cassetteMisses) errors.push(`[cassette] ${cassetteMisses} request(s) were not in the recording: the change asked the database for something new.`);
 console.log('');
 if (errors.length) {
   console.log(`${errors.length} PROBLEM(S):`); for (const e of errors) console.log('  ' + e);
