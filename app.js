@@ -157,7 +157,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill, quadPit, fastCars, fastAside, liveQuotes] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill, quadPit, fastCars, fastAside, liveQuotes, discounting] = await Promise.all([
     qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
     qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
     qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note,on_watchlist'), 'securities'),
@@ -288,6 +288,8 @@ async function load() {
     qAllSoft(() => sb.from('latest_fastest_cars_set_aside').select('as_of,ticker,name,kind,reason').order('ticker', { ascending: true }), 'fastest cars set aside'),
     // Delayed quotes for the Markets grid, replaced every intraday run (jobs/load-live-quotes.mjs).
     qSoft(sb.from('live_quotes').select('symbol,security_id,quote_ts,last,prev_close,change_pct'), 'live quotes'),
+    // What is the market discounting? Five answers and a headline, nightly (compute-market-discounting).
+    qSoft(sb.from('latest_market_discounting').select('as_of,component,sort_order,label,verdict,statement,measures,data_as_of,stale').order('sort_order', { ascending: true }), 'market discounting'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -401,7 +403,7 @@ async function load() {
     flowHist: newest(flowHist || []), flowNext: newest(flowNext || []),
     eventRisk: newest(eventRisk || []), slHist: slHist || [], insCands: insCands || [],
     crMonth: crMonth || [], crBox: crBox || [], crSkill: newest(crSkill || []), quadPit: quadPit || [],
-    fastCars: fastCars || [], fastAside: fastAside || [], liveQuotes: liveQuotes || [],
+    fastCars: fastCars || [], fastAside: fastAside || [], liveQuotes: liveQuotes || [], discounting: discounting || [],
     // The desk's own macro loadings, per security with the asset class as fallback -- the same
     // lookup the models' net exposure uses -- so the rebalance factor map can weigh a ticker the
     // model does not hold yet.
@@ -2121,13 +2123,38 @@ function stan(mode = 'dashboard') {
       </div></div>`;
   })();
 
+  // THE CAPTION UNDER THE SPEED LIMIT (owner's decision, 2026-11-05: "only the caption"). It used
+  // to describe the Speed Limit itself -- "neutral · 10 calls · 83% fresh". It now says, in a few
+  // words, what the market is discounting, and the field under the row says it in full. The old
+  // wording is kept in the card's tooltip, and stays as the caption until a discounting reading exists.
+  const slCaption = `${master && master.light ? esc(LIGHT_MEANING[master.light]) : 'no reading'}${master && master.n_calls ? ` · ${master.n_calls} call${master.n_calls === 1 ? '' : 's'}` : ''}${master && master.freshness !== null && master.freshness !== undefined ? ` · <span style="color:${+master.freshness < 0.34 ? 'var(--neg)' : +master.freshness < 0.66 ? 'var(--warn)' : 'inherit'}">${(+master.freshness * 100).toFixed(0)}% fresh</span>` : ''}`;
+  const slCaptionText = slCaption.replace(/<[^>]+>/g, '');
+  const disc = D.discounting || [];
+  const discHead = disc.find(r => r.component === 'headline') || null;
+  // WHAT IS THE MARKET DISCOUNTING? Five questions answered from prices by stated rules
+  // (orchestration jobs/lib/discounting.mjs) and a headline that combines them. Broad and high
+  // level by request; the figures each answer rests on are in its sentence, and an answer whose
+  // inputs are more than ten days old is marked stale and left out of the headline.
+  const discCard = !disc.length ? '' : `<div class="card disc" style="margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
+      <span class="eyebrow" style="margin:0">What is the market discounting?</span>
+      <span style="font-size:11px;color:var(--muted)">from market prices, as of ${esc(String(disc[0].as_of))}</span></div>
+    <p class="dischead">${esc(discHead ? discHead.statement.replace(/ In its parts:.*$/, '') : '')}</p>
+    <div class="discgrid">
+      ${disc.filter(r => r.component !== 'headline').map(r => `<div class="discq${r.stale ? ' stale' : ''}">
+        <span class="eyebrow">${esc(r.label)}</span>
+        <b>${esc(r.verdict || '—')}</b>${r.stale ? ` <span class="evmute" title="Its newest input is from ${esc(String(r.data_as_of || 'no date'))}: more than ten days old, so it does not count toward the headline.">· stale</span>` : ''}
+        <p>${esc(r.statement)}</p></div>`).join('')}</div>
+    <p class="note" style="margin:10px 0 0">A reading of what is priced, not a forecast. Each answer comes from prices by a rule stated in the job: the 2-year against fed funds for the Fed's path, breakevens for inflation, sector and size leadership and the S&amp;P's trend for growth, spreads, the VIX and the MOVE against their own history for stress, real yields and the dollar for conditions. The headline combines the five. Rebuilt nightly.</p>
+  </div>`;
+
   return `<span class="eyebrow">Risk</span><h1>Stan</h1>
    <p class="sub">Where the risk sits across the eight models, what is flagged, and what the risk figures cannot say. The backtests and episode studies behind the brake live on <a href="#brembo">Brembo</a>.</p>
    <div class="kpis" style="grid-template-columns:repeat(5,1fr)">
-    <div class="card kpi click" data-go="#stan/speed-limit" style="cursor:pointer" title="Open the master Speed Limit and how each model sits against it">
+    <div class="card kpi click" data-go="#stan/speed-limit" style="cursor:pointer" title="${esc(slCaptionText)}. Open the master Speed Limit and how each model sits against it">
       <span class="eyebrow">Speed Limit</span>
       <b style="font-size:26px;color:${master && master.light ? LIGHT_COLOR[master.light] : 'var(--muted)'}">${master && master.sign_label ? esc(master.sign_label.replace(/^Speed Limit\s*/i, '')) : '—'}</b>
-      <small>${master && master.light ? esc(LIGHT_MEANING[master.light]) : 'no reading'}${master && master.n_calls ? ` · ${master.n_calls} call${master.n_calls === 1 ? '' : 's'}` : ''}${master && master.freshness !== null && master.freshness !== undefined ? ` · <span style="color:${+master.freshness < 0.34 ? 'var(--neg)' : +master.freshness < 0.66 ? 'var(--warn)' : 'inherit'}">${(+master.freshness * 100).toFixed(0)}% fresh</span>` : ''}</small></div>
+      <small>${discHead && discHead.verdict ? `discounting <strong class="kcap">${esc(discHead.verdict)}</strong>` : slCaption}</small></div>
     ${LENSES.map(l => {
       const r = (D.lensSnr || []).find(x => x.category === l.key && x.window_label === 'YTD');
       const v = r && r.signal_to_noise !== null ? +r.signal_to_noise : null;
@@ -2137,6 +2164,7 @@ function stan(mode = 'dashboard') {
         <small>${!r || !r.n_scored ? 'nothing scored yet' : r.too_few_to_judge ? `${r.n_scored} call${r.n_scored === 1 ? '' : 's'} · too few to judge` : `${r.n_scored} calls · YTD`}</small></div>`;
     }).join('')}
    </div>
+   ${discCard}
    ${(() => {
      // RESEARCH CALLS OVERDUE (owner's decision, 2026-11-05). The nightly flags it when no Predictive
      // call has been logged for ten days; Predictive is 60% of the light and decays without them.

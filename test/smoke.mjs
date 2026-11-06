@@ -983,6 +983,34 @@ if (!argRoute) {
   }
 
   // -------------------------------------------------------------------------
+  // 9b. What is the market discounting? The caption under the Speed Limit and the field beneath
+  //     the row (owner's request, 2026-11-05). What the page says must be what the job wrote: the
+  //     headline's short answer in the caption, every question's answer in the field. Until the
+  //     first reading exists the caption is the Speed Limit's own wording, and there is no field.
+  // -------------------------------------------------------------------------
+  currentRoute = 'stan-discounting';
+  await go('#stan');
+  {
+    const page = app();
+    const h = s_ => String(s_ ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const rows = await rest('latest_market_discounting', 'as_of,component,verdict,statement,stale').catch(e => { errors.push(`[stan-discounting] latest_market_discounting could not be read: ${e.message}`); return []; });
+    const head = rows.find(r => r.component === 'headline');
+    if (rows.length) {
+      need(page.includes('What is the market discounting?'), '[stan-discounting] the field is missing though a reading exists');
+      if (head && head.verdict) need(page.includes(`discounting <strong class=\"kcap\">${h(head.verdict)}</strong>`), `[stan-discounting] the Speed Limit caption does not carry the headline answer "${head.verdict}"`);
+      for (const r of rows.filter(x => x.component !== 'headline')) {
+        need(page.includes(h(r.statement)), `[stan-discounting] the ${r.component} answer on the page is not the one stored`);
+        if (r.verdict) need(page.includes(`<b>${h(r.verdict)}</b>`), `[stan-discounting] the ${r.component} verdict "${r.verdict}" is not shown`);
+      }
+      say(` ok  stan discounting       -> ${head && head.verdict ? `"${head.verdict}"` : 'no headline'} as of ${rows[0].as_of}; ${rows.filter(r => r.stale).length} stale of ${rows.length}`);
+    } else {
+      need(!page.includes('What is the market discounting?'), '[stan-discounting] the field is drawn with nothing stored');
+      need(!/discounting <strong/.test(page), '[stan-discounting] the caption claims a discounting answer with nothing stored');
+      say('     stan discounting: no reading stored yet (the migration or the first nightly has not run)');
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // 9c. Scatter: a position that lost money is red, in the dot and the ticker.
   // -------------------------------------------------------------------------
   currentRoute = 'scatter-colour';
