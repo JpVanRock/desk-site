@@ -1222,8 +1222,9 @@ function stan(mode = 'dashboard') {
   // ---- Which brake is worth owning ----
   //
   // THE WHITEPAPER'S INSURANCE VALUE INDEX, BUILT FROM PRICES INSTEAD OF GREEKS. It asks for skew,
-  // the volatility risk premium and payoff per premium dollar. The desk holds no option chains, no
-  // skew surface and no MOVE, so that index cannot be computed from real data -- and a modelled one
+  // the volatility risk premium and payoff per premium dollar. The desk holds no option chains and no
+  // skew surface (MOVE is now on file, from EODHD, but it is one input of three, and not a price of
+  // any brake the desk can own), so that index cannot be computed from real data -- and a modelled one
   // would put invented greeks on a page about real money. The question underneath it is answerable
   // from prices already held, and better, because it is then asked about instruments actually
   // ownable: what has this paid when the book fell, what does it cost the rest of the time, and
@@ -2153,11 +2154,11 @@ function stan(mode = 'dashboard') {
 // of the day -- where equities are, what volatility is saying, what the curve is doing, which
 // sectors led -- in one screen, with the full table underneath for when a specific name matters.
 //
-// RISK SITS BESIDE THE VIX, which is what was asked for. The MOVE index is ICE BofA's and no
-// connected source publishes it, so it is NOT here under its own name and nothing is dressed up
-// as it. What fills that gap is realised Treasury volatility computed from the desk's own TLT and
-// IEF closes, labelled realised rather than implied, because implied and realised are different
-// quantities and the gap between them is the thing a volatility desk is actually looking at.
+// RISK SITS BESIDE THE VIX, which is what was asked for, and the MOVE index beside it: ICE BofA's
+// Treasury implied volatility, which no connected source carried until EODHD (MOVE.INDX, loaded
+// from 2026-11-06 into macro_observations as the series MOVE, with a delayed quote in market
+// hours). Realised Treasury volatility from the desk's own TLT and IEF closes stays under it,
+// labelled realised, because implied against realised is what a volatility desk actually reads.
 //
 // Australia and South Africa were removed from the country list at the owner's request, to give
 // the panel room. They remain in the universe and in the table below: the geography fits are
@@ -2228,10 +2229,10 @@ async function loadPerfIntraday() {
 // levels rather than rebased to zero -- a VIX of 16 means something on its own, where SPY at 763
 // does not, and normalising them would throw away the only thing they say.
 //
-// MOVE IS NOT HERE, and it is the one the owner asked for first. It is ICE BofA's index, no
-// connected source publishes it, and there is no honest way to draw a line labelled MOVE. What
-// stands in its place is realised Treasury volatility computed from the desk's own TLT closes --
-// labelled realised, dashed rather than solid, so it never reads as another implied index.
+// MOVE HAS ITS OWN AXIS, under the main chart. It is quoted in basis points of yield a year, not
+// in percent of price, so at ~100 on this axis it would flatten every other line to the floor.
+// The dashed TLT line stays on the main axis: realised Treasury volatility in the same units as
+// the VIX family, drawn dashed so it never reads as another implied index.
 const VOL_SERIES = [
   ['VIXCLS', 'VIX', '#4ea1ff'],
   ['OVXCLS', 'OVX · oil', '#fb923c'],
@@ -2244,7 +2245,7 @@ async function loadVolSeries() {
   if (volSeries || volLoading) return;
   volLoading = true;
   try {
-    const codes = VOL_SERIES.map(v => v[0]);
+    const codes = [...VOL_SERIES.map(v => v[0]), 'MOVE'];
     const meta = await q(() => sb.from('macro_series').select('id,series_id').in('series_id', codes), { label: 'macro series' });
     const out = {};
     for (const m of meta) {
@@ -2268,8 +2269,8 @@ async function loadVolSeries() {
   if ((location.hash || '').startsWith('#markets')) $('#app').innerHTML = markets();
 }
 
-// Annualised volatility of the last n daily returns. Used for the bond-volatility line that
-// stands in for MOVE, and said out loud to be realised rather than implied.
+// Annualised volatility of the last n daily returns: realised Treasury volatility, drawn beside
+// the implied indices and said out loud to be realised rather than implied.
 function realisedVol(series, n = 30) {
   if (!series || series.length < n + 2) return null;
   const px = series.slice(-(n + 1)).map(x => x.px);
@@ -2303,7 +2304,7 @@ function markets() {
     if (ALWAYS_OPEN.has(symbol)) return new Date(q.quote_ts).toISOString().slice(0, 10) >= (closeDate || '') ? q : null;
     return nyDate(q.quote_ts) > (closeDate || '') ? q : null;
   };
-  const LIVE_INDEX = { VIXCLS: 'VIX', VXVCLS: 'VIX3M', VXNCLS: 'VXN', GVZCLS: 'GVZ', OVXCLS: 'OVX' };
+  const LIVE_INDEX = { VIXCLS: 'VIX', VXVCLS: 'VIX3M', VXNCLS: 'VXN', GVZCLS: 'GVZ', OVXCLS: 'OVX', MOVE: 'MOVE' };
   const liveMac = code => { const m = mac(code); return LIVE_INDEX[code] ? live(LIVE_INDEX[code], m && m.obs_date) : null; };
   const macV = code => { const q = liveMac(code); if (q) return +q.last; const m = mac(code); return m && m.value !== null ? +m.value : null; };
   const liveUsed = [];
@@ -2606,12 +2607,13 @@ function markets() {
     ${mrow('CBOE VIX', 'VIXCLS', v => v.toFixed(2), v => v === null ? 'var(--muted)' : v >= 25 ? 'var(--neg)' : v <= 14 ? 'var(--pos)' : 'var(--text)')}
     ${mrow('VIX, 3-month', 'VXVCLS')}
     ${vrow('VIX / VIX3M', term === null ? null : term.toFixed(2), term !== null && term > 1 ? '  inverted' : '', 'One-month implied against three-month. Above 1 means the market is paying more for protection now than later, which is the shape that only appears under stress.')}
+    ${mrow('ICE BofA MOVE (Treasuries)', 'MOVE', v => v.toFixed(1))}
     ${mrow('Nasdaq 100 (VXN)', 'VXNCLS')}
     ${mrow('Russell 2000 (RVX)', 'RVXCLS')}
     ${mrow('Crude oil (OVX)', 'OVXCLS')}
     ${mrow('Gold (GVZ)', 'GVZCLS')}
     ${subhead('Realised volatility, 30 sessions')}
-    ${vrow('Long Treasuries (TLT)', tltVol === null ? null : (tltVol * 100).toFixed(1), '%', 'The MOVE index is ICE BofA\'s and no connected source publishes it. This is realised volatility computed from the desk\'s own TLT closes — a different quantity from implied, and labelled as one.')}
+    ${vrow('Long Treasuries (TLT)', tltVol === null ? null : (tltVol * 100).toFixed(1), '%', 'Realised volatility computed from the desk\'s own TLT closes — what Treasuries have actually done, against the MOVE above, which is what the options market charges for what they might do.')}
     ${vrow('7-10 year (IEF)', iefVol === null ? null : (iefVol * 100).toFixed(1), '%')}
     ${vrow('S&P 500 (SPY)', spyVol === null ? null : (spyVol * 100).toFixed(1), '%')}
     ${subhead('Credit and conditions')}
@@ -2619,7 +2621,7 @@ function markets() {
     ${mrow('Investment grade OAS', 'BAMLC0A0CM', v => v.toFixed(2) + '%')}
     ${mrow('Financial conditions (NFCI)', 'NFCI', v => v.toFixed(2), v => v === null ? 'var(--muted)' : v > 0 ? 'var(--neg)' : 'var(--pos)')}
     ${mrow('Financial stress (STLFSI4)', 'STLFSI4', v => v.toFixed(2), v => v === null ? 'var(--muted)' : v > 0 ? 'var(--neg)' : 'var(--pos)')}`,
-    `<b>MOVE is not here.</b> It is ICE BofA's index and no connected source publishes it, so rather than approximate it under its own name the panel shows <b>realised</b> Treasury volatility from the desk's own closes. Implied and realised are different quantities. The euro FX volatility index was left out too: FRED discontinued it in March 2025, and a stale number on a risk panel is worse than a missing one. Each FRED line carries its own observation date, because they do not all update daily.`);
+    `<b>MOVE</b> is ICE BofA's Treasury implied volatility, from EODHD: a delayed quote in market hours, the daily close otherwise, in basis points of yield a year. Below it, <b>realised</b> Treasury volatility from the desk's own closes, in percent: implied against realised is the comparison, and the two are different quantities. The euro FX volatility index was left out too: FRED discontinued it in March 2025, and a stale number on a risk panel is worse than a missing one. Each FRED line carries its own observation date, because they do not all update daily.`);
 
   // ---- normalised performance ----
   // Captured so the enlarged view redraws the identical chart rather than a second implementation
@@ -2751,6 +2753,29 @@ function markets() {
       let lastY = -99;
       for (const e of ends) { let y = Y(e.v); if (y - lastY < 13) y = lastY + 13; e.y = y; lastY = y; }
       const vbar = `<div class="perfbar">${PERF_WINDOWS.map(([k]) => `<button class="pill${k === volWin ? ' on' : ''}" data-vol="${k}">${k}</button>`).join('')}</div>`;
+      // MOVE, on its own axis and over the same window. Its percentile is printed only once five
+      // years of closes are on file, the same rule Adam's MOVE leg uses: a level ranked "against
+      // five years" needs the five years.
+      const moveAll = volSeries.MOVE || [];
+      const movePts = moveAll.filter(x => x.d >= startD);
+      const moveChart = movePts.length < 2 ? `<div class="evmute" style="font-size:11px;margin:6px 0 2px">MOVE · ${moveAll.length ? 'not enough closes in this window' : 'no history on file yet: the nightly loads it from EODHD, back to 2002, the first night the series exists'}.</div>` : (() => {
+        const W2 = 820, H2 = 96, p2 = { l: 10, r: 112, t: 10, b: 20 };
+        const vs = movePts.map(p => p.v), lo2 = Math.min(...vs) * 0.96, hi2 = Math.max(...vs) * 1.04;
+        const X2 = i => p2.l + (i / Math.max(1, movePts.length - 1)) * (W2 - p2.l - p2.r);
+        const Y2 = v => p2.t + (1 - (v - lo2) / Math.max(1e-6, hi2 - lo2)) * (H2 - p2.t - p2.b);
+        const last = movePts.at(-1);
+        const from5 = `${+last.d.slice(0, 4) - 5}${last.d.slice(4)}`;
+        const win5 = moveAll.filter(x => x.d >= from5 && x.d < last.d).map(x => x.v);
+        const pct = moveAll[0].d <= from5 && win5.length >= 1000 ? Math.round(100 * win5.filter(v => v <= last.v).length / win5.length) : null;
+        return `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-top:8px;font-size:11.5px"><b style="color:#2dd4bf">MOVE · Treasury implied volatility</b>
+          <span class="evmute">${esc(last.v.toFixed(1))} on ${esc(last.d)}${pct === null ? '' : ` · ${pct}th percentile of five years`}</span></div>
+          <svg viewBox="0 0 ${W2} ${H2}" style="width:100%;height:auto" role="img" aria-label="MOVE index over the window">
+          <line x1="${p2.l}" y1="${(H2 - p2.b).toFixed(1)}" x2="${W2 - p2.r}" y2="${(H2 - p2.b).toFixed(1)}" stroke="var(--line)"/>
+          <path d="${movePts.map((p, i) => `${i ? 'L' : 'M'}${X2(i).toFixed(1)} ${Y2(p.v).toFixed(1)}`).join('')}" fill="none" stroke="#2dd4bf" stroke-width="1.6"/>
+          <text x="${(W2 - 2).toFixed(1)}" y="${(Y2(last.v) + 3.5).toFixed(1)}" font-size="10.5" font-weight="600" text-anchor="end" fill="#2dd4bf">MOVE ${esc(last.v.toFixed(1))}</text>
+          <text x="${W2 - p2.r + 6}" y="${(Y2(hi2 / 1.04) + 3.5).toFixed(1)}" font-size="10" fill="var(--muted)">${esc((hi2 / 1.04).toFixed(0))}</text>
+          <text x="${W2 - p2.r + 6}" y="${(Y2(lo2 / 0.96) + 3.5).toFixed(1)}" font-size="10" fill="var(--muted)">${esc((lo2 / 0.96).toFixed(0))}</text></svg>`;
+      })();
       return `${vbar}<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto" role="img" aria-label="Implied volatility indices">
           ${ticks}
           ${lines.map(l => `<path d="${path(l.pts)}" fill="none" stroke="${l.tone}" stroke-width="1.7"/>`).join('')}
@@ -2759,8 +2784,9 @@ function markets() {
           <text x="${pad.l}" y="${Hh - 6}" font-size="10" fill="var(--muted)">${esc(dates[0])}</text>
           <text x="${(W - pad.r).toFixed(1)}" y="${Hh - 6}" font-size="10" text-anchor="end" fill="var(--muted)">${esc(dates.at(-1))}</text>
         </svg>
+        ${moveChart}
         <p class="note"><b>Levels, not rebased.</b> A VIX of 16 means something on its own where an index level does not, so these are drawn as they are — normalising them would throw away the only thing they say. This card now carries <b>its own window</b> and starts on whatever the chart above is showing until you move it${volWin === '1D' ? '. One day is the exception: these are daily series and a single session would be one point per line, so the last two weeks are drawn instead' : ''}.
-        <b>MOVE is not here.</b> It is ICE BofA's index and no connected source publishes it, so rather than draw a line under its name the dashed grey is <b>realised</b> volatility of TLT over 30 sessions, annualised — a different quantity from an implied index, which is why it is dashed and why it is labelled realised.</p>`;
+        <b>MOVE has its own axis</b>, under the main chart: ICE BofA's Treasury implied volatility, from EODHD, is quoted in basis points of yield a year rather than in percent, so on the main axis it would flatten every other line. The dashed grey on the main chart is <b>realised</b> volatility of TLT over 30 sessions, annualised — a different quantity from an implied index, which is why it is dashed and labelled realised.</p>`;
     })();
     volInner = inner;
     return `<div class="card panel" data-bigchart="vol" style="cursor:zoom-in" title="Click to enlarge"><div class="phead" style="display:flex;align-items:center;justify-content:space-between;gap:8px">Volatility <span style="color:var(--muted);font-size:11px;font-weight:400">⤢ enlarge</span></div>${inner}</div>`;
@@ -3754,7 +3780,7 @@ function adam() {
       <div style="flex:1;min-width:220px">
         <div class="eyebrow" style="margin-bottom:4px">Collateral multiplier</div>
         <div style="font-size:33px;font-weight:700;line-height:1">${(+gliNums.collateral_multiplier).toFixed(2)}×</div>
-        <div style="font-size:12.5px;color:var(--muted);margin-top:3px">${howell && howell.move_quoted ? `MOVE quoted at ${howell.move_quoted}` : 'bond volatility sets the haircut'}</div>
+        <div style="font-size:12.5px;color:var(--muted);margin-top:3px">${(() => { const mv = mac('MOVE'); return mv && mv.value !== null ? `MOVE ${(+mv.value).toFixed(1)} on ${esc(mv.obs_date)}${howell && howell.move_quoted ? ` · the note quoted ${esc(String(howell.move_quoted))}` : ''}` : howell && howell.move_quoted ? `MOVE quoted at ${esc(String(howell.move_quoted))} in the note` : 'bond volatility sets the haircut'; })()}</div>
         ${spark(gliAll, 'collateral_multiplier', 'var(--flat)')}</div>
     </div>
     <p class="note" style="margin-top:12px"><b>The index is the base times the multiplier.</b> The shadow monetary base is central bank liquidity plus collateral — what Howell calls the bedrock — and the multiplier is how much broad liquidity that base supports. It moves with bond volatility through haircuts: <b>volatility down → haircuts down → multiplier up → liquidity up.</b> At the latest reading $${(+gliNums.smb).toFixed(2)}tn × ${(+gliNums.collateral_multiplier).toFixed(2)} = $${(+gliNums.smb * +gliNums.collateral_multiplier).toFixed(2)}tn against a published $${(+gliNums.gli_full).toFixed(2)}tn, and that identity is checked on every row before it is stored — a row that fails it has a transcription error, which is the real risk when figures are read off a PDF by hand. <b>The base is falling while the multiplier sits at a record</b>, which is this week's whole message: the index is being held up by haircuts that have not yet adjusted to higher volatility.</p>
