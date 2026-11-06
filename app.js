@@ -157,7 +157,7 @@ async function load() {
   // signal-to-noise one made the statistics block read contribution rows. The rule is append
   // only: add the query at the END of the array and its name at the END of this list.
   const [strategies, alloc, secs, classes, factors, cLoad, sLoad, runs, outputs, prices, technicals, macro, views, roadmap, sources, calls, routingLog, contribs, scenarios, stress, perf, attrib, speedLimit, modelSpeed, rocBoard, trigHits, trigRules, stn, periodStats, contribution, factorAlloc, valueSeries, snapIntegrity, currentHoldings, factorOverrides, lensSnr, holdingRR, trailing, styleExposure, styleCoverage, monthly, trades, positionScores, decisionStats, assessments, tradeReviews, svenRules, newsFailure, beautyReading, beautyComponents, macroRegime, beautyRanks, beautyHistory, modelVar, tailRisk, firmMetrics, firmExposures, firmStress, blendFit, modelDuration, geoExposure, geoCoverage, fingerprint, fingerprintCov, taxEff, taxCov, openLots, journal, journalVerdicts, sandboxTargets, secDuration, secFingerprint, secStyle, crowding, narReading, narComponents, narAttention, narratives, decisionQuality, quadHistory, netLiq, gli, macroNow, turnings, generations, tapeTicker, humility,
-    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill, quadPit, fastCars, fastAside, liveQuotes, discounting, dispatchFail] = await Promise.all([
+    narReflex, creditLegs, creditReading, svenPrecedent, svenBreaks, tapeQuiet, slBoard, insValue, insPricing, ladder, gauges, rx, fragHist, frag, fragEps, stressTests, sleeves, flowWins, flowMonths, flowMonitor, flowHist, flowNext, eventRisk, slHist, insCands, crMonth, crBox, crSkill, quadPit, fastCars, fastAside, liveQuotes, discounting, dispatchFail, nyseTick] = await Promise.all([
     qSoft(sb.from('strategies').select('id,name,label,sort_order,benchmark,aum,aum_as_of,equity_weight').order('sort_order'), 'strategies'),
     qSoft(sb.from('target_allocations').select('strategy_id,security_id,asset_class_id,target_weight,effective_from').is('effective_to', null), 'target allocations'),
     qSoft(sb.from('securities').select('id,ticker,name,asset_class_id,role,high_potential,high_potential_since,high_potential_note,on_watchlist'), 'securities'),
@@ -294,6 +294,8 @@ async function load() {
     // while it lasts; closed by the first accepted start. Its own query so the ten newest runs above
     // never push a days-old failure off the page.
     qSoft(sb.from('data_runs').select('started_at,detail').eq('job', 'github_dispatch').eq('status', 'failed').is('finished_at', null).order('started_at', { ascending: false }).limit(1), 'dispatch failures'),
+    // The official NYSE TICK per session, from EODData (jobs/load-nyse-tick.mjs), for Sven's TICK card.
+    qAllSoft(() => sb.from('nyse_tick_daily').select('session_date,high,low,close').order('session_date', { ascending: true }), 'nyse tick'),
   ]);
   const cls = Object.fromEntries(classes.map(c => [c.id, c]));
   const sec = Object.fromEntries(secs.map(s => [s.id, s]));
@@ -407,7 +409,7 @@ async function load() {
     flowHist: newest(flowHist || []), flowNext: newest(flowNext || []),
     eventRisk: newest(eventRisk || []), slHist: slHist || [], insCands: insCands || [],
     crMonth: crMonth || [], crBox: crBox || [], crSkill: newest(crSkill || []), quadPit: quadPit || [],
-    fastCars: fastCars || [], fastAside: fastAside || [], liveQuotes: liveQuotes || [], discounting: discounting || [], dispatchFail: (dispatchFail || [])[0] || null,
+    fastCars: fastCars || [], fastAside: fastAside || [], liveQuotes: liveQuotes || [], discounting: discounting || [], dispatchFail: (dispatchFail || [])[0] || null, nyseTick: nyseTick || [],
     // The desk's own macro loadings, per security with the asset class as fallback -- the same
     // lookup the models' net exposure uses -- so the rebalance factor map can weigh a ticker the
     // model does not hold yet.
@@ -5041,10 +5043,55 @@ function sven() {
 
   return `<span class="eyebrow">Market internals</span><h1>Sven</h1>
    <p class="sub">Raschke's twelve rules across the major indices, whether each index is behaving the way it normally behaves, and whether assets are responding to their own news.</p>
-   ${quietCard}${matrix}${actingCard}${newsCard}`;
+   ${quietCard}${matrix}${svenTickCard()}${actingCard}${newsCard}`;
 }
 
 // All twelve rules for one index, with the numbers and the method behind each.
+// ---- Linda Raschke's TICK range (owner's request, 2026-11-06) ----
+//
+// The NYSE TICK is the number of NYSE-listed issues whose last trade was an uptick minus the number
+// on a downtick, through the session. Linda Raschke's timing model reads the RANGE of its daily
+// highs and lows: "when the tick range narrows, Short side bias, when it widens out (green), Buy
+// signal" (her post of 2026-01-02). This draws her top panel -- the daily highs, lows and closes,
+// each smoothed -- from the official TICK (EODData INDEX:TICK, loaded nightly).
+//
+// THE SMOOTHING IS INFERRED, NOT PUBLISHED. An 8-day simple average reproduces the values printed
+// at the right edge of her chart on 2025-12-31: lows -569 against her -577, close -27 against her
+// -27. Her narrowing and widening THRESHOLDS are not published, so no signal is drawn until a rule
+// has been set, checked against her seven dated signals of 2023-2025, and backtested.
+const TICK_SMA = 8, TICK_WINDOW = 504;    // about two years shown, as in her chart
+function svenTickCard() {
+  const rows = D.nyseTick || [];
+  const head = `<div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <h2 style="margin:0">NYSE TICK range <span style="font-weight:400;color:var(--muted)">· Linda Raschke's timing model</span></h2>
+      ${rows.length ? `<span style="font-size:12px;color:var(--muted)">${esc(rows.at(-1).session_date)} · ${TICK_SMA}-day averages · official TICK via EODData</span>` : ''}</div>`;
+  if (rows.length < TICK_SMA + 2) {
+    return `<div class="card" style="margin-bottom:14px">${head}
+      <div class="empty" style="margin-top:8px">${rows.length ? `Only ${rows.length} session${rows.length === 1 ? '' : 's'} on file so far` : 'No TICK history on file yet'}: the nightly loads the official NYSE TICK from EODData (jobs/load-nyse-tick.mjs), a year of it on its first night.</div></div>`;
+  }
+  const sma = key => rows.map((r, i) => i < TICK_SMA - 1 ? null : rows.slice(i - TICK_SMA + 1, i + 1).reduce((a, x) => a + +x[key], 0) / TICK_SMA);
+  const hi = sma('high'), lo = sma('low'), cl = sma('close');
+  const from = Math.max(TICK_SMA - 1, rows.length - TICK_WINDOW);
+  const dates = rows.slice(from).map(r => r.session_date);
+  const cut = a => a.slice(from);
+  const last = rows.at(-1), n0 = v => `${v >= 0 ? '+' : ''}${Math.round(v)}`;
+  const svg = priceChartSvg(dates, {
+    series: [
+      { vals: cut(hi), color: 'var(--accent)', width: 1.4 },
+      { vals: cut(cl), color: 'var(--muted)', width: 1.1 },
+      { vals: cut(lo), color: 'var(--neg)', width: 1.4 },
+    ],
+    hlines: [{ v: 0, color: 'var(--muted)', label: '0', dash: '2,4' }],
+    dp: 0,
+  }, 900, 240);
+  const legend = [['var(--accent)', `Highs ${n0(hi.at(-1))}`], ['var(--muted)', `Close ${n0(cl.at(-1))}`], ['var(--neg)', `Lows ${n0(lo.at(-1))}`]]
+    .map(([c, t]) => `<span style="display:inline-flex;align-items:center;gap:6px;margin-right:16px"><span style="width:14px;height:2px;background:${c};display:inline-block"></span>${esc(t)}</span>`).join('');
+  return `<div class="card" style="margin-bottom:14px">${head}
+    <div style="margin:10px 0 4px;font-size:12px;color:var(--text)">${legend}<span style="color:var(--muted)">· ${esc(last.session_date)} itself: high ${n0(last.high)}, low ${n0(last.low)}, close ${n0(last.close)}</span></div>
+    <div style="overflow-x:auto">${svg}</div>
+    <p class="note">The <b>NYSE TICK</b> counts NYSE stocks whose last trade was an uptick minus those on a downtick, all session long; a day's high and low are its most lopsided moments of buying and of selling. Raschke's model watches the <b>range</b> between them: <b>narrowing</b>, the highs sagging and the lows lifting, is her short-side bias, and <b>widening</b> out is her buy signal. Each line is an ${TICK_SMA}-day average of the daily figure, which reproduces the end values of the chart she published on 2 January 2026. <b>No signals are marked yet:</b> her post gives the idea but not her thresholds, so the narrowing and widening calls will be set, checked against the seven signals she dated between October 2023 and December 2025, and backtested against the S&amp;P before they appear here. Source: the official TICK from EODData, loaded after each close; ${rows.length} sessions on file from ${esc(rows[0].session_date)}.</p></div>`;
+}
+
 function svenDrawer(ticker) {
   const rows = (D.svenRules || []).filter(r => r.ticker === ticker).sort((a, b) => a.rule_no - b.rule_no || a.rule_key.localeCompare(b.rule_key));
   if (!rows.length) return `<button class="close" data-go="#sven">Close</button><h1>${esc(ticker)}</h1><div class="card"><div class="empty">No rule signals for this index.</div></div>`;
@@ -7100,7 +7147,7 @@ const TRACK_COLORS = { bullish: 'var(--pos)', bearish: 'var(--neg)', neutral: 'v
 // series — the exposure and macro charts only ever draw lines, and silently rendering them as
 // "no history" because they passed the older shape is a worse failure than accepting both.
 function priceChartSvg(dates, opts, W, H) {
-  const { series = [], bands = [], hlines = [], markers = [] } = Array.isArray(opts) ? { series: opts } : (opts || {});
+  const { series = [], bands = [], hlines = [], markers = [], dp: dpOpt = null } = Array.isArray(opts) ? { series: opts } : (opts || {});
   const pad = { l: 46, r: 46, t: 10, b: 16 };
   // The scale comes from the plotted series and bands only. Horizontal levels deliberately do
   // NOT get a vote: a support level well below anything in the window would compress the price
@@ -7117,7 +7164,7 @@ function priceChartSvg(dates, opts, W, H) {
   const drawn = hlines.filter(h => Number.isFinite(h.v) && h.v >= min && h.v <= max);
   const x = i => pad.l + (i / Math.max(1, dates.length - 1)) * (W - pad.l - pad.r);
   const y = v => H - pad.b - ((v - min) / span) * (H - pad.t - pad.b);
-  const dp = max < 10 ? 3 : 2;
+  const dp = dpOpt ?? (max < 10 ? 3 : 2);     // a count like the TICK asks for 0
   const gridY = [0, 0.25, 0.5, 0.75, 1].map(f => min + f * span);
 
   // Markers are placed a fixed fraction of the pane away from the bar so they never sit on it.
