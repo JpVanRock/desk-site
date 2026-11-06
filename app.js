@@ -8,6 +8,9 @@ const pct = (x, d = 1) => (x * 100).toFixed(d) + '%';
 // it was struck in, whatever time zone the reader is in.
 const nyDate = ts => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ts));
 const nyClock = ts => new Date(ts).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' });
+// The clock time alone for a quote from today in New York; the date too for an older one, so
+// Friday's last quote is not read as this morning's on a Monday before the open.
+const nyStamp = ts => nyDate(ts) === nyDate(Date.now()) ? nyClock(ts) : `${nyDate(ts).slice(5)} ${nyClock(ts)}`;
 const sgn = x => (x > 0 ? '+' : '') + x.toFixed(2);
 const CLASS_COLORS = { equities: '#7aa2f7', bonds: '#e0605e', cash: '#3fb27f', commodities_real_assets: '#d6a93b', gold: '#e8c96a', alternatives: '#b28cf0', unclassified: '#5b6577' };
 const cfg = window.DESK_CONFIG;
@@ -330,6 +333,15 @@ async function load() {
   // Both allocation tests are written with an as_of, and a re-run makes a new dated set rather
   // than overwriting. Keep only the newest set so a stale run can't sit alongside a fresh one.
   const newest = rows => { const d = rows.map(r => r.as_of).sort().pop(); return rows.filter(r => r.as_of === d); };
+  // The newest run PER MODEL (or per any key), for the sets compute-model-reporting writes one model
+  // at a time. newest() above keeps only the single newest date, so while the nightly loop runs, or
+  // after one model's run fails, every model without a row on that date dropped off the page. Here a
+  // model keeps its own latest rows, which carry their as_of, and the page says when they are older.
+  const newestPer = (rows, keyOf = r => r.strategy_id) => {
+    const d = new Map();
+    for (const r of rows || []) { const k = keyOf(r); if (!d.has(k) || r.as_of > d.get(k)) d.set(k, r.as_of); }
+    return (rows || []).filter(r => r.as_of === d.get(keyOf(r)));
+  };
   const contribByStrategy = {}, stressByStrategy = {};
   for (const c of newest(contribs)) (contribByStrategy[c.strategy_id] ||= []).push({ ...c, ticker: sec[c.security_id]?.ticker || '?', peer: sec[c.closest_peer_id]?.ticker || null });
   for (const s of newest(stress)) (stressByStrategy[s.strategy_id] ||= []).push(s);
@@ -353,8 +365,8 @@ async function load() {
     // them raw sums every run ever made. It showed up as a contribution total of 200% weight and
     // double the basis points the day a second run landed — a figure that looks like a number
     // rather than like a bug, which is the dangerous kind.
-    periodStats: newest(periodStats), contribution: newest(contribution),
-    factorAlloc: newest(factorAlloc), valueSeries: valueSeries || [], snapIntegrity: snapIntegrity || [],
+    periodStats: newestPer(periodStats), contribution: newestPer(contribution),
+    factorAlloc: newestPer(factorAlloc, r => `${r.strategy_id}|${r.basis}`), valueSeries: valueSeries || [], snapIntegrity: snapIntegrity || [],
     currentHoldings: currentHoldings || [], factorOverrides: factorOverrides || [], lensSnr: lensSnr || [], holdingRR: newest(holdingRR), trailing: newest(trailing),
     styleExposure: newest(styleExposure), styleCoverage: newest(styleCoverage), monthly: newest(monthly),
     trades: newest(trades), positionScores: newest(positionScores), decisionStats: newest(decisionStats),
@@ -1702,12 +1714,16 @@ function stan(mode = 'dashboard') {
   // ---- Model Surveillance ----
   // A performance cell: green when ahead, red when behind, with the comparison named in the
   // tooltip so a colour never has to be guessed at.
-  const perfCell = (v, title) => {
+  const perfCell = (v, title, note) => {
     if (v === null || v === undefined) return `<td class="num"><span style="color:var(--muted)" title="${esc(title)}">–</span></td>`;
     const good = v >= 0;
     return `<td class="num"><span title="${esc(title)}" style="display:inline-block;padding:2px 7px;border-radius:5px;font-variant-numeric:tabular-nums;
-      background:${good ? 'rgba(63,178,127,.16)' : 'rgba(224,96,94,.16)'};color:${good ? 'var(--pos)' : 'var(--neg)'}">${(v >= 0 ? '+' : '') + (v * 100).toFixed(1)}%</span></td>`;
+      background:${good ? 'rgba(63,178,127,.16)' : 'rgba(224,96,94,.16)'};color:${good ? 'var(--pos)' : 'var(--neg)'}">${(v >= 0 ? '+' : '') + (v * 100).toFixed(1)}%</span>${note ? `<br><small style="color:var(--warn)">${esc(note)}</small>` : ''}</td>`;
   };
+  // A model whose newest reporting run is older than the others' -- its run failed or has not
+  // reached it yet tonight. Its figures are real but older, and the cell says from when.
+  const newestStatsRun = (D.periodStats || []).map(x => x.as_of).sort().pop() || null;
+  const olderRun = ps => ps && newestStatsRun && ps.as_of < newestStatsRun ? `from the ${ps.as_of} run` : null;
   // The model measured in something other than dollars: (1+model)/(1+numeraire) - 1.
   const vsNumeraire = (mr, nr) => (mr === null || nr === null || nr === undefined || nr <= -1) ? null : (1 + mr) / (1 + nr) - 1;
 
@@ -1795,7 +1811,7 @@ function stan(mode = 'dashboard') {
        <td class="num">${r.measured ? `<span class="click" data-go="#stan/top3-${esc(r.m.id)}" style="cursor:pointer;text-decoration:underline dotted" title="Show the three largest risk contributors"><b>${(r.top3Risk * 100).toFixed(0)}%</b></span><br><small style="color:var(--muted)">on ${(r.top3Wt * 100).toFixed(0)}% wt</small>` : '<span style="color:var(--muted)">–</span>'}</td>
        ${perfCell(mr, onTarget
           ? 'Year-to-date on TARGET weights — this model has no dated holdings history, so there is nothing measured to use. Target weights are today\'s book held back through the window, which flatters a year the decisions had not been made in.'
-          : `Year-to-date on what the model actually held, ${advisoryFee ? 'net of the 0.67% advisory fee' : 'gross of fees'}${ps.start_date ? `, ${ps.start_date} to ${ps.end_date}` : ''}${ps.window_starts_in_gap ? '. The window opens inside the stretch with no holdings snapshot, so the weights were carried forward unchanged into it.' : ''}`)}
+          : `Year-to-date on what the model actually held, ${advisoryFee ? 'net of the 0.67% advisory fee' : 'gross of fees'}${ps.start_date ? `, ${ps.start_date} to ${ps.end_date}` : ''}${ps.window_starts_in_gap ? '. The window opens inside the stretch with no holdings snapshot, so the weights were carried forward unchanged into it.' : ''}${olderRun(ps) ? `. This model's newest reporting run is ${ps.as_of}, older than the other models': its latest run did not complete.` : ''}`, onTarget ? null : olderRun(ps))}
        ${perfCell(vsNumeraire(mCpi, cpi), cpi === null
           ? 'No CPI reading covers this window. Check that the macro feed is still running.'
           : `Model ${(mCpi * 100).toFixed(1)}%${cpiOnTarget ? ' (target weights)' : ' (measured)'} against CPI ${(cpi * 100).toFixed(1)}% over ${p.cpi_window_start} to ${p.cpi_window_end} — a SHORTER window than the YTD beside it, because CPI is monthly and published in arrears. Both legs run over the same dates.`)}
@@ -2249,20 +2265,30 @@ function markets() {
   // volatility indices map from their FRED series; yields, spreads and the dollar index have no
   // live source and stay on FRED's daily figures.
   const liveBy = Object.fromEntries((D.liveQuotes || []).map(q => [q.symbol, q]));
-  const live = (symbol, closeDate) => { const q = liveBy[symbol]; return q && nyDate(q.quote_ts) > (closeDate || '') ? q : null; };
+  // Crypto trades around the clock and its daily bars are UTC days, so a Bitcoin quote is compared
+  // by its UTC date: a quote from the same or a later UTC day than the stored bar wins. Compared by
+  // New York date, the partial bar the 03:44 UTC nightly stored as "2026-11-05" (80,652.97) beat
+  // every quote of 11-05 and was shown all day as Bitcoin's close while the quote said 75,928.65.
+  const ALWAYS_OPEN = new Set(['BTCUSD', 'ETHUSD']);
+  const live = (symbol, closeDate) => {
+    const q = liveBy[symbol]; if (!q) return null;
+    if (ALWAYS_OPEN.has(symbol)) return new Date(q.quote_ts).toISOString().slice(0, 10) >= (closeDate || '') ? q : null;
+    return nyDate(q.quote_ts) > (closeDate || '') ? q : null;
+  };
   const LIVE_INDEX = { VIXCLS: 'VIX', VXVCLS: 'VIX3M', VXNCLS: 'VXN', GVZCLS: 'GVZ', OVXCLS: 'OVX' };
   const liveMac = code => { const m = mac(code); return LIVE_INDEX[code] ? live(LIVE_INDEX[code], m && m.obs_date) : null; };
   const macV = code => { const q = liveMac(code); if (q) return +q.last; const m = mac(code); return m && m.value !== null ? +m.value : null; };
   const liveUsed = [];
-  // The stamp the page prints is the newest STOCK-MARKET quote: Bitcoin trades through the night,
-  // and its time would make a closed session's grid look as if it had been quoted at 9 pm.
-  const sessionStamp = (() => {
-    const t = (D.liveQuotes || []).filter(q => q.symbol !== 'BTCUSD' && q.symbol !== 'ETHUSD')
-      .filter(q => { const r = rows.find(x => x.ticker === q.symbol); const m = Object.keys(LIVE_INDEX).find(k => LIVE_INDEX[k] === q.symbol);
-        return live(q.symbol, r ? r.price && r.price.as_of : m ? (mac(m) || {}).obs_date : null); })
-      .map(q => q.quote_ts).sort().pop();
-    return t ? nyClock(t) : null;
-  })();
+  // The stamp the page prints is the newest STOCK-MARKET quote the grid actually SHOWED. Bitcoin
+  // trades through the night, and its time would make a closed session's grid look quoted at 9 pm.
+  // It was built from every row in live_quotes, so a symbol not on the grid (MOVE, a benchmark)
+  // could print "delayed quotes" over a grid of closes. The grid is drawn first and the stamp put
+  // in after (STAMP below), because the subtitle comes before the grid in the page.
+  const STAMP = '\u0000session-stamp\u0000';
+  const stampHtml = () => {
+    const t = liveUsed.filter(q => !ALWAYS_OPEN.has(q.symbol)).map(q => q.quote_ts).sort().pop();
+    return t ? `<b>Above the Bond King: delayed quotes, newest ${esc(nyStamp(t))} ET</b> (EODHD, about 15 minutes behind; refreshed every 15 minutes in market hours). Yields, spreads and the dollar index are FRED's daily figures. Below, and on every other page: ` : '';
+  };
 
   const chg = v => v === null || v === undefined ? '<span style="color:var(--muted)">–</span>'
     : `<span style="color:${v > 0 ? 'var(--pos)' : v < 0 ? 'var(--neg)' : 'var(--muted)'}">${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%</span>`;
@@ -2277,7 +2303,7 @@ function markets() {
     if (q) liveUsed.push(q);
     const last = q ? Number(q.last) : r.price ? Number(r.price.close) : null;
     const day = q ? (q.change_pct === null ? null : +q.change_pct / 100) : r.price ? r.price.day_change_pct : null;
-    const when = q ? `Delayed quote, ${nyClock(q.quote_ts)} ET (EODHD)` : r.price ? `Close ${r.price.as_of}` : 'No price';
+    const when = q ? `Delayed quote, ${nyStamp(q.quote_ts)} ET (EODHD)` : r.price ? `Close ${r.price.as_of}` : 'No price';
     return `<div class="prow click" data-go="#markets/${esc(r.id)}">
       <span class="pname">${esc(label || r.name || tkr)}</span>
       <span class="ptkr">${esc(tkr)}</span>
@@ -2290,7 +2316,10 @@ function markets() {
 
   // ---- the volatility and stress panel, beside the index quotes ----
   const vix = macV('VIXCLS'), vix3m = macV('VXVCLS');
-  const term = vix !== null && vix3m > 0 ? vix / vix3m : null;
+  // Only a ratio of the same session's two figures: one live and one an earlier FRED close (one quote
+  // batch failing is enough) printed 1.50 "inverted" where the same-session ratio was 1.10.
+  const legDay = code => { const q = liveMac(code); if (q) return nyDate(q.quote_ts); const m = mac(code); return m ? m.obs_date : null; };
+  const term = vix !== null && vix3m > 0 && legDay('VIXCLS') === legDay('VXVCLS') ? vix / vix3m : null;
   const tltVol = realisedVol(perfSeries && perfSeries.TLT, 30);
   const iefVol = realisedVol(perfSeries && perfSeries.IEF, 30);
   const spyVol = realisedVol(perfSeries && perfSeries.SPY, 30);
@@ -2298,8 +2327,8 @@ function markets() {
     const m = mac(code), q = liveMac(code);
     if (q) liveUsed.push(q);
     const v = macV(code);
-    const stamp = q ? nyClock(q.quote_ts) : m ? m.obs_date.slice(5) : '–';
-    const stampTitle = q ? `Delayed quote, ${nyClock(q.quote_ts)} ET (EODHD)` : m ? `FRED, ${m.obs_date}` : 'not loaded';
+    const stamp = q ? nyStamp(q.quote_ts) : m ? m.obs_date.slice(5) : '–';
+    const stampTitle = q ? `Delayed quote, ${nyStamp(q.quote_ts)} ET (EODHD)` : m ? `FRED, ${m.obs_date}` : 'not loaded';
     return `<div class="prow"><span class="pname">${esc(label)}</span>
       <span class="ptkr" title="${esc(stampTitle)}">${esc(stamp)}</span>
       <span class="pval"${tone ? ` style="color:${tone(v)}"` : ''}>${v === null ? '–' : fmt(v)}</span><span class="pchg"></span></div>`;
@@ -2450,7 +2479,8 @@ function markets() {
       }).join('')}</div></div>`;
 
     // --- what is coming ----------------------------------------------------------
-    const today = new Date().toISOString().slice(0, 10);
+    // New York's date: in UTC, 'today' is tomorrow from 7 pm EST, and a window opened a day early.
+    const today = nyDate(Date.now());
     const up = !next.length ? '' : `<div style="margin-top:16px">
       <div class="eyebrow" style="margin-bottom:6px">Next windows</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:4px">
@@ -2886,7 +2916,8 @@ function markets() {
     if (!ev.length) return '';
     const DW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const dnum = s_ => new Date(s_ + 'T00:00:00Z').getUTCDay();
-    const today = new Date().toISOString().slice(0, 10);
+    // New York's date: in UTC, 'today' is tomorrow from 7 pm EST, which marked Friday as today on Thursday evening.
+    const today = nyDate(Date.now());
     const w = ev[0];
     const byDay = new Map();
     for (const e of ev) { if (!byDay.has(e.event_date)) byDay.set(e.event_date, []); byDay.get(e.event_date).push(e); }
@@ -3060,10 +3091,8 @@ function markets() {
       </div></div>`;
   })();
 
-  return `<span class="eyebrow">Allocation model</span><h1>Markets</h1>
-  <p class="sub">The shape of the day — indices, volatility, the curve, sectors and the world — then the watchlist underneath. ${sessionStamp
-    ? `<b>Above the Bond King: delayed quotes, newest ${esc(sessionStamp)} ET</b> (EODHD, about 15 minutes behind; refreshed every 15 minutes in market hours). Yields, spreads and the dollar index are FRED's daily figures. Below, and on every other page: `
-    : ''}prices from the daily job as of ${esc(D.run ? D.run.latest_price_date || '—' : '—')}; ${withPrice} of ${rows.length} carry a close. Click anything for its chart.</p>
+  const page = `<span class="eyebrow">Allocation model</span><h1>Markets</h1>
+  <p class="sub">The shape of the day — indices, volatility, the curve, sectors and the world — then the watchlist underneath. ${STAMP}prices from the daily job as of ${esc(D.run ? D.run.latest_price_date || '—' : '—')}; ${withPrice} of ${rows.length} carry a close. Click anything for its chart.</p>
   ${eventStrip}${bigOverlay}
   <div class="mkgrid">
     <div class="mkcol">
@@ -3095,6 +3124,7 @@ function markets() {
   ${crSection}
   ${fastSection}
   ${table}`;
+  return page.replace(STAMP, stampHtml());
 }
 
 // Minimal markdown for agent output. Everything is HTML-escaped BEFORE any formatting is applied,
@@ -7584,7 +7614,7 @@ async function rbRunTest() {
   const youngestId = bookIds.filter(id => first[id]).sort((a, b) => String(first[a]).localeCompare(String(first[b]))).at(-1);
   const youngest = youngestId ? [first[youngestId], first[spy.id]].filter(Boolean).sort().at(-1) : first[spy.id];
   const back = (iso, months) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCMonth(d.getUTCMonth() - months); return d.toISOString().slice(0, 10); };
-  const today = new Date().toISOString().slice(0, 10);
+  const today = nyDate(Date.now());   // the market's date, not UTC's
   const from = [back(today, 61), youngest || back(today, 61)].sort()[0];
   const px = await rbPrices(ids, from);
   const dates = (px[spy.id] || []).map(r => r.price_date);
@@ -8951,9 +8981,22 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const t = e.target.closest('[data-rbwt]'); if (!t) return;
   const r = rbRows && rbRows[+t.dataset.rbwt];
-  if (r && t.value !== undefined) r.proposed = Math.max(0, Math.min(100, parseFloat(t.value) || 0)) / 100;
+  if (r && t.value !== undefined) { r.proposed = Math.max(0, Math.min(100, parseFloat(t.value) || 0)) / 100; rbSnapTotal(r); }
   rbRedraw();
 });
+// The inputs show weights to 0.1%, but the drifted current weights are exact, so moving two points
+// between two positions by typing the numbers shown left the book up to 0.05% per edited row off
+// 100% -- invisible on the page (it rounds to 100.0%), and enough to keep Submit shut with "weights
+// totalling 100%" (found 2026-11-06: a model 0.065% off). A residue smaller than that
+// rounding is not a decision, so it is shared across the edited rows, less than 0.05% each, which
+// leaves every value shown unchanged. A larger gap is a real one and still has to be fixed by hand.
+function rbSnapTotal(r) {
+  if (!rbRows || r.removed) return;
+  const edited = rbRows.filter(x => !x.removed && x.proposed > 0 && Math.abs(rbW(x) - x.current) > 0.00005);
+  const residue = 1 - rbTotal();
+  if (!edited.length || residue === 0 || Math.abs(residue) / edited.length >= 0.0005) return;
+  for (const x of edited) x.proposed = Math.max(0, x.proposed + residue / edited.length);
+}
 // Removing a held position keeps the row, struck through, so the current side still shows what is
 // being sold and it can be put back; removing a line that was only ever an addition drops it.
 document.addEventListener('click', e => {
@@ -9153,6 +9196,10 @@ window.addEventListener('hashchange', route);
 {
   const t = setInterval(async () => {
     if (!D || document.hidden || location.hash !== '#markets') return;
+    // Not while someone is typing on the page: the redraw would wipe the field and its focus (the
+    // Add ticker box). The next tick tries again.
+    const active = document.activeElement;
+    if (active && active.closest && active.closest('#app input, #app select, #app textarea')) return;
     const now = new Date(), day = now.getUTCDay(), hour = now.getUTCHours();
     if (day === 0 || day === 6 || hour < 13 || hour > 22) return;
     const { data, error } = await sb.from('live_quotes').select('symbol,security_id,quote_ts,last,prev_close,change_pct');
